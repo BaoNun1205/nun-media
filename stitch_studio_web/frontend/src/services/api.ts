@@ -1,0 +1,88 @@
+import type { CoreTimelineScene } from '../editor-core/types';
+import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, TimelineItem, TimelineState, VoiceOption, WorkspaceProject } from '../types/studio';
+
+export const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  } catch {
+    throw new Error(`Cannot reach the Stitch API at ${API_BASE}.`);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Request failed (${response.status})`);
+  }
+  return response.json();
+}
+
+export const studioApi = {
+  workspaceProjects: () => request<WorkspaceProject[]>('/projects'),
+  createWorkspaceProject: (title: string, videoIds: number[]) =>
+    request<{ project: WorkspaceProject }>('/projects', { method: 'POST', body: JSON.stringify({ title, videoIds }) }),
+  renameWorkspaceProject: (id: number, title: string) =>
+    request<{ project: WorkspaceProject }>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  deleteWorkspaceProject: (id: number) => request<{ deleted: boolean; deletedFiles: number }>(`/projects/${id}`, { method: 'DELETE' }),
+  revealProjectLibrary: () => request<{ status: string; path: string }>('/projects/reveal-library', { method: 'POST' }),
+  attachWorkspaceVideos: (id: number, videoIds: number[]) =>
+    request<{ project: WorkspaceProject }>(`/projects/${id}/videos`, { method: 'POST', body: JSON.stringify({ videoIds }) }),
+  attachWorkspaceAssets: (id: number, assetIds: number[]) =>
+    request<{ project: WorkspaceProject }>(`/projects/${id}/assets/attach`, { method: 'POST', body: JSON.stringify({ assetIds }) }),
+  saveWorkspaceTimeline: (id: number, items: TimelineItem[], timelineState?: TimelineState, sceneState?: CoreTimelineScene) =>
+    request<{ project: WorkspaceProject }>(`/projects/${id}/timeline`, { method: 'PUT', body: JSON.stringify({ items, timelineState, sceneState }) }),
+  uploadWorkspaceAsset: (id: number, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<{ project: WorkspaceProject }>(`/projects/${id}/assets`, { method: 'POST', body });
+  },
+  projects: () => request<Project[]>('/videos'),
+  jobs: () => request<Job[]>('/jobs'),
+  settings: () => request<StudioSettings>('/settings'),
+  saveSettings: (douyinCookie: string) =>
+    request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify({ douyinCookie }) }),
+  renameProject: (id: number, title: string) =>
+    request<Project>(`/videos/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  deleteProject: (id: number) => request<{ deletedFiles: number }>(`/videos/${id}`, { method: 'DELETE' }),
+  deleteAsset: (id: number) => request<{ deletedAssetIds: number[] }>(`/assets/${id}`, { method: 'DELETE' }),
+  saveClipSettings: (id: number, settings: Partial<NonNullable<Project['clipSettings']>>) =>
+    request<{ clipSettings: Project['clipSettings'] }>(`/videos/${id}/clip-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
+  saveSubtitleArea: (id: number, area: SubtitleArea, options?: { blurEffectArea?: SubtitleArea }) =>
+    request<{ subtitleArea: SubtitleArea; subtitleBlurEffect?: Project['subtitleBlurEffect'] | null }>(
+      `/videos/${id}/subtitle-settings`,
+      { method: 'PUT', body: JSON.stringify({ area, ...options }) },
+    ),
+  revealProject: (id: number) => request(`/videos/${id}/reveal`, { method: 'POST' }),
+  setAudioMode: (id: number, mode: AudioMode) =>
+    request<{ mode: AudioMode; ready: boolean; jobId?: number; alreadyRunning?: boolean; reused?: boolean }>(
+      `/videos/${id}/audio-mode`,
+      { method: 'POST', body: JSON.stringify({ mode }) },
+    ),
+  extractAudio: (id: number) =>
+    request<{ asset: Asset; reused?: boolean }>(`/videos/${id}/audio/extract`, { method: 'POST' }),
+  srt: (videoId: number) => request<SrtDocument>(`/videos/${videoId}/srt/latest`),
+  srtAsset: (assetId: number) => request<SrtDocument>(`/assets/${assetId}/srt`),
+  saveSrtAsset: (assetId: number, content: string) =>
+    request(`/assets/${assetId}/srt`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  voices: async (engine = 'vieneu', language = 'vi-VN') => {
+    const data = await request<{ voices: Array<string | VoiceOption> }>(`/voices?${new URLSearchParams({ engine, language })}`);
+    return (data.voices || []).map((voice) => typeof voice === 'string' ? { id: voice, label: voice } : voice);
+  },
+  importVideo: (file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<{ video: Project }>('/import/video', { method: 'POST', body });
+  },
+  importSrt: (videoId: number, file: File, replaceAssetId?: number) => {
+    const body = new FormData();
+    body.append('file', file);
+    if (replaceAssetId) body.append('replaceAssetId', String(replaceAssetId));
+    return request<{ asset: unknown }>(`/videos/${videoId}/srt/import`, { method: 'POST', body });
+  },
+};
+
+export async function copyText(text: string) {
+  await navigator.clipboard.writeText(text);
+}

@@ -1,0 +1,18 @@
+PySide6>=6.11.1
+
+# Optional runtime backends. Install only what you need:
+# faster-whisper
+# vieneu
+pocket-tts
+ctranslate2
+sentencepiece
+huggingface_hub
+requests
+soundfile
+
+# Audio separation is intentionally isolated from the TTS/Whisper PyTorch
+# environment. Install it with:
+# powershell -ExecutionPolicy Bypass -File ..\tools\setup_audio_separator.ps1
+
+# Legacy CustomTkinter UI is kept in stitch_studio/ui_full.py for reference:
+# customtkinter>=5.2.2
