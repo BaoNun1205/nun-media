@@ -1,6 +1,6 @@
 import type { CoreTimelineScene } from '../editor-core/types';
 
-export type ViewKey = 'projects' | 'downloads' | 'tts' | 'settings' | 'editor';
+export type ViewKey = 'projects' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
 export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'export';
 export type AudioMode = 'original' | 'remove_vocals' | 'remove_music';
 export type InspectorSelection =
@@ -27,6 +27,13 @@ export interface SubtitleStyle {
   outlineColor: string;
   outline: number;
   background: boolean;
+  fontWeight?: 'normal' | 'bold';
+  fontStyle?: 'normal' | 'italic';
+  textDecoration?: 'none' | 'underline';
+  textTransform?: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
+  letterSpacing?: number;
+  lineHeight?: number;
+  textAlign?: 'left' | 'center' | 'right';
 }
 
 export interface Asset {
@@ -273,4 +280,27 @@ export interface StudioSettings {
   douyinCookieLength: number;
   backendPath?: string;
   frontendPath?: string;
+}
+
+export interface YoutubeChannel {
+  id: number;
+  name: string;
+  avatar_path?: string;
+  references_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface YoutubeReference {
+  url: string;
+  title?: string;
+}
+
+export interface YoutubePrompt {
+  id: number;
+  channel_id: number;
+  name: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
 }

@@ -17,9 +17,15 @@ function downloadVideoIds(job: Job) {
 
 function jobCreatedTime(job: Job) {
   const value = job.createdAt;
-  if (typeof value === 'number') return value;
-  const parsed = value ? Date.parse(String(value)) : Number.NaN;
-  return Number.isNaN(parsed) ? job.id : parsed;
+  if (typeof value === 'number') {
+    return value < 1e11 ? value * 1000 : value;
+  }
+  let strValue = String(value);
+  if (strValue.length === 19 && strValue.includes(' ')) {
+    strValue = strValue.replace(' ', 'T') + 'Z';
+  }
+  const parsed = value ? Date.parse(strValue) : Number.NaN;
+  return Number.isNaN(parsed) ? (job.id < 0 ? -job.id * 1000 : job.id) : parsed;
 }
 
 function readDownloadHistory(): Job[] {
@@ -140,6 +146,20 @@ export function DownloadsPage({ jobs, projects, workspaceProjects, onRefresh, on
     }
   }
 
+  async function handleDeleteVideo(videoId: number) {
+    if (!window.confirm('Are you sure you want to delete this video and its files?')) return;
+    try {
+      setBusy(true);
+      await request(`/videos/${videoId}`, { method: 'DELETE' });
+      await onRefresh();
+      setDownloadHistory(current => current.filter(j => !downloadVideoIds(j).includes(videoId)));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to delete video');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="page downloads-page">
       <header className="page-header"><div><span className="eyebrow">Acquire</span><h1>Downloads</h1><p>Paste a link, verify the source, then follow every job in one place.</p></div><button className="danger" disabled={!downloadJobs.some((job) => job.status === 'error')} onClick={async () => { await request('/jobs/failed', { method: 'DELETE' }); await onRefresh(); }}><Trash2 size={16} /> Clear failed</button></header>
@@ -163,6 +183,7 @@ export function DownloadsPage({ jobs, projects, workspaceProjects, onRefresh, on
               {ids[0] && <button onClick={() => setPendingVideoId(ids[0])}>Add</button>}
               {ids[0] && <button className="primary" onClick={() => createAndOpenProject(ids[0], job.title)} disabled={busy}><Play size={15} /> Open Editor</button>}
               {ids[0] && <button onClick={() => studioApi.revealProject(ids[0])}><FolderOpen size={15} /> Open Folder</button>}
+              {ids[0] && <button className="danger icon-button" style={{ padding: '0 8px' }} onClick={() => handleDeleteVideo(ids[0])} disabled={busy} title="Delete"><Trash2 size={15} /></button>}
             </div>
           </article>;
         })}
@@ -180,6 +201,7 @@ export function DownloadsPage({ jobs, projects, workspaceProjects, onRefresh, on
               {ids[0] && <button onClick={() => setPendingVideoId(ids[0])}>Add</button>}
               {ids[0] && <button className="primary" onClick={() => createAndOpenProject(ids[0], job.title)} disabled={busy}><Play size={15} /> Open Editor</button>}
               {ids[0] && <button onClick={() => studioApi.revealProject(ids[0])}><FolderOpen size={15} /> Open Folder</button>}
+              {ids[0] && <button className="danger icon-button" style={{ padding: '0 8px' }} onClick={() => handleDeleteVideo(ids[0])} disabled={busy} title="Delete"><Trash2 size={15} /></button>}
             </div>
           </article>;
         })}

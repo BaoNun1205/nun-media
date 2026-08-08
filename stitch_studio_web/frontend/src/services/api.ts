@@ -1,5 +1,5 @@
 import type { CoreTimelineScene } from '../editor-core/types';
-import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, TimelineItem, TimelineState, VoiceOption, WorkspaceProject } from '../types/studio';
+import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -49,8 +49,8 @@ export const studioApi = {
   deleteAsset: (id: number) => request<{ deletedAssetIds: number[] }>(`/assets/${id}`, { method: 'DELETE' }),
   saveClipSettings: (id: number, settings: Partial<NonNullable<Project['clipSettings']>>) =>
     request<{ clipSettings: Project['clipSettings'] }>(`/videos/${id}/clip-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
-  saveSubtitleArea: (id: number, area: SubtitleArea, options?: { blurEffectArea?: SubtitleArea }) =>
-    request<{ subtitleArea: SubtitleArea; subtitleBlurEffect?: Project['subtitleBlurEffect'] | null }>(
+  saveSubtitleArea: (id: number, area: SubtitleArea, options?: { blurEffectArea?: SubtitleArea; style?: any }) =>
+    request<{ subtitleArea: SubtitleArea; subtitleBlurEffect?: Project['subtitleBlurEffect'] | null; subtitleStyle?: any }>(
       `/videos/${id}/subtitle-settings`,
       { method: 'PUT', body: JSON.stringify({ area, ...options }) },
     ),
@@ -81,6 +81,33 @@ export const studioApi = {
     if (replaceAssetId) body.append('replaceAssetId', String(replaceAssetId));
     return request<{ asset: unknown }>(`/videos/${videoId}/srt/import`, { method: 'POST', body });
   },
+  youtube: {
+    channels: () => request<YoutubeChannel[]>('/youtube/channels'),
+    createChannel: (name: string, file?: File) => {
+      const body = new FormData();
+      body.append('name', name);
+      if (file) body.append('avatar', file);
+      return request<YoutubeChannel>('/youtube/channels', { method: 'POST', body });
+    },
+    updateChannel: (channelId: number, name?: string, references_json?: string) => 
+      request<YoutubeChannel>(`/youtube/channels/${channelId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, references_json })
+      }),
+    deleteChannel: (id: number) => request<{ deleted: boolean }>(`/youtube/channels/${id}`, { method: 'DELETE' }),
+    prompts: (channelId: number) => request<YoutubePrompt[]>(`/youtube/channels/${channelId}/prompts`),
+    createPrompt: (channelId: number, name: string, content: string) =>
+      request<YoutubePrompt>(`/youtube/channels/${channelId}/prompts`, {
+        method: 'POST',
+        body: JSON.stringify({ name, content }),
+      }),
+    updatePrompt: (promptId: number, name: string, content: string) =>
+      request<YoutubePrompt>(`/youtube/prompts/${promptId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, content }),
+      }),
+    deletePrompt: (promptId: number) => request<{ deleted: boolean }>(`/youtube/prompts/${promptId}`, { method: 'DELETE' }),
+  }
 };
 
 export async function copyText(text: string) {

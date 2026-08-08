@@ -39,7 +39,7 @@ function MultiSelectionInspector({ editor }: { editor: EditorController }) {
   const subtitles = new Set(subtitleKeys.map((key) => Number(key.split(':')[1])).filter(Number.isFinite)).size;
   const voices = selection.keys.filter((key) => key.startsWith('voice:')).length;
   const heading = selection.track ? selection.track + ' selected' : selection.keys.length + ' items selected';
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{subtitles > 0 && <SubtitleStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -80,7 +80,7 @@ function SubtitleInspector({ editor }: { editor: EditorController }) {
   const segment = editor.currentSegment!;
   const index = editor.srt.segments.findIndex((item) => item.index === segment.index);
   const source = editor.sourceSrt.segments[index];
-  return <><div className="inspector-nav"><button disabled={index <= 0} onClick={() => { const previous = editor.srt.segments[index - 1]; editor.setSelection({ type: 'subtitle', index: previous.index }); editor.setPlayhead(previous.start); }}><SkipBack size={15} /> Previous</button><strong>#{segment.index}</strong><button disabled={index >= editor.srt.segments.length - 1} onClick={() => { const next = editor.srt.segments[index + 1]; editor.setSelection({ type: 'subtitle', index: next.index }); editor.setPlayhead(next.start); }}>Next <SkipForward size={15} /></button></div><Section title="Timing"><div className="time-grid"><label>Start<input value={segment.startLabel} onChange={(event) => editor.updateSegmentTime(segment.index, 'startLabel', event.target.value)} /></label><label>End<input value={segment.endLabel} onChange={(event) => editor.updateSegmentTime(segment.index, 'endLabel', event.target.value)} /></label></div><Field label="Duration" value={`${Math.max(0, segment.end - segment.start).toFixed(2)}s`} /><div className="inspector-buttons"><button onClick={() => editor.moveSubtitleSegments([segment.index], -.1)}><MoveHorizontal size={14} /> −0.1s</button><button onClick={() => editor.moveSubtitleSegments([segment.index], .1)}><MoveHorizontal size={14} /> +0.1s</button></div></Section>{source && source.text !== segment.text && <Section title="Original"><p className="source-copy">{source.text}</p></Section>}<Section title={source ? 'Translation' : 'Subtitle text'}><textarea className="inspector-textarea" value={editor.edits[segment.index] ?? segment.text} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} /><div className="inspector-buttons"><button onClick={() => copyText(editor.edits[segment.index] ?? segment.text)}><Copy size={14} /> Copy</button><button className="primary" onClick={editor.saveSrt} disabled={!editor.dirty}><Save size={14} /> Save</button></div></Section><Section title="Voice line"><div className="inspector-buttons"><button onClick={() => editor.playVoice(editor.voiceByIndex[segment.index])} disabled={!editor.voiceByIndex[segment.index]?.audioUrl}><Play size={14} /> Listen</button><button onClick={() => editor.generateVoice(segment.index)}><WandSparkles size={14} /> {editor.voiceByIndex[segment.index]?.audioUrl ? 'Regenerate' : 'Generate'}</button></div></Section><button className="danger full" onClick={() => editor.deleteSegment(segment.index)}><Trash2 size={14} /> Delete segment</button></>;
+  return <><div className="inspector-nav"><button disabled={index <= 0} onClick={() => { const previous = editor.srt.segments[index - 1]; editor.setSelection({ type: 'subtitle', index: previous.index }); editor.setPlayhead(previous.start); }}><SkipBack size={15} /> Previous</button><strong>#{segment.index}</strong><button disabled={index >= editor.srt.segments.length - 1} onClick={() => { const next = editor.srt.segments[index + 1]; editor.setSelection({ type: 'subtitle', index: next.index }); editor.setPlayhead(next.start); }}>Next <SkipForward size={15} /></button></div><Section title="Timing"><div className="time-grid"><label>Start<input value={segment.startLabel} onChange={(event) => editor.updateSegmentTime(segment.index, 'startLabel', event.target.value)} /></label><label>End<input value={segment.endLabel} onChange={(event) => editor.updateSegmentTime(segment.index, 'endLabel', event.target.value)} /></label></div><Field label="Duration" value={`${Math.max(0, segment.end - segment.start).toFixed(2)}s`} /><div className="inspector-buttons"><button onClick={() => editor.moveSubtitleSegments([segment.index], -.1)}><MoveHorizontal size={14} /> −0.1s</button><button onClick={() => editor.moveSubtitleSegments([segment.index], .1)}><MoveHorizontal size={14} /> +0.1s</button></div></Section>{source && source.text !== segment.text && <Section title="Original"><p className="source-copy">{source.text}</p></Section>}<Section title={source ? 'Translation' : 'Subtitle text'}><textarea className="inspector-textarea" value={editor.edits[segment.index] ?? segment.text} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} /><div className="inspector-buttons"><button onClick={() => copyText(editor.edits[segment.index] ?? segment.text)}><Copy size={14} /> Copy</button><button className="primary" onClick={editor.saveSrt} disabled={!editor.dirty}><Save size={14} /> Save</button></div></Section><SubtitleStyleControls editor={editor} /><Section title="Voice line"><div className="inspector-buttons"><button onClick={() => editor.playVoice(editor.voiceByIndex[segment.index])} disabled={!editor.voiceByIndex[segment.index]?.audioUrl}><Play size={14} /> Listen</button><button onClick={() => editor.generateVoice(segment.index)}><WandSparkles size={14} /> {editor.voiceByIndex[segment.index]?.audioUrl ? 'Regenerate' : 'Generate'}</button></div></Section><button className="danger full" onClick={() => editor.deleteSegment(segment.index)}><Trash2 size={14} /> Delete segment</button></>;
 }
 
 function VoiceInspector({ editor }: { editor: EditorController }) {
@@ -113,4 +113,63 @@ function AssetInspector({ editor }: { editor: EditorController }) {
   const asset = editor.project.assets.find((item) => item.id === id);
   if (!asset) return <ProjectInspector editor={editor} />;
   return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{asset.name}</h2><p>{asset.kind.toUpperCase()}</p></div></div><Section title="Asset"><Field label="Engine" value={asset.engine || 'Local'} /><Field label="Status" value={asset.status} /><Field label="Created" value={asset.createdAt?.slice(0, 16)} /></Section><a className="button primary full" href={`${API_BASE}/assets/${asset.id}/download`}><Download size={14} /> Download asset</a></>;
+}
+
+function SubtitleStyleControls({ editor }: { editor: EditorController }) {
+  const { style, updateSubtitleStyle } = editor;
+  return (
+    <Section title="Style (Global)">
+      <div className="style-controls">
+        <div className="style-row">
+          <span>Phông chữ</span>
+          <select value={style.fontFamily || 'Hệ thống'} onChange={(e) => updateSubtitleStyle({ fontFamily: e.target.value })}>
+            <option value="Hệ thống">Hệ thống</option>
+            <option value="Arial">Arial</option>
+            <option value="Roboto">Roboto</option>
+            <option value="Inter">Inter</option>
+            <option value="Outfit">Outfit</option>
+          </select>
+        </div>
+        <div className="style-row dual">
+          <span>Cỡ chữ</span>
+          <input type="range" min="1" max="100" value={style.fontSize || 6} onChange={(e) => updateSubtitleStyle({ fontSize: Number(e.target.value) })} />
+          <input type="number" min="1" max="100" value={style.fontSize || 6} onChange={(e) => updateSubtitleStyle({ fontSize: Number(e.target.value) })} className="number-box" />
+        </div>
+        <div className="style-row">
+          <span>Hoa văn</span>
+          <div className="button-group">
+            <button className={style.fontWeight === 'bold' ? 'active' : ''} onClick={() => updateSubtitleStyle({ fontWeight: style.fontWeight === 'bold' ? 'normal' : 'bold' })}><b>B</b></button>
+            <button className={style.textDecoration === 'underline' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textDecoration: style.textDecoration === 'underline' ? 'none' : 'underline' })}><u>U</u></button>
+            <button className={style.fontStyle === 'italic' ? 'active' : ''} onClick={() => updateSubtitleStyle({ fontStyle: style.fontStyle === 'italic' ? 'normal' : 'italic' })}><i>I</i></button>
+          </div>
+        </div>
+        <div className="style-row">
+          <span>Chữ hoa/thường</span>
+          <div className="button-group">
+            <button className={style.textTransform === 'uppercase' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'uppercase' ? 'none' : 'uppercase' })}>TT</button>
+            <button className={style.textTransform === 'lowercase' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'lowercase' ? 'none' : 'lowercase' })}>tt</button>
+            <button className={style.textTransform === 'capitalize' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'capitalize' ? 'none' : 'capitalize' })}>Tt</button>
+          </div>
+        </div>
+        <div className="style-row">
+          <span>Màu sắc</span>
+          <input type="color" value={style.fontColor || '#ffffff'} onChange={(e) => updateSubtitleStyle({ fontColor: e.target.value })} />
+        </div>
+        <div className="style-row dual">
+          <span>Ký tự</span>
+          <input type="number" value={style.letterSpacing || 0} onChange={(e) => updateSubtitleStyle({ letterSpacing: Number(e.target.value) })} className="number-box" />
+          <span>Đường nét</span>
+          <input type="number" value={style.lineHeight || 0} onChange={(e) => updateSubtitleStyle({ lineHeight: Number(e.target.value) })} className="number-box" />
+        </div>
+        <div className="style-row">
+          <span>Căn chỉnh</span>
+          <div className="button-group">
+            <button className={style.textAlign === 'left' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'left' })}>⫷</button>
+            <button className={style.textAlign === 'center' || !style.textAlign ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'center' })}>≣</button>
+            <button className={style.textAlign === 'right' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'right' })}>⫸</button>
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
 }

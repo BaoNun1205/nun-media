@@ -61,3 +61,23 @@ class SubtitleSegment:
     start: float
     end: float
     text: str
+
+
+@dataclass
+class YoutubeChannelItem:
+    id: int
+    name: str
+    avatar_path: Optional[str]
+    references_json: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class YoutubePromptItem:
+    id: int
+    channel_id: int
+    name: str
+    content: str
+    created_at: str
+    updated_at: str

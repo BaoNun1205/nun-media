@@ -1,4 +1,4 @@
-import { Download, FolderKanban, Settings, Sparkles, Volume2 } from 'lucide-react';
+import { Download, FolderKanban, Settings, Sparkles, Volume2, Youtube } from 'lucide-react';
 import type { ViewKey } from '../../types/studio';
 
 interface Props {
@@ -12,6 +12,7 @@ export function AppSidebar({ view, onNavigate, activeJobs }: Props) {
     ['projects', FolderKanban, 'Projects'],
     ['downloads', Download, 'Downloads'],
     ['tts', Volume2, 'Text to Speech'],
+    ['youtube', Youtube, 'Youtube'],
     ['settings', Settings, 'Settings'],
   ] as const;
   return (

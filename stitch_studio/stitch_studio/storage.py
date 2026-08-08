@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .models import AssetItem, ProjectAssetItem, ProjectItem, VideoItem
+from .models import AssetItem, ProjectAssetItem, ProjectItem, VideoItem, YoutubeChannelItem, YoutubePromptItem
 
 
 class Storage:
@@ -89,8 +89,33 @@ class Storage:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_project_assets_source_asset
             ON project_assets(project_id, source_asset_id)
             WHERE source_asset_id IS NOT NULL;
+            
+            CREATE TABLE IF NOT EXISTS youtube_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                avatar_path TEXT,
+                references_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS youtube_prompts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                references_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(channel_id) REFERENCES youtube_channels(id) ON DELETE CASCADE
+            );
             """
         )
+        try:
+            self.conn.execute("ALTER TABLE youtube_channels ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists or table was just created
+        
         self.conn.commit()
         # Project workspaces are now explicit. Downloads stay in the asset
         # library until the user creates a project and adds them.
@@ -288,6 +313,78 @@ class Storage:
             (int(asset_id),),
         ).fetchone()
         return int(row["count"] or 0) if row else 0
+
+    def get_youtube_channels(self) -> list[YoutubeChannelItem]:
+        cur = self.conn.execute("SELECT * FROM youtube_channels ORDER BY updated_at DESC")
+        return [YoutubeChannelItem(**dict(row)) for row in cur]
+
+    def create_youtube_channel(self, name: str, avatar_path: Optional[str] = None) -> YoutubeChannelItem:
+        cur = self.conn.execute(
+            "INSERT INTO youtube_channels (name, avatar_path, references_json) VALUES (?, ?, '[]')",
+            (name, avatar_path),
+        )
+        self.conn.commit()
+        channel_id = cur.lastrowid
+        cur = self.conn.execute("SELECT * FROM youtube_channels WHERE id = ?", (channel_id,))
+        return YoutubeChannelItem(**dict(cur.fetchone()))
+
+    def update_youtube_channel(self, channel_id: int, name: Optional[str] = None, references_json: Optional[str] = None) -> Optional[YoutubeChannelItem]:
+        updates = []
+        params = []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if references_json is not None:
+            updates.append("references_json = ?")
+            params.append(references_json)
+        
+        if updates:
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            query = f"UPDATE youtube_channels SET {', '.join(updates)} WHERE id = ?"
+            params.append(channel_id)
+            cur = self.conn.execute(query, tuple(params))
+            if cur.rowcount == 0:
+                return None
+            self.conn.commit()
+            
+        cur = self.conn.execute("SELECT * FROM youtube_channels WHERE id = ?", (channel_id,))
+        row = cur.fetchone()
+        return YoutubeChannelItem(**dict(row)) if row else None
+        
+    def delete_youtube_channel(self, channel_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM youtube_channels WHERE id = ?", (channel_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_youtube_prompts(self, channel_id: int) -> list[YoutubePromptItem]:
+        cur = self.conn.execute("SELECT id, channel_id, name, content, created_at, updated_at FROM youtube_prompts WHERE channel_id = ? ORDER BY updated_at DESC", (channel_id,))
+        return [YoutubePromptItem(**dict(row)) for row in cur]
+
+    def create_youtube_prompt(self, channel_id: int, name: str, content: str) -> YoutubePromptItem:
+        cur = self.conn.execute(
+            "INSERT INTO youtube_prompts (channel_id, name, content) VALUES (?, ?, ?)",
+            (channel_id, name, content),
+        )
+        self.conn.commit()
+        prompt_id = cur.lastrowid
+        cur = self.conn.execute("SELECT id, channel_id, name, content, created_at, updated_at FROM youtube_prompts WHERE id = ?", (prompt_id,))
+        return YoutubePromptItem(**dict(cur.fetchone()))
+
+    def update_youtube_prompt(self, prompt_id: int, name: str, content: str) -> Optional[YoutubePromptItem]:
+        cur = self.conn.execute(
+            "UPDATE youtube_prompts SET name = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (name, content, prompt_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        self.conn.commit()
+        cur = self.conn.execute("SELECT id, channel_id, name, content, created_at, updated_at FROM youtube_prompts WHERE id = ?", (prompt_id,))
+        return YoutubePromptItem(**dict(cur.fetchone()))
+
+    def delete_youtube_prompt(self, prompt_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM youtube_prompts WHERE id = ?", (prompt_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def add_project_asset(
         self,

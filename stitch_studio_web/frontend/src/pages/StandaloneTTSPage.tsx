@@ -223,12 +223,18 @@ export function StandaloneTTSPage({ jobs, workspaceProjects, voices, loadVoices,
   }
 
   async function deleteHistoryAsset(assetId: number) {
-    const result = await request<{ deletedAssetIds: number[] }>(`/assets/${assetId}`, { method: 'DELETE' });
-    const deleted = new Set(result.deletedAssetIds || [assetId]);
-    setHistory((current) => current.filter((asset) => !deleted.has(asset.id)));
-    if (output && deleted.has(output.id)) setOutput(null);
-    setMessage('Deleted voice audio.');
-    await refresh();
+    try {
+      const result = await request<{ deletedAssetIds: number[] }>(`/assets/${assetId}`, { method: 'DELETE' });
+      const deleted = new Set(result.deletedAssetIds || [assetId]);
+      setHistory((current) => current.filter((asset) => !deleted.has(asset.id)));
+      if (output && deleted.has(output.id)) setOutput(null);
+      setMessage('Deleted voice audio.');
+      await refresh();
+    } catch (error) {
+      setHistory((current) => current.filter((asset) => asset.id !== assetId));
+      if (output?.id === assetId) setOutput(null);
+      setMessage('Removed missing audio from history.');
+    }
   }
 
   function updateLine(index: number, text: string) {

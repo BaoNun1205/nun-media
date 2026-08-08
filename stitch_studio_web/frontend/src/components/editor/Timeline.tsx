@@ -857,7 +857,23 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
   trackId: string;
   onSelect: (event: React.MouseEvent, key: string, selection: InspectorSelection) => void;
 }) {
-  const source = trackId === 'S1' ? editor.srt.segments : [];
+  const projectAssetsById = new Map((editor.project.projectAssets || []).map((asset) => [asset.id, asset]));
+  const currentSrtAssetId = editor.srt.asset?.id;
+  const srtAssetIdForItem = (item: TimelineItem) => {
+    if (item.sourceAssetId) return item.sourceAssetId;
+    const projectAsset = item.projectAssetId ? projectAssetsById.get(item.projectAssetId) : undefined;
+    return projectAsset?.sourceAssetId || item.projectAssetId;
+  };
+  const hasCurrentSrtItem = Boolean(currentSrtAssetId && items.some((item) => srtAssetIdForItem(item) === currentSrtAssetId));
+  const source = editor.project.workspaceId
+    ? (hasCurrentSrtItem ? editor.srt.segments : [])
+    : (trackId === 'S1' ? editor.srt.segments : []);
+  const deleteSrtItem = (event: React.KeyboardEvent<HTMLButtonElement>, itemId: string) => {
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    event.preventDefault();
+    event.stopPropagation();
+    void editor.deleteTimelineItems([itemId]);
+  };
   return <div data-track-row={trackId} className={`timeline-track subtitle-track ${trackSelected ? 'track-selected' : ''}`}>{source.map((segment) => {
     const width = Math.max(1.4, ((segment.end - segment.start) / duration) * 100);
     const key = `subtitle:${segment.index}`;
@@ -866,7 +882,7 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
     return <button key={segment.index} data-timeline-item={key} className={selected ? 'selected' : ''} style={{ left: percent(segment.start, duration), width: `${width}%` }} title={text} onClick={(event) => { onSelect(event, key, { type: 'subtitle', index: segment.index }); }}>{text}</button>;
   })}{items.map((item) => {
     const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
-    return <button key={item.id} data-timeline-item={item.id} className={`subtitle-asset-clip ${selectedKeys.has(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, duration), width }} onClick={(event) => onSelect(event, item.id, { type: 'timeline-items', keys: [item.id], track: trackId })}>{item.name}</button>;
+    return <button key={item.id} data-timeline-item={item.id} className={`subtitle-asset-clip ${selectedKeys.has(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, duration), width }} title="Select then press Delete or Backspace to remove this SRT clip" onKeyDown={(event) => deleteSrtItem(event, item.id)} onClick={(event) => onSelect(event, item.id, { type: 'timeline-items', keys: [item.id], track: trackId })}>{item.name}</button>;
   })}</div>;
 }
 

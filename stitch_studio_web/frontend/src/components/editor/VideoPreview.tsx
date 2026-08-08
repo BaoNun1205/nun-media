@@ -172,6 +172,10 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     syncSourceAudioAt(videoTimelineTime(video), shouldPlay);
   }
   function togglePlayback() {
+    if (editor.playhead >= editor.duration - 0.05) {
+      editor.setPlayhead(0);
+      if (videoRef.current) videoRef.current.currentTime = 0;
+    }
     if (timelineClockPlayback) {
       setPlaying((current) => {
         const next = !current;
@@ -189,7 +193,14 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     }
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) video.play(); else video.pause();
+    if (video.paused) {
+      video.play().catch((e) => {
+        console.error('Video play failed:', e);
+        setPlaying(false);
+      });
+    } else {
+      video.pause();
+    }
   }
 
   useEffect(() => {
@@ -513,7 +524,20 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
         </div>}
         <div ref={horizontalGuideRef} className="subtitle-center-guide horizontal" aria-hidden="true" />
         <div ref={verticalGuideRef} className="subtitle-center-guide vertical" aria-hidden="true" />
-        {activeSubtitle && <button ref={liveSubtitleRef} className="live-subtitle" style={{ ...subtitlePosition, color: editor.style.fontColor, background: editor.style.background ? '#0009' : 'transparent', fontFamily: editor.style.fontFamily, fontSize: `${Math.max(12, editor.style.fontSize * .65)}px`, textShadow: `0 0 ${editor.style.outline}px ${editor.style.outlineColor}` }} title="Drag to reposition subtitles" onPointerDown={beginSubtitleMove} onClick={(event) => { if (suppressSubtitleClickRef.current) { suppressSubtitleClickRef.current = false; return; } event.stopPropagation(); editor.setSelection({ type: 'subtitle', index: activeSubtitle.index }); }}>{editor.edits[activeSubtitle.index] ?? activeSubtitle.text}</button>}
+        {activeSubtitle && <button ref={liveSubtitleRef} className="live-subtitle" style={{
+          ...subtitlePosition,
+          color: editor.style.fontColor,
+          background: editor.style.background ? '#0009' : 'transparent',
+          fontFamily: editor.style.fontFamily,
+          fontSize: `${Math.max(12, editor.style.fontSize * .65)}px`,
+          fontWeight: editor.style.fontWeight || 'normal',
+          fontStyle: editor.style.fontStyle || 'normal',
+          textDecoration: editor.style.textDecoration || 'none',
+          textTransform: editor.style.textTransform || 'none',
+          letterSpacing: editor.style.letterSpacing ? `${editor.style.letterSpacing}px` : 'normal',
+          textAlign: editor.style.textAlign || 'center',
+          textShadow: `0 0 ${editor.style.outline}px ${editor.style.outlineColor}`
+        }} title="Drag to reposition subtitles" onPointerDown={beginSubtitleMove} onClick={(event) => { if (suppressSubtitleClickRef.current) { suppressSubtitleClickRef.current = false; return; } event.stopPropagation(); editor.setSelection({ type: 'subtitle', index: activeSubtitle.index }); }}>{editor.edits[activeSubtitle.index] ?? activeSubtitle.text}</button>}
         {editor.editArea && <button className="reset-area" onClick={(event) => {
           event.stopPropagation();
           const nextArea = { xmin: .04, xmax: .96, ymin: .60, ymax: .98 };

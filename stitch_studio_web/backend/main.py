@@ -137,6 +137,16 @@ class SettingsRequest(BaseModel):
     douyinCookie: str | None = None
 
 
+class YoutubeChannelUpdateRequest(BaseModel):
+    name: str | None = None
+    references_json: str | None = None
+
+
+class YoutubePromptRequest(BaseModel):
+    name: str
+    content: str
+
+
 class VideoRenameRequest(BaseModel):
     title: str
 
@@ -174,6 +184,7 @@ class ClipSettingsRequest(BaseModel):
 class SubtitleEditorSettingsRequest(BaseModel):
     area: Any
     blurEffectArea: Any = None
+    style: Any = None
 
 
 class SubtitleUndoRequest(BaseModel):
@@ -619,18 +630,23 @@ def _metadata_with_media_duration(metadata: dict[str, Any] | None, path: Path) -
 def _asset_belongs_to_video(asset, video) -> bool:
     if asset.video_id == video.id:
         return True
-    workspace = storage.get_project(video.id) or storage.find_project_for_video(video.id)
-    if workspace:
-        if storage.project_asset_for_asset(workspace.id, asset.id):
-            return True
-        if asset.video_id == workspace.id:
-            return True
-        asset_video = storage.get_video(asset.video_id)
-        if asset_video and asset_video.metadata and asset_video.metadata.get("workspace_id") == workspace.id:
-            return True
-    asset_video = storage.get_video(asset.video_id)
-    if asset_video and asset_video.metadata and asset_video.metadata.get("workspace_id") == video.id:
-        return True
+        
+    for workspace in storage.list_projects():
+        video_in_workspace = False
+        for p_asset in storage.list_project_assets(workspace.id):
+            if p_asset.source_video_id == video.id:
+                video_in_workspace = True
+                break
+                
+        if video_in_workspace:
+            if storage.project_asset_for_asset(workspace.id, asset.id):
+                return True
+            if asset.video_id == workspace.id:
+                return True
+            asset_video = storage.get_video(asset.video_id)
+            if asset_video and asset_video.metadata and asset_video.metadata.get("workspace_id") == workspace.id:
+                return True
+
     return False
 
 
@@ -1511,6 +1527,65 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/youtube/channels")
+def api_get_youtube_channels():
+    return storage.get_youtube_channels()
+
+
+@app.post("/api/youtube/channels")
+def api_create_youtube_channel(name: str = Form(...), avatar: UploadFile | None = File(None)):
+    avatar_path = None
+    if avatar and avatar.filename:
+        # Create avatars directory
+        avatars_dir = STITCH_ROOT / "workspace" / "avatars"
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        # Create a unique filename
+        filename = f"{int(time.time())}_{avatar.filename}"
+        file_path = avatars_dir / filename
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(avatar.file, f)
+        avatar_path = f"workspace/avatars/{filename}"
+    return storage.create_youtube_channel(name, avatar_path)
+
+
+@app.put("/api/youtube/channels/{channel_id}")
+def api_update_youtube_channel(channel_id: int, payload: YoutubeChannelUpdateRequest):
+    updated = storage.update_youtube_channel(channel_id, payload.name, payload.references_json)
+    if not updated:
+        raise HTTPException(404, "Channel not found")
+    return updated
+
+
+@app.delete("/api/youtube/channels/{channel_id}")
+def api_delete_youtube_channel(channel_id: int):
+    deleted = storage.delete_youtube_channel(channel_id)
+    return {"deleted": deleted}
+
+
+@app.get("/api/youtube/channels/{channel_id}/prompts")
+def api_get_youtube_prompts(channel_id: int):
+    return storage.get_youtube_prompts(channel_id)
+
+
+@app.post("/api/youtube/channels/{channel_id}/prompts")
+def api_create_youtube_prompt(channel_id: int, payload: YoutubePromptRequest):
+    return storage.create_youtube_prompt(channel_id, payload.name, payload.content)
+
+
+@app.put("/api/youtube/prompts/{prompt_id}")
+def api_update_youtube_prompt(prompt_id: int, payload: YoutubePromptRequest):
+    updated = storage.update_youtube_prompt(prompt_id, payload.name, payload.content)
+    if not updated:
+        raise HTTPException(404, "Prompt not found")
+    return updated
+
+
+@app.delete("/api/youtube/prompts/{prompt_id}")
+def api_delete_youtube_prompt(prompt_id: int):
+    deleted = storage.delete_youtube_prompt(prompt_id)
+    return {"deleted": deleted}
+
+
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     cookie = config.douyin_cookie_path.read_text(encoding="utf-8").strip() if config.douyin_cookie_path.exists() else ""
@@ -2243,6 +2318,8 @@ def update_subtitle_settings(video_id: int, payload: SubtitleEditorSettingsReque
         raise HTTPException(400, "Invalid subtitle area")
     metadata = dict(video.metadata or {})
     metadata["area_ratio"] = area
+    if payload.style is not None:
+        metadata["subtitle_style"] = payload.style
     if payload.blurEffectArea is not None:
         blur_area = _normalize_area_ratio(payload.blurEffectArea)
         if not blur_area:
@@ -3070,7 +3147,7 @@ def translate_srt(video_id: int, payload: SrtTranslateRequest) -> dict[str, Any]
     asset = storage.get_asset(payload.srtAssetId) if payload.srtAssetId else _primary_srt_asset(video)
     if not asset or not asset.path.exists():
         raise HTTPException(404, "SRT not found")
-    if asset.video_id != video.id or asset.kind != "srt":
+    if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
         raise HTTPException(400, "SRT asset does not belong to this video")
     active = _active_job("translate", video.id)
     if active:
@@ -3102,7 +3179,7 @@ def synthesize_tts(video_id: int, payload: TtsRequest) -> dict[str, Any]:
     asset = storage.get_asset(payload.srtAssetId) if payload.srtAssetId else _primary_srt_asset(video)
     if not asset or not asset.path.exists():
         raise HTTPException(404, "SRT not found")
-    if asset.video_id != video.id or asset.kind != "srt":
+    if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
         raise HTTPException(400, "SRT asset does not belong to this video")
     active = _active_job("tts", video.id)
     if active:
@@ -3164,7 +3241,7 @@ def list_tts_segments(
     asset = storage.get_asset(srtAssetId) if srtAssetId else _primary_srt_asset(video)
     if not asset or not asset.path.exists():
         raise HTTPException(404, "SRT not found")
-    if asset.video_id != video.id or asset.kind != "srt":
+    if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
         raise HTTPException(400, "SRT asset does not belong to this video")
     selected_engine = _segment_engine(engine)
     payload = TtsSegmentRequest(srtAssetId=asset.id, engine=selected_engine, voice=voice, language=language, rate=rate)
@@ -3379,3 +3456,5 @@ def voices(engine: str = "vieneu", language: str | None = None) -> dict[str, Any
 @app.on_event("shutdown")
 def shutdown() -> None:
     storage.close()
+
+# reload

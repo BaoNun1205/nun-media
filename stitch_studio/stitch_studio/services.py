@@ -2916,12 +2916,29 @@ def _write_positioned_ass(
     background = bool(style.get("background"))
     primary = _ass_color(str(style.get("fontColor") or "#FFFFFF"))
     outline_color = _ass_color(str(style.get("outlineColor") or "#000000"))
+    
+    font_weight = 1 if style.get("fontWeight") == "bold" else 0
+    font_style = 1 if style.get("fontStyle") == "italic" else 0
+    text_decoration = 1 if style.get("textDecoration") == "underline" else 0
+    spacing = int(style.get("letterSpacing") or 0)
+    
     border_style = 3 if background else 1
     back_color = "&H78000000" if background else "&H00000000"
-    x = (xmin + xmax) // 2
-    # Alignment 2 anchors the bottom-center of the subtitle block, so multiline
-    # text grows upward while staying inside the selected subtitle area.
+    
+    text_align = style.get("textAlign") or "center"
+    if text_align == "left":
+        alignment = 1
+        x = xmin + max(8, int(width * 0.02))
+    elif text_align == "right":
+        alignment = 3
+        x = xmax - max(8, int(width * 0.02))
+    else:
+        alignment = 2
+        x = (xmin + xmax) // 2
+
+    # Anchors the bottom of the subtitle block
     y = max(ymin + 8, ymax - max(12, int((ymax - ymin) * 0.07)))
+    
     header = "\n".join(
         [
             "[Script Info]",
@@ -2933,15 +2950,25 @@ def _write_positioned_ass(
             "",
             "[V4+ Styles]",
             "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-            f"Style: Subtitle,{font_name},{font_size},{primary},&H00000000,{outline_color},{back_color},0,0,0,0,100,100,0,0,{border_style},{outline},0,2,0,0,0,1",
+            f"Style: Subtitle,{font_name},{font_size},{primary},&H00000000,{outline_color},{back_color},{font_weight},{font_style},{text_decoration},0,100,100,{spacing},0,{border_style},{outline},0,{alignment},0,0,0,1",
             "",
             "[Events]",
             "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
         ]
     )
     events = []
+    text_case = style.get("textTransform") or "none"
+    
     for segment in read_srt(srt_path):
-        text = segment.text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
+        text = segment.text
+        if text_case == "uppercase":
+            text = text.upper()
+        elif text_case == "lowercase":
+            text = text.lower()
+        elif text_case == "capitalize":
+            text = " ".join(w.capitalize() for w in text.split(" "))
+            
+        text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
         events.append(
             f"Dialogue: 0,{_ass_timestamp(segment.start)},{_ass_timestamp(segment.end)},Subtitle,,0,0,0,,{{\\pos({x},{y})}}{text}"
         )

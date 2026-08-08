@@ -156,8 +156,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const autoMuxTtsJobRef = useRef<number | null>(null);
   const isEmptyWorkspace = project.id < 0 || project.mediaType === 'workspace';
 
-  const workspaceJobId = project.workspaceId ? -project.workspaceId : null;
-  const videoJobs = useMemo(() => jobs.filter((job) => job.videoId === project.id || (workspaceJobId !== null && job.videoId === workspaceJobId)), [jobs, project.id, workspaceJobId]);
+  const videoJobs = useMemo(() => jobs.filter((job) => job.videoId === project.id || (project.workspaceId && job.videoId === -project.workspaceId) || (job.videoId === -project.id)), [jobs, project.id, project.workspaceId]);
   const activeJobs = videoJobs.filter((job) => ['queued', 'running'].includes(job.status));
   const activeAudioJob = activeJobs.find((job) => job.kind === 'audio-separate');
   const audioSeparationReady = Boolean(project.audioSeparation?.ready);
@@ -181,6 +180,14 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     .filter((asset, index, assets) => asset.kind === 'srt' && !isTranslatedAsset(asset.engine) && assets.findIndex((candidate) => candidate.id === asset.id) === index);
   const originalSrtAssets = srtAssets;
   const translatedSrtAssets = srtAssets.filter((asset) => isTranslatedAsset(asset.engine));
+  const srtAssetIdForTimelineItem = useCallback((item: TimelineItem) => {
+    if (item.kind !== 'srt') return undefined;
+    if (item.sourceAssetId) return item.sourceAssetId;
+    const projectAsset = item.projectAssetId
+      ? (project.projectAssets || []).find((asset) => asset.id === item.projectAssetId)
+      : undefined;
+    return projectAsset?.sourceAssetId || item.projectAssetId;
+  }, [project.projectAssets]);
   const currentSegment = selection.type === 'subtitle' ? srt.segments.find((item) => item.index === selection.index) : undefined;
   const currentVoice = selection.type === 'voice' ? voiceSegments.find((item) => item.index === selection.index) : undefined;
   const voiceByIndex = useMemo(() => Object.fromEntries(voiceSegments.map((item) => [item.index, item])), [voiceSegments]);
@@ -245,6 +252,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     try {
       const targetId = assetId ?? autoSrtAssetId;
       const data = targetId ? await studioApi.srtAsset(targetId) : await studioApi.srt(project.id);
+      if (assetId !== undefined && assetId !== autoSrtAssetId) setAutoSrtAssetId(assetId);
       setSrt(data);
       setEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
       setBaselineSrt(serializeSrt(data.segments || [], {}));
@@ -618,13 +626,24 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const remove = new Set(keys);
     if (!remove.size) return;
     const previous = cloneTimeline(timelineItems);
+    const removedItems = timelineItems.filter((item) => remove.has(item.id));
+    const removedSrtAssetIds = new Set(removedItems.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
     const next = timelineItems.filter((item) => !remove.has(item.id) && !(item.kind === 'audio' && item.linkedVideoItemId && remove.has(item.linkedVideoItemId)))
       .map((item) => item.kind === 'video' && keys.some((key) => timelineItems.some((clip) => clip.id === key && clip.kind === 'audio' && clip.linkedVideoItemId === item.id))
         ? { ...item, sourceAudioMuted: false }
         : item);
+    const remainingSrtAssetIds = new Set(next.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
+    const shouldClearLoadedSrt = Boolean(srt.asset?.id && removedSrtAssetIds.has(srt.asset.id) && !remainingSrtAssetIds.has(srt.asset.id));
     setSelection({ type: 'project' });
     setPlayhead(Math.min(playhead, Math.max(0, endOfTimeline(next))));
-    await commitTimelineItems(next, `Deleted ${timelineItems.length - next.length} timeline clip${timelineItems.length - next.length === 1 ? '' : 's'}.`, previous);
+    const saved = await commitTimelineItems(next, `Deleted ${timelineItems.length - next.length} timeline clip${timelineItems.length - next.length === 1 ? '' : 's'}.`, previous);
+    if (saved && shouldClearLoadedSrt) {
+      setSrt(EMPTY_SRT);
+      setEdits({});
+      setBaselineSrt('');
+      setDraftHistory({ past: [], future: [] });
+      setVoiceSegments([]);
+    }
   }
 
   function selectedTimelineClipKeys() {
@@ -950,9 +969,23 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     if (!selected.size) return;
     const removed = srt.segments.filter((segment) => selected.has(segment.index)).length;
     if (!removed) return;
+    
+    const remaining = srt.segments.filter((segment) => !selected.has(segment.index));
+    if (remaining.length === 0 && srt.asset?.id) {
+      void studioApi.deleteAsset(srt.asset.id).then(() => {
+        setSrt(EMPTY_SRT);
+        setEdits({});
+        setBaselineSrt('');
+        setDraftHistory({ past: [], future: [] });
+        void refresh();
+        setSelection({ type: 'project' });
+      });
+      return;
+    }
+
     const nextEdits = { ...edits };
     selected.forEach((index) => delete nextEdits[index]);
-    commitDraft({ ...srt, segments: srt.segments.filter((segment) => !selected.has(segment.index)) }, nextEdits, `Removed ${removed} subtitle ${removed === 1 ? 'line' : 'lines'} from the draft. Press Undo to restore.`);
+    commitDraft({ ...srt, segments: remaining }, nextEdits, `Removed ${removed} subtitle ${removed === 1 ? 'line' : 'lines'} from the draft. Press Undo to restore.`);
     setSelection({ type: 'subtitle-track', assetId: srt.asset?.id });
   }
   function deleteSelectedSubtitles() {
@@ -982,6 +1015,21 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage('Subtitle position saved.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save subtitle position');
+    }
+  }
+
+  async function updateSubtitleStyle(updates: Partial<SubtitleStyle>) {
+    const nextStyle = { ...style, ...updates };
+    setStyle(nextStyle);
+    try {
+      const result = await studioApi.saveSubtitleArea(
+        project.id,
+        area,
+        { style: nextStyle }
+      );
+      if (result.subtitleStyle) setStyle(result.subtitleStyle);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to save subtitle style');
     }
   }
   function moveSelectedSubtitles(deltaSeconds: number) {
@@ -1248,7 +1296,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
     previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob,
-    area, setArea, saveSubtitleArea, style, setStyle, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
+    area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
     translationDevice, setTranslationDevice, removeMethod, setRemoveMethod, removeMode, setRemoveMode,
