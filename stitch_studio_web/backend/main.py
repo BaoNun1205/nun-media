@@ -2342,6 +2342,7 @@ def update_subtitle_settings(video_id: int, payload: SubtitleEditorSettingsReque
     return {
         "subtitleArea": _subtitle_area_payload(updated, updated_metadata),
         "subtitleBlurEffect": updated_metadata.get("subtitle_blur_effect") or None,
+        "subtitleStyle": updated_metadata.get("subtitle_style") or None,
     }
 
 

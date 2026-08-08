@@ -392,8 +392,13 @@ input[type="color"] { padding: 3px; }
 .subtitle-safe-area.ocr-area { border-color: #22d3ee; background: #22d3ee12; box-shadow: 0 0 0 1px #22d3ee22; }
 .subtitle-safe-area.ocr-area::before { content: "OCR SCAN AREA"; position: absolute; left: 0; top: -20px; padding: 2px 5px; color: #9eeaf4; background: #0e7490cc; font-size: 8px; font-weight: 700; letter-spacing: .04em; }
 .subtitle-safe-area span { max-width: 95%; padding: 2px 5px; text-align: center; line-height: 1.25; }
-.live-subtitle { position: absolute; z-index: 2; min-height: 0; padding: 4px 8px; border: 0; transform: translate3d(0, 0, 0) translateY(-50%); will-change: transform; backface-visibility: hidden; color: white; background: transparent; cursor: move; font-size: clamp(11px, 1.15vw, 19px); font-weight: 700; line-height: 1.25; text-align: center; text-shadow: 0 1px 3px #000, 0 0 2px #000; touch-action: none; user-select: none; }
+.live-subtitle { position: absolute; z-index: 2; isolation: isolate; min-height: 0; border: 0; transform: translate3d(0, 0, 0) translateY(-50%); will-change: transform; backface-visibility: hidden; cursor: move; touch-action: none; user-select: none; }
 .live-subtitle:hover { border: 0; background: #0004; }
+.live-text-item { position: absolute; z-index: 3; isolation: isolate; min-height: 0; border: 0; transform: translate(-50%, -50%); cursor: pointer; background: transparent; }
+.live-subtitle.effect-glitch::before, .live-subtitle.effect-glitch::after, .live-text-item.effect-glitch::before, .live-text-item.effect-glitch::after, .preset-preview-letter.effect-glitch::before, .preset-preview-letter.effect-glitch::after, .live-subtitle.effect-duotone::before, .live-text-item.effect-duotone::before, .preset-preview-letter.effect-duotone::before { content: attr(data-text); position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.live-subtitle.effect-glitch::before, .live-text-item.effect-glitch::before, .preset-preview-letter.effect-glitch::before { color: #00f5ff; transform: translate(-2px, 0); clip-path: inset(0 0 52% 0); }
+.live-subtitle.effect-glitch::after, .live-text-item.effect-glitch::after, .preset-preview-letter.effect-glitch::after { color: #ff2f7d; transform: translate(2px, 1px); clip-path: inset(46% 0 0 0); }
+.live-subtitle.effect-duotone::before, .live-text-item.effect-duotone::before, .preset-preview-letter.effect-duotone::before { color: #f02b36; transform: translate(4px, 2px); }
 .subtitle-center-guide { position: absolute; z-index: 4; display: none; pointer-events: none; background: #22d3ee; box-shadow: 0 0 0 1px #0e749055, 0 0 10px #22d3eecc; }
 .subtitle-center-guide.horizontal { right: 0; left: 0; top: 50%; height: 1px; }
 .subtitle-center-guide.vertical { top: 0; bottom: 0; left: 50%; width: 1px; }
@@ -581,6 +586,13 @@ input[type="color"] { padding: 3px; }
 .video-canvas:fullscreen { max-width: 100vw !important; max-height: 100vh !important; aspect-ratio: var(--aspect-ratio) !important; margin: auto !important; }
 
 /* Subtitle Style Controls */
+.text-style-preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.text-style-preset-tile { position: relative; aspect-ratio: 1; min-height: 0; display: grid; place-items: center; overflow: hidden; padding: 0; border: 1px solid transparent; border-radius: 8px; color: #d9dee8; background: #34363a; box-shadow: inset 0 1px 0 #ffffff12; transition: border-color .12s ease, transform .12s ease, background .12s ease; }
+.text-style-preset-tile:hover { transform: translateY(-1px); border-color: #505862; background: #3e4147; }
+.text-style-preset-tile.active { border-color: #1bd5df; box-shadow: inset 0 0 0 2px #1bd5df, 0 0 0 1px #052b2f; }
+.text-style-preset-tile.no-style { color: #b8bdc7; background: #34363a; }
+.text-style-preset-tile.no-style svg { stroke-width: 1.8; opacity: .9; }
+.preset-preview-letter { position: relative; isolation: isolate; display: inline-block; font-size: 28px !important; line-height: 1; white-space: nowrap; }
 .style-controls { display: flex; flex-direction: column; gap: 12px; }
 .style-row { display: flex; align-items: center; gap: 10px; }
 .style-row > span { flex: 0 0 85px; font-size: 13px; color: var(--muted); }

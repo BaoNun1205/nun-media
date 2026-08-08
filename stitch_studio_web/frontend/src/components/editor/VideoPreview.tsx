@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Camera, Expand, Maximize2, Pause, Play, RotateCcw, SkipBack, SkipForward, Volume2 } from 'lucide-react';
 import { API_BASE } from '../../services/api';
 import { formatClock } from '../../lib/studio';
+import { textStyleToCss } from '../../utils/textStyleToCss';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleArea } from '../../types/studio';
+import type { TextStyle } from '../../types/textStyle';
 
 type DragMode = 'draw' | 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type FrameFormat = 'original' | '16:9' | '9:16' | '1:1' | '4:5';
@@ -88,6 +90,12 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const posterUrl = activeVideoId ? `${API_BASE}/videos/${activeVideoId}/thumbnail` : '';
   const previewTime = editor.activeTimelineItem ? editor.activeTimelineLocalTime : editor.playhead;
   const activeSubtitle = editor.srt.segments.find((segment) => previewTime >= segment.start && previewTime <= segment.end);
+  const activeTextItems = editor.timelineItems.filter((item) =>
+    item.kind === 'text'
+    && itemEnabled(item)
+    && editor.playhead >= item.start
+    && editor.playhead < item.start + Math.max(0.05, item.duration)
+  );
   const editingOcrArea = editor.activeTool === 'subtitles' && editor.subtitleSource === 'hardsub' && editor.ocrAreaMode === 'custom';
   const editableArea = editingOcrArea ? editor.ocrArea : editor.area;
   const setEditableArea = editingOcrArea ? editor.setOcrArea : editor.setArea;
@@ -524,20 +532,25 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
         </div>}
         <div ref={horizontalGuideRef} className="subtitle-center-guide horizontal" aria-hidden="true" />
         <div ref={verticalGuideRef} className="subtitle-center-guide vertical" aria-hidden="true" />
-        {activeSubtitle && <button ref={liveSubtitleRef} className="live-subtitle" style={{
+        {activeSubtitle && <button ref={liveSubtitleRef} className={`live-subtitle effect-${editor.style.staticEffect || 'none'}`} data-text={editor.edits[activeSubtitle.index] ?? activeSubtitle.text} style={{
           ...subtitlePosition,
-          color: editor.style.fontColor,
-          background: editor.style.background ? '#0009' : 'transparent',
-          fontFamily: editor.style.fontFamily,
-          fontSize: `${Math.max(12, editor.style.fontSize * .65)}px`,
-          fontWeight: editor.style.fontWeight || 'normal',
-          fontStyle: editor.style.fontStyle || 'normal',
-          textDecoration: editor.style.textDecoration || 'none',
-          textTransform: editor.style.textTransform || 'none',
-          letterSpacing: editor.style.letterSpacing ? `${editor.style.letterSpacing}px` : 'normal',
-          textAlign: editor.style.textAlign || 'center',
-          textShadow: `0 0 ${editor.style.outline}px ${editor.style.outlineColor}`
+          ...textStyleToCss({ ...editor.style, fontSize: Math.max(12, (editor.style.fontSize || 24) * .65) }),
         }} title="Drag to reposition subtitles" onPointerDown={beginSubtitleMove} onClick={(event) => { if (suppressSubtitleClickRef.current) { suppressSubtitleClickRef.current = false; return; } event.stopPropagation(); editor.setSelection({ type: 'subtitle', index: activeSubtitle.index }); }}>{editor.edits[activeSubtitle.index] ?? activeSubtitle.text}</button>}
+        {activeTextItems.map((item, index) => {
+          const itemStyle = (typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle : {}) as TextStyle;
+          const text = String(item.params?.text || item.name || 'Text');
+          return <button
+            key={item.id}
+            className={`live-text-item effect-${itemStyle.staticEffect || 'none'}`}
+            data-text={text}
+            style={{
+              left: `${50 + index * 2}%`,
+              top: `${45 + index * 8}%`,
+              ...textStyleToCss({ ...itemStyle, fontSize: Math.max(12, (itemStyle.fontSize || 24) * .7) }),
+            }}
+            onClick={(event) => { event.stopPropagation(); editor.setSelection({ type: 'timeline-items', keys: [item.id], track: item.track }); }}
+          >{text}</button>;
+        })}
         {editor.editArea && <button className="reset-area" onClick={(event) => {
           event.stopPropagation();
           const nextArea = { xmin: .04, xmax: .96, ymin: .60, ymax: .98 };

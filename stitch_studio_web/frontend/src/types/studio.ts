@@ -1,4 +1,5 @@
 import type { CoreTimelineScene } from '../editor-core/types';
+import type { TextStyle } from './textStyle';
 
 export type ViewKey = 'projects' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
 export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'export';
@@ -20,7 +21,7 @@ export interface SubtitleArea {
   ymax: number;
 }
 
-export interface SubtitleStyle {
+export interface SubtitleStyle extends TextStyle {
   fontFamily: string;
   fontSize: number;
   fontColor: string;

@@ -2909,23 +2909,52 @@ def _write_positioned_ass(
     ymax: int,
     style: dict[str, Any],
 ) -> None:
-    font_name = str(style.get("fontFamily") or "Arial").replace(",", " ").strip() or "Arial"
+    def style_value(*keys: str, default: Any = None) -> Any:
+        for key in keys:
+            value = style.get(key)
+            if value is not None and value != "":
+                return value
+        return default
+
+    def style_float(*keys: str, default: float = 0.0, minimum: float | None = None, maximum: float | None = None) -> float:
+        try:
+            value = float(style_value(*keys, default=default))
+        except (TypeError, ValueError):
+            value = default
+        if minimum is not None:
+            value = max(minimum, value)
+        if maximum is not None:
+            value = min(maximum, value)
+        return value
+
+    font_name = str(style_value("fontFamily", default="Arial")).replace(",", " ").strip() or "Arial"
     scale = max(0.5, height / 720)
-    font_size = max(12, int(float(style.get("fontSize") or 24) * scale))
-    outline = max(0, int(float(style.get("outline") or 2) * scale))
-    background = bool(style.get("background"))
-    primary = _ass_color(str(style.get("fontColor") or "#FFFFFF"))
-    outline_color = _ass_color(str(style.get("outlineColor") or "#000000"))
+    font_size = max(12, int(style_float("fontSize", default=24, minimum=1, maximum=120) * scale))
+    outline = max(0, style_float("outlineWidth", "outline", default=2, minimum=0, maximum=24) * scale)
+    shadow = max(0, style_float("shadowOffsetX", "shadowOffsetY", default=0, minimum=0, maximum=32) * scale)
+    background = bool(style_value("backgroundEnabled", "background", default=False))
+    primary_hex = str(style_value("fontColor", "color", default="#FFFFFF"))
+    outline_hex = str(style_value("outlineColor", default="#000000"))
+    shadow_hex = str(style_value("shadowColor", default="#000000"))
+    primary = _ass_color(primary_hex)
+    outline_color = _ass_color(outline_hex)
+    shadow_color = _ass_color(shadow_hex, alpha=70 if shadow else 0)
     
-    font_weight = 1 if style.get("fontWeight") == "bold" else 0
-    font_style = 1 if style.get("fontStyle") == "italic" else 0
-    text_decoration = 1 if style.get("textDecoration") == "underline" else 0
-    spacing = int(style.get("letterSpacing") or 0)
+    weight = style_value("fontWeight", default="normal")
+    try:
+        font_weight = -1 if float(weight) >= 700 else 0
+    except (TypeError, ValueError):
+        font_weight = -1 if str(weight).lower() == "bold" else 0
+    font_style = 1 if str(style_value("fontStyle", default="normal")).lower() == "italic" else 0
+    text_decoration = 1 if style_value("textDecoration", default="none") == "underline" else 0
+    spacing = int(style_float("letterSpacing", default=0, minimum=-20, maximum=80))
     
     border_style = 3 if background else 1
-    back_color = "&H78000000" if background else "&H00000000"
+    bg_opacity = style_float("backgroundOpacity", default=.55, minimum=0, maximum=1)
+    bg_alpha = int(round((1 - bg_opacity) * 255))
+    back_color = _ass_color(str(style_value("backgroundColor", default="#000000")), alpha=bg_alpha) if background else shadow_color
     
-    text_align = style.get("textAlign") or "center"
+    text_align = style_value("textAlign", default="center")
     if text_align == "left":
         alignment = 1
         x = xmin + max(8, int(width * 0.02))
@@ -2938,6 +2967,34 @@ def _write_positioned_ass(
 
     # Anchors the bottom of the subtitle block
     y = max(ymin + 8, ymax - max(12, int((ymax - ymin) * 0.07)))
+    glow_enabled = bool(style_value("glowEnabled", default=False))
+    glow_hex = str(style_value("glowColor", default=shadow_hex))
+    glow_blur = style_float("glowBlur", default=0, minimum=0, maximum=48) * scale
+    glow_strength = style_float("glowStrength", default=1, minimum=0, maximum=3)
+    static_effect = str(style_value("staticEffect", default="none"))
+    secondary_hex = str(style_value("secondaryOutlineColor", default=shadow_hex))
+    secondary_width = style_float("secondaryOutlineWidth", default=0, minimum=0, maximum=24) * scale
+
+    def style_line(name: str, *, font_color: str = primary, border_color: str = outline_color, back: str = back_color, border: float = outline, shadow_depth: float = shadow, blur: float = 0.0, border_style_override: int | None = None) -> str:
+        return (
+            f"Style: {name},{font_name},{font_size},{font_color},&H00000000,{border_color},{back},"
+            f"{font_weight},{font_style},{text_decoration},0,100,100,{spacing},0,"
+            f"{border_style_override or border_style},{border:.2f},{shadow_depth:.2f},{alignment},0,0,0,1"
+        )
+
+    style_lines = [
+        style_line("Subtitle"),
+    ]
+    if secondary_width > 0:
+        style_lines.insert(0, style_line("SecondaryOutline", font_color=primary, border_color=_ass_color(secondary_hex), border=secondary_width, shadow_depth=0, border_style_override=1))
+    if glow_enabled and glow_blur > 0:
+        style_lines.insert(0, style_line("GlowOuter", font_color=_ass_color(glow_hex, alpha=115), border_color=_ass_color(glow_hex, alpha=85), border=max(outline + glow_blur * .65, glow_blur * .75), shadow_depth=0, border_style_override=1))
+        style_lines.insert(1, style_line("GlowInner", font_color=_ass_color(glow_hex, alpha=80), border_color=_ass_color(glow_hex, alpha=55), border=max(outline + glow_blur * .28, 1), shadow_depth=0, border_style_override=1))
+    if static_effect == "glitch":
+        style_lines.insert(0, style_line("GlitchCyan", font_color=_ass_color("#00F5FF", alpha=45), border_color=_ass_color("#001D1F", alpha=80), border=max(1, outline * .55), shadow_depth=0, border_style_override=1))
+        style_lines.insert(1, style_line("GlitchMagenta", font_color=_ass_color(secondary_hex or "#FF2F7D", alpha=45), border_color=_ass_color("#21000C", alpha=80), border=max(1, outline * .55), shadow_depth=0, border_style_override=1))
+    if static_effect == "duotone":
+        style_lines.insert(0, style_line("DuotoneBack", font_color=_ass_color(secondary_hex, alpha=0), border_color=_ass_color(secondary_hex, alpha=0), border=max(secondary_width, outline), shadow_depth=0, border_style_override=1))
     
     header = "\n".join(
         [
@@ -2950,14 +3007,14 @@ def _write_positioned_ass(
             "",
             "[V4+ Styles]",
             "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-            f"Style: Subtitle,{font_name},{font_size},{primary},&H00000000,{outline_color},{back_color},{font_weight},{font_style},{text_decoration},0,100,100,{spacing},0,{border_style},{outline},0,{alignment},0,0,0,1",
+            *style_lines,
             "",
             "[Events]",
             "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
         ]
     )
     events = []
-    text_case = style.get("textTransform") or "none"
+    text_case = style_value("textTransform", default="none")
     
     for segment in read_srt(srt_path):
         text = segment.text
@@ -2969,9 +3026,21 @@ def _write_positioned_ass(
             text = " ".join(w.capitalize() for w in text.split(" "))
             
         text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        events.append(
-            f"Dialogue: 0,{_ass_timestamp(segment.start)},{_ass_timestamp(segment.end)},Subtitle,,0,0,0,,{{\\pos({x},{y})}}{text}"
-        )
+        start = _ass_timestamp(segment.start)
+        end = _ass_timestamp(segment.end)
+        if glow_enabled and glow_blur > 0:
+            events.append(f"Dialogue: 0,{start},{end},GlowOuter,,0,0,0,,{{\\pos({x},{y})\\blur{max(1, glow_blur):.1f}}}{text}")
+            events.append(f"Dialogue: 1,{start},{end},GlowInner,,0,0,0,,{{\\pos({x},{y})\\blur{max(.5, glow_blur * .45):.1f}}}{text}")
+        if static_effect == "glitch":
+            offset = max(2, int(3 * scale))
+            events.append(f"Dialogue: 0,{start},{end},GlitchCyan,,0,0,0,,{{\\pos({x - offset},{y})}}{text}")
+            events.append(f"Dialogue: 1,{start},{end},GlitchMagenta,,0,0,0,,{{\\pos({x + offset},{y + max(1, offset // 2)})}}{text}")
+        if static_effect == "duotone":
+            offset = max(2, int(4 * scale))
+            events.append(f"Dialogue: 0,{start},{end},DuotoneBack,,0,0,0,,{{\\pos({x + offset},{y + max(1, offset // 2)})}}{text}")
+        if secondary_width > 0:
+            events.append(f"Dialogue: 2,{start},{end},SecondaryOutline,,0,0,0,,{{\\pos({x},{y})}}{text}")
+        events.append(f"Dialogue: 3,{start},{end},Subtitle,,0,0,0,,{{\\pos({x},{y})}}{text}")
     ass_path.write_text(f"{header}\n" + "\n".join(events) + "\n", encoding="utf-8-sig")
 
 
@@ -2983,11 +3052,11 @@ def _ass_timestamp(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{seconds_part:02d}.{centiseconds:02d}"
 
 
-def _ass_color(value: str) -> str:
+def _ass_color(value: str, alpha: int = 0) -> str:
     match = re.fullmatch(r"#?([0-9a-fA-F]{6})", value.strip())
     rgb = match.group(1) if match else "FFFFFF"
     red, green, blue = rgb[0:2], rgb[2:4], rgb[4:6]
-    return f"&H00{blue}{green}{red}"
+    return f"&H{max(0, min(255, int(alpha))):02X}{blue}{green}{red}"
 
 
 def _boxblur_radii(width: int, height: int) -> tuple[int, int]:

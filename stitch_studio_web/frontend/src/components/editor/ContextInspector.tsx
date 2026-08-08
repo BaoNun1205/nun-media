@@ -1,7 +1,9 @@
 import { Copy, Download, FolderOpen, Gauge, Info, Languages, MoveHorizontal, Play, RotateCcw, Save, SkipBack, SkipForward, Trash2, Volume2, VolumeX, WandSparkles } from 'lucide-react';
 import { formatClock, formatDuration, formatSize } from '../../lib/studio';
 import { API_BASE, copyText, studioApi } from '../../services/api';
+import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import type { EditorController } from '../../hooks/useEditorController';
+import type { SubtitleStyle } from '../../types/studio';
 
 export function ContextInspector({ editor }: { editor: EditorController }) {
   return <aside className="context-inspector">
@@ -37,9 +39,11 @@ function MultiSelectionInspector({ editor }: { editor: EditorController }) {
   const selection = editor.selection.type === 'timeline-items' ? editor.selection : { keys: [], track: undefined };
   const subtitleKeys = selection.keys.filter((key) => key.startsWith('subtitle:') || key.startsWith('subtitle-translated:'));
   const subtitles = new Set(subtitleKeys.map((key) => Number(key.split(':')[1])).filter(Number.isFinite)).size;
+  const hasSrtClip = selection.keys.some((key) => editor.timelineItems.some((item) => item.id === key && item.kind === 'srt'));
+  const hasTextClip = editor.selectedTextItems.length > 0;
   const voices = selection.keys.filter((key) => key.startsWith('voice:')).length;
   const heading = selection.track ? selection.track + ' selected' : selection.keys.length + ' items selected';
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{subtitles > 0 && <SubtitleStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{hasTextClip && <Field label="Text clips" value={editor.selectedTextItems.length} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{(subtitles > 0 || hasSrtClip || selection.track === 'S1') && <SubtitleStyleControls editor={editor} />}{hasTextClip && <TimelineTextStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -91,7 +95,7 @@ function VoiceInspector({ editor }: { editor: EditorController }) {
 }
 
 function TrackInspector({ editor }: { editor: EditorController }) {
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button><button onClick={() => editor.openTool('insert')}>Use for subtitle insertion</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><SubtitleStyleControls editor={editor} /><div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button><button onClick={() => editor.openTool('insert')}>Use for subtitle insertion</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
 }
 
 function EffectInspector({ editor }: { editor: EditorController }) {
@@ -116,9 +120,42 @@ function AssetInspector({ editor }: { editor: EditorController }) {
 }
 
 function SubtitleStyleControls({ editor }: { editor: EditorController }) {
-  const { style, updateSubtitleStyle } = editor;
+  return <TextStyleControls
+    title="Style (Global)"
+    style={editor.style}
+    onUpdate={editor.updateSubtitleStyle}
+    onPreset={editor.applySubtitleStylePreset}
+    onReset={editor.resetSubtitleStylePreset}
+  />;
+}
+
+function TimelineTextStyleControls({ editor }: { editor: EditorController }) {
+  return <TextStyleControls
+    title="Text Style"
+    style={editor.selectedTextStyle}
+    onUpdate={editor.updateTimelineTextStyle}
+    onPreset={editor.applyTimelineTextStylePreset}
+    onReset={editor.resetTimelineTextStylePreset}
+  />;
+}
+
+function TextStyleControls({
+  title,
+  style,
+  onUpdate,
+  onPreset,
+  onReset,
+}: {
+  title: string;
+  style: SubtitleStyle;
+  onUpdate: (updates: Partial<SubtitleStyle>) => void;
+  onPreset: (presetId: string) => void;
+  onReset: () => void;
+}) {
+  const updateSubtitleStyle = onUpdate;
   return (
-    <Section title="Style (Global)">
+    <Section title={title}>
+      <TextStylePresetGrid activePresetId={style.presetId} onSelect={onPreset} onReset={onReset} />
       <div className="style-controls">
         <div className="style-row">
           <span>Phông chữ</span>
@@ -153,7 +190,16 @@ function SubtitleStyleControls({ editor }: { editor: EditorController }) {
         </div>
         <div className="style-row">
           <span>Màu sắc</span>
-          <input type="color" value={style.fontColor || '#ffffff'} onChange={(e) => updateSubtitleStyle({ fontColor: e.target.value })} />
+          <input type="color" value={style.fontColor || style.color || '#ffffff'} onChange={(e) => updateSubtitleStyle({ fontColor: e.target.value, color: e.target.value })} />
+        </div>
+        <div className="style-row">
+          <span>Outline</span>
+          <input type="color" value={style.outlineColor || '#000000'} onChange={(e) => updateSubtitleStyle({ outlineColor: e.target.value })} />
+        </div>
+        <div className="style-row dual">
+          <span>Outline px</span>
+          <input type="range" min="0" max="12" step=".5" value={style.outline ?? style.outlineWidth ?? 0} onChange={(e) => updateSubtitleStyle({ outline: Number(e.target.value), outlineWidth: Number(e.target.value) })} />
+          <input type="number" min="0" max="12" step=".5" value={style.outline ?? style.outlineWidth ?? 0} onChange={(e) => updateSubtitleStyle({ outline: Number(e.target.value), outlineWidth: Number(e.target.value) })} className="number-box" />
         </div>
         <div className="style-row dual">
           <span>Ký tự</span>
@@ -169,6 +215,23 @@ function SubtitleStyleControls({ editor }: { editor: EditorController }) {
             <button className={style.textAlign === 'right' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'right' })}>⫸</button>
           </div>
         </div>
+        <label className="check-line"><input type="checkbox" checked={Boolean(style.backgroundEnabled ?? style.background)} onChange={(event) => updateSubtitleStyle({ background: event.target.checked, backgroundEnabled: event.target.checked })} /> Background</label>
+        {(style.backgroundEnabled ?? style.background) && <div className="style-row dual">
+          <span>Fill</span>
+          <input type="color" value={style.backgroundColor || '#000000'} onChange={(e) => updateSubtitleStyle({ backgroundColor: e.target.value })} />
+          <input type="number" min="0" max="1" step=".05" value={style.backgroundOpacity ?? .55} onChange={(e) => updateSubtitleStyle({ backgroundOpacity: Number(e.target.value) })} className="number-box" />
+        </div>}
+        <div className="style-row dual">
+          <span>Shadow</span>
+          <input type="color" value={style.shadowColor || '#000000'} onChange={(e) => updateSubtitleStyle({ shadowColor: e.target.value })} />
+          <input type="number" min="0" max="24" step=".5" value={style.shadowBlur || 0} onChange={(e) => updateSubtitleStyle({ shadowBlur: Number(e.target.value) })} className="number-box" />
+        </div>
+        <label className="check-line"><input type="checkbox" checked={Boolean(style.glowEnabled)} onChange={(event) => updateSubtitleStyle({ glowEnabled: event.target.checked })} /> Glow</label>
+        {style.glowEnabled && <div className="style-row dual">
+          <span>Glow</span>
+          <input type="color" value={style.glowColor || '#ffffff'} onChange={(e) => updateSubtitleStyle({ glowColor: e.target.value })} />
+          <input type="number" min="0" max="32" step=".5" value={style.glowBlur || 0} onChange={(e) => updateSubtitleStyle({ glowBlur: Number(e.target.value) })} className="number-box" />
+        </div>}
       </div>
     </Section>
   );

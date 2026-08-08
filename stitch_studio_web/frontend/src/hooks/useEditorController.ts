@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_AREA, TTS_FIT, isTranslatedAsset, serializeSrt } from '../lib/studio';
+import { DEFAULT_TEXT_STYLE, textStylePresetById } from '../config/textStylePresets';
 import { sceneFromProject, timelineStateFromSceneOrProject, timelineStateToScene } from '../editor-core/adapters';
 import {
   addTrack as addTrackToTimelineState,
@@ -24,9 +25,10 @@ import {
 import { API_BASE, request, studioApi } from '../services/api';
 import type { CoreTimelineScene } from '../editor-core/types';
 import type { AudioMode, InspectorSelection, Job, Project, ProjectAsset, SrtDocument, SubtitleArea, SubtitleSegment, SubtitleStyle, TimelineIssue, TimelineItem, TimelineState, TimelineTrackKind, ToolKey, VoiceOption, VoiceSegment } from '../types/studio';
+import type { TextStyle } from '../types/textStyle';
 
 const EMPTY_SRT: SrtDocument = { asset: null, content: '', segments: [] };
-const DEFAULT_STYLE: SubtitleStyle = { fontFamily: 'Arial', fontSize: 24, fontColor: '#ffffff', outlineColor: '#000000', outline: 2, background: false };
+const DEFAULT_STYLE: SubtitleStyle = DEFAULT_TEXT_STYLE as SubtitleStyle;
 const MAX_DRAFT_HISTORY = 60;
 
 type DraftSnapshot = { srt: SrtDocument; edits: Record<number, string> };
@@ -82,6 +84,11 @@ function projectAssetDurationSeconds(asset: ProjectAsset) {
   return metadataDurationSeconds(asset.metadata)
     || metadataDurationSeconds(asset.asset?.metadata)
     || ((asset.video?.durationMs || 0) / 1000);
+}
+
+function resolvedPresetStyle(presetId: string): SubtitleStyle | null {
+  const preset = textStylePresetById(presetId);
+  return preset ? { ...DEFAULT_STYLE, ...preset.style, presetId: preset.id, presetModified: false } as SubtitleStyle : null;
 }
 
 export interface EditorControllerOptions {
@@ -191,6 +198,16 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const currentSegment = selection.type === 'subtitle' ? srt.segments.find((item) => item.index === selection.index) : undefined;
   const currentVoice = selection.type === 'voice' ? voiceSegments.find((item) => item.index === selection.index) : undefined;
   const voiceByIndex = useMemo(() => Object.fromEntries(voiceSegments.map((item) => [item.index, item])), [voiceSegments]);
+  const selectedTextItems = useMemo(() => {
+    if (selection.type !== 'timeline-items') return [];
+    const selected = new Set(selection.keys);
+    return timelineItems.filter((item) => item.kind === 'text' && selected.has(item.id));
+  }, [selection, timelineItems]);
+  const selectedTextStyle = useMemo(() => {
+    const item = selectedTextItems[0];
+    const textStyle = item?.params?.textStyle;
+    return { ...DEFAULT_STYLE, ...(typeof textStyle === 'object' && textStyle ? textStyle as TextStyle : {}) } as SubtitleStyle;
+  }, [selectedTextItems]);
   const timelineDuration = endOfTimeline(timelineItems);
   const hasWorkspaceTimeline = Boolean(project.workspaceId);
   const timelineTrackById = useMemo(() => new Map(timelineState.tracks.map((track, index) => [track.id, { ...track, index }])), [timelineState.tracks]);
@@ -1018,8 +1035,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
   }
 
-  async function updateSubtitleStyle(updates: Partial<SubtitleStyle>) {
-    const nextStyle = { ...style, ...updates };
+  async function saveSubtitleStyle(nextStyle: SubtitleStyle, messageText?: string) {
     setStyle(nextStyle);
     try {
       const result = await studioApi.saveSubtitleArea(
@@ -1028,9 +1044,63 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
         { style: nextStyle }
       );
       if (result.subtitleStyle) setStyle(result.subtitleStyle);
+      if (messageText) setMessage(messageText);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save subtitle style');
     }
+  }
+
+  async function updateSubtitleStyle(updates: Partial<SubtitleStyle>) {
+    const presetChanged = Object.prototype.hasOwnProperty.call(updates, 'presetId');
+    const nextStyle = {
+      ...style,
+      ...updates,
+      presetModified: presetChanged ? updates.presetModified : (style.presetId ? true : style.presetModified),
+    } as SubtitleStyle;
+    await saveSubtitleStyle(nextStyle);
+  }
+
+  async function applySubtitleStylePreset(presetId: string) {
+    const nextStyle = resolvedPresetStyle(presetId);
+    if (!nextStyle) return;
+    await saveSubtitleStyle(nextStyle, `Applied ${textStylePresetById(presetId)?.name || 'text preset'} to subtitles.`);
+  }
+
+  async function resetSubtitleStylePreset() {
+    await saveSubtitleStyle({ ...DEFAULT_STYLE } as SubtitleStyle, 'Subtitle style reset.');
+  }
+
+  async function updateTimelineTextStyle(updates: Partial<TextStyle>) {
+    if (!project.workspaceId || !selectedTextItems.length) return;
+    const selected = new Set(selectedTextItems.map((item) => item.id));
+    const previous = cloneTimeline(timelineItems);
+    const next = timelineItems.map((item) => {
+      if (!selected.has(item.id)) return item;
+      const existing = typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle as TextStyle : {};
+      return {
+        ...item,
+        params: {
+          ...(item.params || {}),
+          textStyle: {
+            ...DEFAULT_STYLE,
+            ...existing,
+            ...updates,
+            presetModified: Object.prototype.hasOwnProperty.call(updates, 'presetId') ? updates.presetModified : (existing.presetId ? true : existing.presetModified),
+          },
+        },
+      };
+    });
+    await commitTimelineItems(next, 'Updated text style.', previous);
+  }
+
+  async function applyTimelineTextStylePreset(presetId: string) {
+    const nextStyle = resolvedPresetStyle(presetId);
+    if (!nextStyle) return;
+    await updateTimelineTextStyle(nextStyle);
+  }
+
+  async function resetTimelineTextStylePreset() {
+    await updateTimelineTextStyle({ ...DEFAULT_STYLE, presetId: undefined, presetModified: false });
   }
   function moveSelectedSubtitles(deltaSeconds: number) {
     moveSubtitleSegments(selectedSubtitleIndexes(), deltaSeconds);
@@ -1291,12 +1361,13 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
   return {
     project, projects, isEmptyWorkspace, jobs: videoJobs, activeJobs, srt, sourceSrt, translatedSrt, edits, setEdits: updateEdits, dirty, voiceSegments, voiceByIndex, timelineIssues, latestVoiceAsset, activeBlurEffect,
+    selectedTextItems,
     selection, setSelection, currentSegment, currentVoice, activeTool, openTool, assetTab, setAssetTab,
     bottomView, setBottomView, playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
     previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob,
-    area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
+    area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
     translationDevice, setTranslationDevice, removeMethod, setRemoveMethod, removeMode, setRemoveMode,
