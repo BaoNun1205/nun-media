@@ -86,9 +86,23 @@ function projectAssetDurationSeconds(asset: ProjectAsset) {
     || ((asset.video?.durationMs || 0) / 1000);
 }
 
-function resolvedPresetStyle(presetId: string): SubtitleStyle | null {
+const BASE_TEXT_PROPERTIES: (keyof TextStyle)[] = [
+  'fontFamily', 'fontSize', 'textAlign', 'textTransform', 
+  'lineHeight', 'letterSpacing', 'fontStyle', 'textDecoration'
+];
+
+function resolvedPresetStyle(presetId: string | undefined, currentStyle: Partial<TextStyle>): SubtitleStyle | null {
+  const baseProperties: Partial<TextStyle> = {};
+  for (const prop of BASE_TEXT_PROPERTIES) {
+    if (currentStyle[prop] !== undefined) {
+      (baseProperties as any)[prop] = currentStyle[prop];
+    }
+  }
+  if (!presetId) {
+    return { ...DEFAULT_STYLE, ...baseProperties, presetId: undefined, presetModified: false } as SubtitleStyle;
+  }
   const preset = textStylePresetById(presetId);
-  return preset ? { ...DEFAULT_STYLE, ...preset.style, presetId: preset.id, presetModified: false } as SubtitleStyle : null;
+  return preset ? { ...DEFAULT_STYLE, ...preset.style, ...baseProperties, presetId: preset.id, presetModified: false } as SubtitleStyle : null;
 }
 
 export interface EditorControllerOptions {
@@ -1107,13 +1121,16 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }
 
   async function applySubtitleStylePreset(presetId: string) {
-    const nextStyle = resolvedPresetStyle(presetId);
+    const nextStyle = resolvedPresetStyle(presetId, style);
     if (!nextStyle) return;
     await saveSubtitleStyle(nextStyle, `Applied ${textStylePresetById(presetId)?.name || 'text preset'} to subtitles.`);
   }
 
   async function resetSubtitleStylePreset() {
-    await saveSubtitleStyle({ ...DEFAULT_STYLE } as SubtitleStyle, 'Subtitle style reset.');
+    const nextStyle = resolvedPresetStyle(undefined, style);
+    if (nextStyle) {
+      await saveSubtitleStyle(nextStyle, 'Subtitle style reset.');
+    }
   }
 
   async function updateTimelineTextStyle(updates: Partial<TextStyle>) {
@@ -1140,13 +1157,51 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }
 
   async function applyTimelineTextStylePreset(presetId: string) {
-    const nextStyle = resolvedPresetStyle(presetId);
-    if (!nextStyle) return;
-    await updateTimelineTextStyle(nextStyle);
+    if (!project.workspaceId || !selectedTextItems.length) return;
+    const selected = new Set(selectedTextItems.map((item) => item.id));
+    const previous = cloneTimeline(timelineItems);
+    let changed = false;
+    const next = timelineItems.map((item) => {
+      if (!selected.has(item.id)) return item;
+      const existing = typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle as TextStyle : {};
+      const nextStyle = resolvedPresetStyle(presetId, existing);
+      if (!nextStyle) return item;
+      changed = true;
+      return {
+        ...item,
+        params: {
+          ...(item.params || {}),
+          textStyle: nextStyle,
+        },
+      };
+    });
+    if (changed) {
+      await commitTimelineItems(next, `Applied ${textStylePresetById(presetId)?.name || 'text preset'}`, previous);
+    }
   }
 
   async function resetTimelineTextStylePreset() {
-    await updateTimelineTextStyle({ ...DEFAULT_STYLE, presetId: undefined, presetModified: false });
+    if (!project.workspaceId || !selectedTextItems.length) return;
+    const selected = new Set(selectedTextItems.map((item) => item.id));
+    const previous = cloneTimeline(timelineItems);
+    let changed = false;
+    const next = timelineItems.map((item) => {
+      if (!selected.has(item.id)) return item;
+      const existing = typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle as TextStyle : {};
+      const nextStyle = resolvedPresetStyle(undefined, existing);
+      if (!nextStyle) return item;
+      changed = true;
+      return {
+        ...item,
+        params: {
+          ...(item.params || {}),
+          textStyle: nextStyle,
+        },
+      };
+    });
+    if (changed) {
+      await commitTimelineItems(next, 'Reset text style', previous);
+    }
   }
   function moveSelectedSubtitles(deltaSeconds: number) {
     moveSubtitleSegments(selectedSubtitleIndexes(), deltaSeconds);

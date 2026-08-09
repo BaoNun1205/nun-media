@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { DEFAULT_TEXT_STYLE } from '../config/textStylePresets';
+import { fontStack } from '../config/fontRegistry';
 import type { TextStyle } from '../types/textStyle';
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -63,7 +64,7 @@ export function textStyleToCss(style?: TextStyle, options: { previewScale?: numb
   return {
     color: resolved.fontColor,
     opacity: resolved.opacity ?? 1,
-    fontFamily: resolved.fontFamily || 'Arial, sans-serif',
+    fontFamily: fontStack(resolved.fontFamily),
     fontSize: resolved.fontSize ? `${resolved.fontSize * scale}px` : undefined,
     fontWeight: resolved.fontWeight || 800,
     fontStyle: resolved.fontStyle || 'normal',

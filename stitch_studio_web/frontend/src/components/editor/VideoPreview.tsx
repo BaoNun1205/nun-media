@@ -333,7 +333,13 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   function point(event: React.PointerEvent) {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+    const visualScale = Math.max(0.01, editor.videoScale || 1);
+    const visualX = (event.clientX - rect.left) / rect.width;
+    const visualY = (event.clientY - rect.top) / rect.height;
+    return {
+      x: Math.max(0, Math.min(1, .5 + (visualX - .5) / visualScale)),
+      y: Math.max(0, Math.min(1, .5 + (visualY - .5) / visualScale)),
+    };
   }
   function begin(event: React.PointerEvent) {
     if (!editor.editArea) return;
@@ -369,10 +375,11 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   function moveSubtitleNative(event: PointerEvent) {
     const start = subtitleMoveRef.current;
     if (!start) return;
+    const visualScale = Math.max(0.01, editor.videoScale || 1);
     const events = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
     const latest = events.at(-1) || event;
-    const deltaX = (latest.clientX - start.clientX) / Math.max(1, start.width);
-    const deltaY = (latest.clientY - start.clientY) / Math.max(1, start.height);
+    const deltaX = (latest.clientX - start.clientX) / Math.max(1, start.width * visualScale);
+    const deltaY = (latest.clientY - start.clientY) / Math.max(1, start.height * visualScale);
     const width = start.area.xmax - start.area.xmin;
     const height = start.area.ymax - start.area.ymin;
     let xmin = start.area.xmin + deltaX;
@@ -448,6 +455,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     height: `${(editor.activeBlurEffect.area.ymax - editor.activeBlurEffect.area.ymin) * 100}%`,
   } : undefined;
   const subtitlePosition = { left: `${editor.area.xmin * 100}%`, top: `${((editor.area.ymin + editor.area.ymax) / 2) * 100}%`, width: `${(editor.area.xmax - editor.area.xmin) * 100}%` };
+  const sourcePixelHeight = videoSize.height > 120 ? videoSize.height : 1080;
+  const previewTextScale = Math.max(0.2, Math.min(4, frameHeight / sourcePixelHeight));
 
   return <section className="preview-stage">
     <div className="preview-toolbar">
@@ -475,82 +484,84 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     </div>
     <div className="preview-viewport" ref={viewportRef}>
       <div className="video-canvas" style={{ width: frameWidth, height: frameHeight, aspectRatio: frameAspect }} ref={canvasRef} onPointerDown={begin} onPointerMove={move} onPointerUp={() => { const wasEditingArea = Boolean(startRef.current && editor.editArea && !editingOcrArea); startRef.current = null; if (wasEditingArea) void editor.saveSubtitleArea(editableAreaRef.current); }} onPointerCancel={() => { startRef.current = null; }}>
-        {activeImageUrl ? <img
-          ref={imageRef}
-          className="preview-image"
-          style={{ objectFit: editor.fitMode, transform: `scale(${editor.videoScale})`, transformOrigin: 'center' }}
-          src={activeImageUrl}
-          alt={editor.activeTimelineItem?.name || 'Timeline image'}
-          onLoad={(event) => {
-            const image = event.currentTarget;
-            setVideoSize({ width: image.naturalWidth || 16, height: image.naturalHeight || 9 });
-            setLoading(false); setError('');
-          }}
-          onError={() => { setLoading(false); setError('This image cannot be loaded in the preview.'); }}
-        /> : sourceUrl ? <video
-          key={`${activeVideoId || editor.project.id}-${editor.previewSource}-${editor.effectivePreviewAudioMode}-${sourceAudioMuted ? 'muted-source' : 'source'}`}
-          ref={videoRef}
-          style={{ objectFit: editor.fitMode, transform: `scale(${editor.videoScale})`, transformOrigin: 'center' }}
-          src={sourceUrl}
-          poster={posterUrl}
-          preload="auto"
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget;
-            video.currentTime = Math.min(previewTime * editor.videoSpeed, Number.isFinite(video.duration) ? video.duration : editor.duration * editor.videoSpeed);
-            if (video.videoWidth && video.videoHeight) setVideoSize({ width: video.videoWidth, height: video.videoHeight });
-            applyDbGain(video, editor.videoVolumeDb, editor.previewMuted || sourceAudioMuted); setRate(video, editor.videoSpeed); syncVoice(video); syncSourceAudio(video);
-          }}
-          onLoadedData={() => { setLoading(false); setError(''); }}
-          onTimeUpdate={(event) => {
-            const localTime = event.currentTarget.currentTime / editor.videoSpeed;
-            const timelineTime = editor.activeTimelineItem ? editor.activeTimelineItem.start + localTime - (editor.activeTimelineItem.sourceStart || 0) : localTime;
-            syncSourceAudio(event.currentTarget);
-            if (editor.activeTimelineItem && localTime >= editor.activeTimelineItem.duration) {
-              editor.setPlayhead(Math.min(editor.duration, editor.activeTimelineItem.start + editor.activeTimelineItem.duration + 0.001));
-              return;
-            }
-            editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
-          }}
-          onPlay={(event) => { setPlaying(true); audioContextRef.current?.resume().catch(() => undefined); syncVoice(event.currentTarget, true); syncSourceAudio(event.currentTarget, true); }}
-          onPause={() => { setPlaying(false); voiceRef.current?.pause(); sourceAudioRef.current?.pause(); }}
-          onSeeking={(event) => { syncVoice(event.currentTarget); syncSourceAudio(event.currentTarget); }}
-          onWaiting={() => setLoading(true)}
-          onCanPlay={() => { setLoading(false); setError(''); }}
-          onError={() => {
-            if (editor.previewSource === 'preview') editor.setPreviewSource('media');
-            else { setLoading(false); setError('This media cannot be played in the browser. Try the proxy or reveal the source file.'); }
-          }}
-        /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
-        {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
+        <div className="preview-media-layer" style={{ transform: `scale(${editor.videoScale})` }}>
+          {activeImageUrl ? <img
+            ref={imageRef}
+            className="preview-image"
+            style={{ objectFit: editor.fitMode }}
+            src={activeImageUrl}
+            alt={editor.activeTimelineItem?.name || 'Timeline image'}
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              setVideoSize({ width: image.naturalWidth || 16, height: image.naturalHeight || 9 });
+              setLoading(false); setError('');
+            }}
+            onError={() => { setLoading(false); setError('This image cannot be loaded in the preview.'); }}
+          /> : sourceUrl ? <video
+            key={`${activeVideoId || editor.project.id}-${editor.previewSource}-${editor.effectivePreviewAudioMode}-${sourceAudioMuted ? 'muted-source' : 'source'}`}
+            ref={videoRef}
+            style={{ objectFit: editor.fitMode }}
+            src={sourceUrl}
+            poster={posterUrl}
+            preload="auto"
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              video.currentTime = Math.min(previewTime * editor.videoSpeed, Number.isFinite(video.duration) ? video.duration : editor.duration * editor.videoSpeed);
+              if (video.videoWidth && video.videoHeight) setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+              applyDbGain(video, editor.videoVolumeDb, editor.previewMuted || sourceAudioMuted); setRate(video, editor.videoSpeed); syncVoice(video); syncSourceAudio(video);
+            }}
+            onLoadedData={() => { setLoading(false); setError(''); }}
+            onTimeUpdate={(event) => {
+              const localTime = event.currentTarget.currentTime / editor.videoSpeed;
+              const timelineTime = editor.activeTimelineItem ? editor.activeTimelineItem.start + localTime - (editor.activeTimelineItem.sourceStart || 0) : localTime;
+              syncSourceAudio(event.currentTarget);
+              if (editor.activeTimelineItem && localTime >= editor.activeTimelineItem.duration) {
+                editor.setPlayhead(Math.min(editor.duration, editor.activeTimelineItem.start + editor.activeTimelineItem.duration + 0.001));
+                return;
+              }
+              editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
+            }}
+            onPlay={(event) => { setPlaying(true); audioContextRef.current?.resume().catch(() => undefined); syncVoice(event.currentTarget, true); syncSourceAudio(event.currentTarget, true); }}
+            onPause={() => { setPlaying(false); voiceRef.current?.pause(); sourceAudioRef.current?.pause(); }}
+            onSeeking={(event) => { syncVoice(event.currentTarget); syncSourceAudio(event.currentTarget); }}
+            onWaiting={() => setLoading(true)}
+            onCanPlay={() => { setLoading(false); setError(''); }}
+            onError={() => {
+              if (editor.previewSource === 'preview') editor.setPreviewSource('media');
+              else { setLoading(false); setError('This media cannot be played in the browser. Try the proxy or reveal the source file.'); }
+            }}
+          /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
+          {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
+          {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
+          {(editor.activeTool === 'insert' || editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''} ${editor.activeTool === 'insert' ? `mode-${editor.insertMode}` : ''}`} style={box}>
+            <i className="handle tl" /><i className="handle tr" /><i className="handle bl" /><i className="handle br" />
+          </div>}
+          <div ref={horizontalGuideRef} className="subtitle-center-guide horizontal" aria-hidden="true" />
+          <div ref={verticalGuideRef} className="subtitle-center-guide vertical" aria-hidden="true" />
+          {activeSubtitle && <button ref={liveSubtitleRef} className={`live-subtitle effect-${editor.style.staticEffect || 'none'}`} data-text={editor.edits[activeSubtitle.index] ?? activeSubtitle.text} style={{
+            ...subtitlePosition,
+            ...textStyleToCss(editor.style, { previewScale: previewTextScale }),
+          }} title="Drag to reposition subtitles" onPointerDown={beginSubtitleMove} onClick={(event) => { if (suppressSubtitleClickRef.current) { suppressSubtitleClickRef.current = false; return; } event.stopPropagation(); editor.setSelection({ type: 'subtitle', index: activeSubtitle.index }); }}>{editor.edits[activeSubtitle.index] ?? activeSubtitle.text}</button>}
+          {activeTextItems.map((item, index) => {
+            const itemStyle = (typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle : {}) as TextStyle;
+            const text = String(item.params?.text || item.name || 'Text');
+            return <button
+              key={item.id}
+              className={`live-text-item effect-${itemStyle.staticEffect || 'none'}`}
+              data-text={text}
+              style={{
+                left: `${50 + index * 2}%`,
+                top: `${45 + index * 8}%`,
+                ...textStyleToCss(itemStyle, { previewScale: previewTextScale }),
+              }}
+              onClick={(event) => { event.stopPropagation(); editor.setSelection({ type: 'timeline-items', keys: [item.id], track: item.track }); }}
+            >{text}</button>;
+          })}
+        </div>
         {voiceUrl && <audio ref={voiceRef} src={voiceUrl} preload="auto" onCanPlay={() => { const video = videoRef.current; if (video) syncVoice(video, !video.paused); else syncVoiceAt(editor.playhead, playing); }} />}
         {sourceAudioUrl && <audio ref={sourceAudioRef} src={sourceAudioUrl} preload="auto" onCanPlay={() => { const video = videoRef.current; if (video) syncSourceAudio(video, !video.paused); else syncSourceAudioAt(editor.playhead, playing); }} />}
-        {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
         {loading && (activeImageUrl || sourceUrl) && !posterUrl && !error && <div className="preview-loading"><i /> Preparing browser preview...</div>}
         {error && <div className="preview-error">{error}<button onClick={() => editor.setPreviewSource('preview')}>Retry proxy</button></div>}
-        {(editor.activeTool === 'insert' || editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''} ${editor.activeTool === 'insert' ? `mode-${editor.insertMode}` : ''}`} style={box}>
-          <i className="handle tl" /><i className="handle tr" /><i className="handle bl" /><i className="handle br" />
-        </div>}
-        <div ref={horizontalGuideRef} className="subtitle-center-guide horizontal" aria-hidden="true" />
-        <div ref={verticalGuideRef} className="subtitle-center-guide vertical" aria-hidden="true" />
-        {activeSubtitle && <button ref={liveSubtitleRef} className={`live-subtitle effect-${editor.style.staticEffect || 'none'}`} data-text={editor.edits[activeSubtitle.index] ?? activeSubtitle.text} style={{
-          ...subtitlePosition,
-          ...textStyleToCss({ ...editor.style, fontSize: Math.max(12, (editor.style.fontSize || 24) * .65) }),
-        }} title="Drag to reposition subtitles" onPointerDown={beginSubtitleMove} onClick={(event) => { if (suppressSubtitleClickRef.current) { suppressSubtitleClickRef.current = false; return; } event.stopPropagation(); editor.setSelection({ type: 'subtitle', index: activeSubtitle.index }); }}>{editor.edits[activeSubtitle.index] ?? activeSubtitle.text}</button>}
-        {activeTextItems.map((item, index) => {
-          const itemStyle = (typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle : {}) as TextStyle;
-          const text = String(item.params?.text || item.name || 'Text');
-          return <button
-            key={item.id}
-            className={`live-text-item effect-${itemStyle.staticEffect || 'none'}`}
-            data-text={text}
-            style={{
-              left: `${50 + index * 2}%`,
-              top: `${45 + index * 8}%`,
-              ...textStyleToCss({ ...itemStyle, fontSize: Math.max(12, (itemStyle.fontSize || 24) * .7) }),
-            }}
-            onClick={(event) => { event.stopPropagation(); editor.setSelection({ type: 'timeline-items', keys: [item.id], track: item.track }); }}
-          >{text}</button>;
-        })}
         {editor.editArea && <button className="reset-area" onClick={(event) => {
           event.stopPropagation();
           const nextArea = { xmin: .04, xmax: .96, ymin: .60, ymax: .98 };

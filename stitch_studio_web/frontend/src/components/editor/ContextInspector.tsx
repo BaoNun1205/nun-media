@@ -1,6 +1,8 @@
-import { Copy, Download, FolderOpen, Gauge, Info, Languages, MoveHorizontal, Play, RotateCcw, Save, SkipBack, SkipForward, Trash2, Volume2, VolumeX, WandSparkles } from 'lucide-react';
+import { useMemo, useState, type ReactNode } from 'react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Copy, Download, FolderOpen, Gauge, Info, Italic, Languages, MoveHorizontal, Play, RotateCcw, Save, SkipBack, SkipForward, Trash2, Underline, Volume2, VolumeX, WandSparkles } from 'lucide-react';
 import { formatClock, formatDuration, formatSize } from '../../lib/studio';
 import { API_BASE, copyText, studioApi } from '../../services/api';
+import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, fontStack } from '../../config/fontRegistry';
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleStyle } from '../../types/studio';
@@ -46,10 +48,10 @@ function MultiSelectionInspector({ editor }: { editor: EditorController }) {
   return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{hasTextClip && <Field label="Text clips" value={editor.selectedTextItems.length} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{(subtitles > 0 || hasSrtClip || selection.track === 'S1') && <SubtitleStyleControls editor={editor} />}{hasTextClip && <TimelineTextStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section className="inspector-section"><h3>{title}</h3>{children}</section>;
 }
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
+function Field({ label, value }: { label: string; value: ReactNode }) {
   return <div className="inspector-field"><span>{label}</span><strong>{value}</strong></div>;
 }
 
@@ -140,6 +142,226 @@ function TimelineTextStyleControls({ editor }: { editor: EditorController }) {
 }
 
 function TextStyleControls({
+  title,
+  style,
+  onUpdate,
+  onPreset,
+  onReset,
+}: {
+  title: string;
+  style: SubtitleStyle;
+  onUpdate: (updates: Partial<SubtitleStyle>) => void;
+  onPreset: (presetId: string) => void;
+  onReset: () => void;
+}) {
+  const backgroundEnabled = Boolean(style.backgroundEnabled ?? style.background);
+  const weightActive = style.fontWeight === 'bold' || Number(style.fontWeight) >= 700;
+  return (
+    <Section title={title}>
+      <TextStylePresetGrid activePresetId={style.presetId} onSelect={onPreset} onReset={onReset} />
+      <div className="style-controls-panel">
+        <StyleGroup title="Font">
+          <FontPicker value={style.fontFamily} onChange={(fontFamily) => onUpdate({ fontFamily })} />
+          <NumericSliderField label="Size" value={style.fontSize || 24} min={8} max={100} step={1} suffix="px" onChange={(fontSize) => onUpdate({ fontSize })} />
+        </StyleGroup>
+
+        <StyleGroup title="Style">
+          <FieldRow label="Weight">
+            <SegmentedControl
+              options={[
+                { id: 'bold', label: 'Bold', icon: <Bold size={14} />, active: weightActive, onClick: () => onUpdate({ fontWeight: weightActive ? 'normal' : 'bold' }) },
+                { id: 'underline', label: 'Underline', icon: <Underline size={14} />, active: style.textDecoration === 'underline', onClick: () => onUpdate({ textDecoration: style.textDecoration === 'underline' ? 'none' : 'underline' }) },
+                { id: 'italic', label: 'Italic', icon: <Italic size={14} />, active: style.fontStyle === 'italic', onClick: () => onUpdate({ fontStyle: style.fontStyle === 'italic' ? 'normal' : 'italic' }) },
+              ]}
+            />
+          </FieldRow>
+          <FieldRow label="Case">
+            <SegmentedControl
+              options={[
+                { id: 'none', label: 'Aa', active: !style.textTransform || style.textTransform === 'none', onClick: () => onUpdate({ textTransform: 'none' }) },
+                { id: 'uppercase', label: 'AA', active: style.textTransform === 'uppercase', onClick: () => onUpdate({ textTransform: 'uppercase' }) },
+                { id: 'lowercase', label: 'aa', active: style.textTransform === 'lowercase', onClick: () => onUpdate({ textTransform: 'lowercase' }) },
+                { id: 'capitalize', label: 'Tt', active: style.textTransform === 'capitalize', onClick: () => onUpdate({ textTransform: 'capitalize' }) },
+              ]}
+            />
+          </FieldRow>
+          <FieldRow label="Align">
+            <SegmentedControl
+              options={[
+                { id: 'left', label: 'Left', icon: <AlignLeft size={15} />, active: style.textAlign === 'left', onClick: () => onUpdate({ textAlign: 'left' }) },
+                { id: 'center', label: 'Center', icon: <AlignCenter size={15} />, active: !style.textAlign || style.textAlign === 'center', onClick: () => onUpdate({ textAlign: 'center' }) },
+                { id: 'right', label: 'Right', icon: <AlignRight size={15} />, active: style.textAlign === 'right', onClick: () => onUpdate({ textAlign: 'right' }) },
+              ]}
+            />
+          </FieldRow>
+        </StyleGroup>
+
+        <StyleGroup title="Color & outline">
+          <div className="style-two-col">
+            <ColorField label="Text" value={style.fontColor || style.color || '#ffffff'} onChange={(fontColor) => onUpdate({ fontColor, color: fontColor })} />
+            <ColorField label="Outline" value={style.outlineColor || '#000000'} onChange={(outlineColor) => onUpdate({ outlineColor })} />
+          </div>
+          <NumericSliderField label="Outline" value={style.outline ?? style.outlineWidth ?? 0} min={0} max={12} step={0.5} suffix="px" onChange={(outline) => onUpdate({ outline, outlineWidth: outline })} />
+        </StyleGroup>
+
+        <StyleGroup title="Spacing">
+          <NumericSliderField label="Letter" value={style.letterSpacing || 0} min={-8} max={24} step={0.5} suffix="px" onChange={(letterSpacing) => onUpdate({ letterSpacing })} />
+          <NumericSliderField label="Line" value={style.lineHeight || 1.05} min={0.7} max={2.2} step={0.05} suffix="x" onChange={(lineHeight) => onUpdate({ lineHeight })} />
+        </StyleGroup>
+
+        <ToggleSection title="Background" checked={backgroundEnabled} onChange={(enabled) => onUpdate({ background: enabled, backgroundEnabled: enabled })}>
+          <div className="style-two-col">
+            <ColorField label="Fill" value={style.backgroundColor || '#000000'} onChange={(backgroundColor) => onUpdate({ backgroundColor })} />
+            <NumericField label="Opacity" value={style.backgroundOpacity ?? 0.55} min={0} max={1} step={0.05} onChange={(backgroundOpacity) => onUpdate({ backgroundOpacity })} />
+          </div>
+          <div className="style-two-col">
+            <NumericField label="Radius" value={style.backgroundRadius ?? 4} min={0} max={24} step={1} onChange={(backgroundRadius) => onUpdate({ backgroundRadius })} />
+            <NumericField label="Padding" value={style.backgroundPaddingX ?? 8} min={0} max={32} step={1} onChange={(backgroundPaddingX) => onUpdate({ backgroundPaddingX, backgroundPaddingY: Math.max(0, Math.round(backgroundPaddingX / 2)) })} />
+          </div>
+        </ToggleSection>
+
+        <StyleGroup title="Shadow">
+          <div className="style-two-col">
+            <ColorField label="Color" value={style.shadowColor || '#000000'} onChange={(shadowColor) => onUpdate({ shadowColor })} />
+            <NumericField label="Blur" value={style.shadowBlur || 0} min={0} max={24} step={0.5} onChange={(shadowBlur) => onUpdate({ shadowBlur })} />
+          </div>
+          <div className="style-two-col">
+            <NumericField label="X" value={style.shadowOffsetX || 0} min={-24} max={24} step={0.5} onChange={(shadowOffsetX) => onUpdate({ shadowOffsetX })} />
+            <NumericField label="Y" value={style.shadowOffsetY || 0} min={-24} max={24} step={0.5} onChange={(shadowOffsetY) => onUpdate({ shadowOffsetY })} />
+          </div>
+        </StyleGroup>
+
+        <ToggleSection title="Glow" checked={Boolean(style.glowEnabled)} onChange={(glowEnabled) => onUpdate({ glowEnabled })}>
+          <div className="style-two-col">
+            <ColorField label="Color" value={style.glowColor || '#ffffff'} onChange={(glowColor) => onUpdate({ glowColor })} />
+            <NumericField label="Blur" value={style.glowBlur || 0} min={0} max={32} step={0.5} onChange={(glowBlur) => onUpdate({ glowBlur })} />
+          </div>
+          <NumericSliderField label="Power" value={style.glowStrength || 1} min={0} max={2} step={0.05} suffix="x" onChange={(glowStrength) => onUpdate({ glowStrength })} />
+        </ToggleSection>
+      </div>
+    </Section>
+  );
+}
+
+function StyleGroup({ title, children }: { title: string; children: ReactNode }) {
+  return <div className="style-control-group"><h4>{title}</h4><div className="style-control-stack">{children}</div></div>;
+}
+
+function FieldRow({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="style-field-row"><span>{label}</span><div>{children}</div></div>;
+}
+
+function ToggleSection({ title, checked, onChange, children }: { title: string; checked: boolean; onChange: (checked: boolean) => void; children: ReactNode }) {
+  return (
+    <div className={`style-control-group toggle ${checked ? 'enabled' : ''}`}>
+      <button type="button" className="style-toggle-head" onClick={() => onChange(!checked)} aria-pressed={checked}>
+        <span>{title}</span>
+        <i>{checked ? 'On' : 'Off'}</i>
+      </button>
+      {checked && <div className="style-control-stack">{children}</div>}
+    </div>
+  );
+}
+
+function FontPicker({ value, onChange }: { value?: string; onChange: (family: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const selected = fontByFamily(value) || fontByFamily(DEFAULT_FONT_FAMILY)!;
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = useMemo(() => FONT_REGISTRY.filter((font) => {
+    if (!normalizedQuery) return true;
+    return `${font.label} ${font.category}`.toLowerCase().includes(normalizedQuery);
+  }), [normalizedQuery]);
+
+  return (
+    <div className="font-picker">
+      <button type="button" className="font-picker-trigger" onClick={() => setOpen((current) => !current)}>
+        <span style={{ fontFamily: fontStack(selected.family) }}>{selected.label}</span>
+        <small>{selected.category}</small>
+      </button>
+      {open && <div className="font-picker-popover">
+        <input
+          value={query}
+          autoFocus
+          placeholder="Search fonts"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && filtered[0]) {
+              onChange(filtered[0].family);
+              setOpen(false);
+              setQuery('');
+            }
+            if (event.key === 'Escape') setOpen(false);
+          }}
+        />
+        <div className="font-picker-list">
+          {FONT_CATEGORIES.map((category) => {
+            const fonts = filtered.filter((font) => font.category === category);
+            if (!fonts.length) return null;
+            return <div className="font-picker-category" key={category}><strong>{category}</strong>{fonts.map((font) => (
+              <button
+                type="button"
+                key={font.id}
+                className={font.family === selected.family ? 'active' : ''}
+                onClick={() => {
+                  onChange(font.family);
+                  setOpen(false);
+                  setQuery('');
+                }}
+              >
+                <span style={{ fontFamily: fontStack(font.family) }}>{font.label}</span>
+                <small>{font.weights.join('/')}</small>
+              </button>
+            ))}</div>;
+          })}
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+function SegmentedControl({ options }: { options: Array<{ id: string; label: string; icon?: ReactNode; active: boolean; onClick: () => void }> }) {
+  return <div className="style-segmented">{options.map((option) => (
+    <button type="button" key={option.id} className={option.active ? 'active' : ''} title={option.label} onClick={option.onClick}>
+      {option.icon || <span>{option.label}</span>}
+    </button>
+  ))}</div>;
+}
+
+function NumericSliderField({ label, value, min, max, step, suffix, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; onChange: (value: number) => void }) {
+  const normalized = clampNumber(value, min, max);
+  return (
+    <FieldRow label={label}>
+      <div className="style-range-field">
+        <input type="range" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} />
+        <label className="style-number-box">
+          <input type="number" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} />
+          <span>{suffix}</span>
+        </label>
+      </div>
+    </FieldRow>
+  );
+}
+
+function NumericField({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
+  return <label className="style-mini-field"><span>{label}</span><input type="number" min={min} max={max} step={step} value={clampNumber(value, min, max)} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="style-color-field">
+      <span>{label}</span>
+      <input type="color" value={value} onChange={(event) => onChange(event.target.value)} />
+      <code>{value.toUpperCase()}</code>
+    </label>
+  );
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
+}
+
+function LegacyTextStyleControls({
   title,
   style,
   onUpdate,
