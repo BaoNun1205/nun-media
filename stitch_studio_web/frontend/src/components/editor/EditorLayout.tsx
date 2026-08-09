@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { AssetToolPanel } from './AssetToolPanel';
 import { ContextInspector } from './ContextInspector';
 import { EditorTopBar } from './EditorTopBar';
+import { ExportVideoModal } from './ExportVideoModal';
 import { Timeline } from './Timeline';
 import { VideoPreview } from './VideoPreview';
 import { useEditorController } from '../../hooks/useEditorController';
@@ -14,6 +15,7 @@ export function EditorLayout({ project, projects, jobs, voices, refresh, loadVoi
 }) {
   const editor = useEditorController({ project, projects, jobs, voices, refresh, loadVoices, onOpenVersion });
   const [timelineHeight, setTimelineHeight] = useState(310);
+  const [exportOpen, setExportOpen] = useState(false);
   const versions = useMemo(() => projects.filter((item) => item.projectId === project.projectId).sort((a, b) => b.id - a.id), [projects, project.projectId]);
   function resizeTimeline(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -28,14 +30,15 @@ export function EditorLayout({ project, projects, jobs, voices, refresh, loadVoi
     window.addEventListener('pointerup', stop);
   }
   return <div className="editor-layout" style={{ gridTemplateRows: `54px minmax(260px, 1fr) 5px ${timelineHeight}px` }}>
-    <EditorTopBar editor={editor} versions={versions} onBack={onBack} onOpenVersion={onOpenVersion} />
+    <EditorTopBar editor={editor} versions={versions} onBack={onBack} onOpenVersion={onOpenVersion} onOpenExport={() => setExportOpen(true)} />
     {editor.message && <div className="editor-status-toast" role="status">{editor.message}</div>}
     <div className="editor-workspace">
-      <AssetToolPanel editor={editor} />
+      <AssetToolPanel editor={editor} onOpenExport={() => setExportOpen(true)} />
       <VideoPreview editor={editor} />
       <ContextInspector editor={editor} />
     </div>
     <div className="timeline-resizer" onPointerDown={resizeTimeline} />
     <Timeline editor={editor} />
+    <ExportVideoModal editor={editor} open={exportOpen} onClose={() => setExportOpen(false)} />
   </div>;
 }

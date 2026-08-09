@@ -143,19 +143,19 @@ function AssetBin({ editor }: { editor: EditorController }) {
   </div>;
 }
 
-export function AssetToolPanel({ editor }: { editor: EditorController }) {
+export function AssetToolPanel({ editor, onOpenExport }: { editor: EditorController; onOpenExport: () => void }) {
   return (
     <aside className="editor-left-panel">
       <div className="left-panel-tabs"><button className={editor.assetTab === 'assets' ? 'active' : ''} onClick={() => editor.setAssetTab('assets')}>Assets</button><button className={editor.assetTab === 'tools' ? 'active' : ''} onClick={() => editor.setAssetTab('tools')}>Tools</button></div>
       {editor.assetTab === 'assets' ? <AssetBin editor={editor} /> : <div className="tool-browser">
         <div className="tool-index">{TOOLS.map(([key, Icon, label, help]) => <button key={key} className={editor.activeTool === key ? 'active' : ''} onClick={() => editor.openTool(key)}><span><Icon size={17} /></span><span><strong>{label}</strong><small>{help}</small></span></button>)}</div>
-        <div className="tool-config"><ToolForm editor={editor} /></div>
+        <div className="tool-config"><ToolForm editor={editor} onOpenExport={onOpenExport} /></div>
       </div>}
     </aside>
   );
 }
 
-function ToolForm({ editor }: { editor: EditorController }) {
+function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenExport: () => void }) {
   const importSrtRef = useRef<HTMLInputElement>(null);
   const busy = editor.activeJobs.length > 0;
   const jobKinds: Partial<Record<ToolKey, string[]>> = {
@@ -164,7 +164,7 @@ function ToolForm({ editor }: { editor: EditorController }) {
     remove: ['remove'],
     voiceover: ['tts', 'tts-segment', 'tts-mux'],
     audio: ['audio-separate'],
-    export: [],
+    export: ['project-export'],
   };
   const activeJob = editor.activeJobs.find((job) => (jobKinds[editor.activeTool] || []).includes(job.kind));
   const title = TOOLS.find(([key]) => key === editor.activeTool)?.[2];
@@ -204,7 +204,7 @@ function ToolForm({ editor }: { editor: EditorController }) {
       <p className="form-help">Voiceover is automatically merged into one clip on A2 and added to the preview.</p>
     </>}
     {editor.activeTool === 'audio' && <><div className="operation-done"><Music2 size={18} /><strong>{editor.audioMode === 'remove_vocals' ? 'Removing vocals' : editor.audioMode === 'remove_music' ? 'Removing music' : 'Original audio'}</strong><p>Right-click the video on the timeline to change audio mode. Model: UVR-MDX-NET Inst HQ 3 · instrumental 95% + original audio 5%.</p></div><label>Video volume<SliderNumericField value={editor.videoVolumeDb} min={-60} max={20} step={0.1} unit="dB" onChange={editor.updateVideoVolumeDb} ariaLabel="Video volume in decibels" /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute preview</label></>}
-    {editor.activeTool === 'export' && <><a className={`button primary full ${editor.audioMode !== 'original' && !editor.audioSeparationReady ? 'disabled' : ''}`} aria-disabled={editor.audioMode !== 'original' && !editor.audioSeparationReady} href={`${API_BASE}/videos/${editor.project.id}/media?audioMode=${editor.audioMode}&renderEffects=true`} onClick={(event) => { if (editor.audioMode !== 'original' && !editor.audioSeparationReady) event.preventDefault(); }}><Download size={16} /> Export current video</a>{editor.srt.asset && <a className="button full" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={16} /> Export selected SRT</a>}<p className="form-help">The exported video uses the audio mode selected on the timeline and renders active FX clips.</p></>}
+    {editor.activeTool === 'export' && <><button className="primary full" disabled={editor.audioMode !== 'original' && !editor.audioSeparationReady} onClick={onOpenExport}><Download size={16} /> Export final video</button>{editor.srt.asset && <a className="button full" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={16} /> Export selected SRT</a>}<p className="form-help">Final video export renders the current timeline into one MP4.</p></>}
     {activeJob && <><JobProgress job={activeJob} /><button className="danger full cancel-job" onClick={() => editor.cancelJob(activeJob.id)}>Cancel job #{activeJob.id}</button></>}
     {editor.message && <p className="tool-message">{editor.message}</p>}
   </div>;

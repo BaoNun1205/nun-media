@@ -4,8 +4,8 @@ import { studioApi } from '../../services/api';
 import type { Project } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 
-export function EditorTopBar({ editor, versions, onBack, onOpenVersion }: {
-  editor: EditorController; versions: Project[]; onBack: () => void; onOpenVersion: (id: number) => void;
+export function EditorTopBar({ editor, versions, onBack, onOpenVersion, onOpenExport }: {
+  editor: EditorController; versions: Project[]; onBack: () => void; onOpenVersion: (id: number) => void; onOpenExport: () => void;
 }) {
   const { project } = editor;
   const currentIndex = versions.findIndex((item) => item.id === project.id);
@@ -29,7 +29,7 @@ export function EditorTopBar({ editor, versions, onBack, onOpenVersion }: {
       editor.setMessage(error instanceof Error ? error.message : 'Unable to rename project');
     }
   }
-  const exportDisabled = timelineEmpty || Boolean(project.workspaceId) || (editor.audioMode !== 'original' && !editor.audioSeparationReady);
+  const exportDisabled = timelineEmpty || (editor.audioMode !== 'original' && !editor.audioSeparationReady);
   return (
     <header className="editor-topbar">
       <div className="editor-top-left">
@@ -66,12 +66,7 @@ export function EditorTopBar({ editor, versions, onBack, onOpenVersion }: {
       <div className="editor-top-actions">
         {editor.activeJobs.length > 0 && <span className="global-job"><i /> {editor.activeJobs.length} running</span>}
         <button className="icon-button" disabled={timelineEmpty} onClick={() => studioApi.revealProject(project.id)} title="Open project folder"><FolderOpen size={17} /></button>
-        <a
-          className={`button primary export-button ${exportDisabled ? 'disabled' : ''}`}
-          aria-disabled={exportDisabled}
-          href={`/api/videos/${project.id}/media?audioMode=${editor.audioMode}&renderEffects=true`}
-          onClick={(event) => { if (exportDisabled) event.preventDefault(); }}
-        ><Share2 size={16} /> Export</a>
+        <button className="primary export-button" disabled={exportDisabled} onClick={onOpenExport}><Share2 size={16} /> Export</button>
       </div>
     </header>
   );

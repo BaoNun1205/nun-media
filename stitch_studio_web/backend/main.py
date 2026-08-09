@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -29,6 +30,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 from stitch_studio.config import AppConfig, ensure_dirs  # noqa: E402
 from stitch_studio.audio_separation import AUDIO_MODE_ORIGINAL, AUDIO_MODE_REMOVE_MUSIC, AUDIO_MODE_REMOVE_VOCALS, AUDIO_MODES, AUDIO_SEPARATOR_MODEL, AudioSeparationService  # noqa: E402
 from stitch_studio.models import SubtitleSegment, VideoItem  # noqa: E402
+from stitch_studio.rendering.timeline_renderer import ExportSettings, render_project_timeline  # noqa: E402
 from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
@@ -168,6 +170,25 @@ class ProjectAttachAssetsRequest(BaseModel):
 class ProjectTimelineRequest(BaseModel):
     items: list[dict[str, Any]] = []
     timelineState: dict[str, Any] | None = None
+    sceneState: dict[str, Any] | None = None
+
+
+class ProjectExportRequest(BaseModel):
+    fileName: str = "Untitled Video"
+    outputDirectory: str = ""
+    resolution: str = "1080p"
+    aspectRatio: str = "project"
+    fps: int = 30
+    timelineState: dict[str, Any] | None = None
+    sceneState: dict[str, Any] | None = None
+
+
+class FolderPickerRequest(BaseModel):
+    initialDirectory: str | None = None
+
+
+class RevealPathRequest(BaseModel):
+    path: str
 
 
 class ProjectCleanupDeleteRequest(BaseModel):
@@ -549,12 +570,30 @@ def _audio_separation_progress(message: str, low: str) -> tuple[float, str] | No
     return value, detail or "Separating vocals and music"
 
 
+def _export_progress(message: str, low: str) -> tuple[float, str] | None:
+    match = re.search(r"ffmpeg progress:\s*(\d+)\s*%", low)
+    if match:
+        value = min(99, max(1, int(match.group(1)))) / 100
+        return value, "Rendering video"
+    if "validating export settings" in low:
+        return 0.05, "Validating export settings"
+    if "resolving assets" in low:
+        return 0.10, "Resolving assets"
+    if "building timeline" in low:
+        return 0.15, "Building timeline"
+    if "finalizing" in low:
+        return 0.98, "Finalizing"
+    if "hardware encoder failed" in low:
+        return 0.15, "Hardware encoder failed; retrying CPU"
+    return None
+
+
 def _run_job(job_id: int, fn: Callable[[Callable[[str], None]], Any]) -> None:
     def progress(message: str) -> None:
         if _job_cancelled(job_id):
             raise JobCancelled("Job cancelled")
         low = message.lower()
-        parsed = _audio_separation_progress(message, low) or _hardsub_progress(message, low) or _tts_progress(message, low) or _subtitle_replace_progress(message, low) or _subtitle_remove_progress(message, low) or _transcription_progress(message, low) or _translation_progress(message, low)
+        parsed = _export_progress(message, low) or _audio_separation_progress(message, low) or _hardsub_progress(message, low) or _tts_progress(message, low) or _subtitle_replace_progress(message, low) or _subtitle_remove_progress(message, low) or _transcription_progress(message, low) or _translation_progress(message, low)
         if parsed:
             value, detail = parsed
             value = max(_job_progress(job_id), value)
@@ -735,6 +774,7 @@ def _workspace_project_payload(project) -> dict[str, Any]:
         "assets": [_project_asset_payload(asset, include_linked=False) for asset in assets],
         "timeline": timeline,
         "timelineState": timeline_state,
+        "sceneState": metadata.get("scene_state") or None,
         "metadata": metadata,
     }
 
@@ -1143,6 +1183,7 @@ def _video_payload(video, include_workspace_assets: bool = True) -> dict[str, An
         "projectAssets": [_project_asset_payload(asset, include_linked=False) for asset in storage.list_project_assets(workspace.id)] if workspace and include_workspace_assets else [],
         "workspaceTimeline": (workspace.metadata or {}).get("timeline") or [] if workspace else [],
         "timelineState": (workspace.metadata or {}).get("timeline_state") or None if workspace else None,
+        "sceneState": (workspace.metadata or {}).get("scene_state") or None if workspace else None,
         "parentVideoId": metadata.get("source_video_id"),
         "subtitleArea": _subtitle_area_payload(video, metadata),
         "subtitleStyle": metadata.get("subtitle_style") or None,
@@ -1963,8 +2004,210 @@ def update_project_timeline(project_id: int, payload: ProjectTimelineRequest) ->
     metadata = dict(project.metadata or {})
     metadata["timeline"] = clean_items
     metadata["timeline_state"] = clean_state
+    if isinstance(payload.sceneState, dict):
+        metadata["scene_state"] = payload.sceneState
     updated = storage.update_project_metadata(project.id, metadata)
     return {"project": _workspace_project_payload(updated or storage.get_project(project.id))}
+
+
+def _default_export_directory(project=None) -> Path:
+    metadata = project.metadata if project and project.metadata else {}
+    last = metadata.get("last_export_directory")
+    if last:
+        path = Path(str(last)).expanduser()
+        if path.exists() and path.is_dir():
+            return path
+    target = config.outputs_dir / "exports"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+@app.get("/api/projects/{project_id}/export/defaults")
+def project_export_defaults(project_id: int) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    directory = _default_export_directory(project)
+    return {
+        "fileName": project.title,
+        "outputDirectory": str(directory),
+        "resolution": "1080p",
+        "aspectRatio": "project",
+        "fps": 30,
+    }
+
+
+@app.post("/api/projects/export/select-folder")
+def select_export_folder(payload: FolderPickerRequest) -> dict[str, str]:
+    initial = Path(payload.initialDirectory).expanduser() if payload.initialDirectory else config.outputs_dir
+    if not initial.exists() or not initial.is_dir():
+        initial = config.outputs_dir
+    if not sys.platform.startswith("win"):
+        return {"path": str(initial)}
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(initialdir=str(initial), title="Choose export folder")
+        root.destroy()
+    except Exception as exc:
+        raise HTTPException(500, f"Could not open folder picker: {exc}") from exc
+    if not selected:
+        return {"path": str(initial)}
+    return {"path": str(Path(selected).resolve())}
+
+
+@app.post("/api/projects/{project_id}/export")
+def export_project_timeline(project_id: int, payload: ProjectExportRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    active = _active_job("project-export", -project.id)
+    if active:
+        return {"jobId": active["id"], "alreadyRunning": True}
+    output_dir = Path(payload.outputDirectory).expanduser() if payload.outputDirectory else _default_export_directory(project)
+    settings = ExportSettings(
+        file_name=payload.fileName or project.title,
+        output_directory=output_dir,
+        resolution=payload.resolution,
+        aspect_ratio=payload.aspectRatio,
+        fps=payload.fps,
+    )
+    job_id = _new_job("project-export", f"Export {project.title}", -project.id)
+
+    def run(progress: Callable[[str], None]) -> dict[str, Any]:
+        progress("Resolving assets")
+        result = render_project_timeline(project=project, storage=storage, config=config, settings=settings, progress=progress)
+        metadata = dict((storage.get_project(project.id) or project).metadata or {})
+        metadata["last_export_directory"] = str(Path(result["path"]).parent)
+        metadata["last_export"] = result
+        storage.update_project_metadata(project.id, metadata)
+        return {"outputPath": result["path"], **result}
+
+    _run_job(job_id, run)
+    return {"jobId": job_id}
+
+
+def _timeline_state_for_video_export(video, raw_state: dict[str, Any] | None) -> dict[str, Any]:
+    raw_state = raw_state if isinstance(raw_state, dict) else (video.metadata or {}).get("timeline_state")
+    if isinstance(raw_state, dict) and isinstance(raw_state.get("items"), list) and raw_state.get("items"):
+        state = dict(raw_state)
+        state["items"] = [dict(item) for item in raw_state.get("items") if isinstance(item, dict)]
+        state["tracks"] = [dict(track) for track in raw_state.get("tracks") or DEFAULT_TIMELINE_TRACKS if isinstance(track, dict)]
+    else:
+        duration = max(0.05, (video.duration_ms or _probe_video_duration_ms(video.path) or 1000) / 1000)
+        state = {
+            "version": 2,
+            "fps": 30,
+            "canvas": {"width": 1920, "height": 1080, "mode": "source"},
+            "tracks": [dict(track) for track in DEFAULT_TIMELINE_TRACKS],
+            "items": [{
+                "id": f"video-{video.id}",
+                "kind": "video",
+                "track": "V1",
+                "name": video.path.name,
+                "start": 0,
+                "duration": duration,
+                "sourceStart": 0,
+                "sourceVideoId": video.id,
+            }],
+        }
+    has_video = any(isinstance(item, dict) and item.get("kind") == "video" for item in state["items"])
+    if not has_video:
+        duration = max(0.05, (video.duration_ms or _probe_video_duration_ms(video.path) or 1000) / 1000)
+        state["items"].insert(0, {
+            "id": f"video-{video.id}",
+            "kind": "video",
+            "track": "V1",
+            "name": video.path.name,
+            "start": 0,
+            "duration": duration,
+            "sourceStart": 0,
+            "sourceVideoId": video.id,
+        })
+    has_srt = any(isinstance(item, dict) and item.get("kind") == "srt" for item in state["items"])
+    latest_srt = storage.latest_asset(video.id, "srt")
+    if latest_srt and not has_srt:
+        duration = max((float(item.get("start") or 0) + float(item.get("duration") or 0)) for item in state["items"] if isinstance(item, dict))
+        state["items"].append({
+            "id": f"srt-{latest_srt.id}",
+            "kind": "srt",
+            "track": "S1",
+            "name": latest_srt.path.name,
+            "start": 0,
+            "duration": duration,
+            "sourceStart": 0,
+            "sourceAssetId": latest_srt.id,
+        })
+    return state
+
+
+@app.get("/api/videos/{video_id}/export/defaults")
+def video_export_defaults(video_id: int) -> dict[str, Any]:
+    video = _video_or_404(video_id)
+    metadata = video.metadata or {}
+    last = metadata.get("last_export_directory")
+    directory = Path(str(last)).expanduser() if last else config.outputs_dir / "exports"
+    if not directory.exists() or not directory.is_dir():
+        directory = config.outputs_dir / "exports"
+        directory.mkdir(parents=True, exist_ok=True)
+    return {
+        "fileName": video.title,
+        "outputDirectory": str(directory),
+        "resolution": "1080p",
+        "aspectRatio": "project",
+        "fps": 30,
+    }
+
+
+@app.post("/api/videos/{video_id}/export")
+def export_video_timeline(video_id: int, payload: ProjectExportRequest) -> dict[str, Any]:
+    video = _video_or_404(video_id)
+    active = _active_job("project-export", video.id)
+    if active:
+        return {"jobId": active["id"], "alreadyRunning": True}
+    output_dir = Path(payload.outputDirectory).expanduser() if payload.outputDirectory else config.outputs_dir / "exports"
+    settings = ExportSettings(
+        file_name=payload.fileName or video.title,
+        output_directory=output_dir,
+        resolution=payload.resolution,
+        aspect_ratio=payload.aspectRatio,
+        fps=payload.fps,
+    )
+    job_id = _new_job("project-export", f"Export {video.title}", video.id)
+
+    def run(progress: Callable[[str], None]) -> dict[str, Any]:
+        progress("Building timeline")
+        timeline_state = _timeline_state_for_video_export(video, payload.timelineState)
+        synthetic_project = SimpleNamespace(
+            id=video.id,
+            title=video.title,
+            primary_video_id=video.id,
+            metadata={"timeline_state": timeline_state},
+        )
+        result = render_project_timeline(project=synthetic_project, storage=storage, config=config, settings=settings, progress=progress)
+        metadata = dict((storage.get_video(video.id) or video).metadata or {})
+        metadata["last_export_directory"] = str(Path(result["path"]).parent)
+        metadata["last_export"] = result
+        storage.update_video_metadata(video.id, metadata)
+        return {"outputPath": result["path"], **result}
+
+    _run_job(job_id, run)
+    return {"jobId": job_id}
+
+
+@app.post("/api/files/reveal")
+def reveal_filesystem_path(payload: RevealPathRequest) -> dict[str, str]:
+    path = Path(payload.path).expanduser()
+    target = path if path.exists() else path.parent
+    if not target.exists():
+        raise HTTPException(404, "Path not found")
+    if sys.platform.startswith("win"):
+        if path.exists() and path.is_file():
+            subprocess.Popen(["explorer.exe", f"/select,{str(path)}"])
+        else:
+            subprocess.Popen(["explorer.exe", str(target)])
+        return {"status": "opened", "path": str(path)}
+    raise HTTPException(400, "Reveal in folder is only supported on Windows in this build")
 
 
 def _path_has_audio_stream(path: Path) -> bool:

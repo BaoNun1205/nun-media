@@ -33,6 +33,17 @@ export const studioApi = {
     request<{ project: WorkspaceProject }>(`/projects/${id}/assets/attach`, { method: 'POST', body: JSON.stringify({ assetIds }) }),
   saveWorkspaceTimeline: (id: number, items: TimelineItem[], timelineState?: TimelineState, sceneState?: CoreTimelineScene) =>
     request<{ project: WorkspaceProject }>(`/projects/${id}/timeline`, { method: 'PUT', body: JSON.stringify({ items, timelineState, sceneState }) }),
+  exportDefaults: (id: number) =>
+    request<{ fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }>(`/projects/${id}/export/defaults`),
+  selectExportFolder: (initialDirectory?: string) =>
+    request<{ path: string }>('/projects/export/select-folder', { method: 'POST', body: JSON.stringify({ initialDirectory }) }),
+  exportProject: (id: number, payload: { fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }) =>
+    request<{ jobId: number; alreadyRunning?: boolean }>(`/projects/${id}/export`, { method: 'POST', body: JSON.stringify(payload) }),
+  videoExportDefaults: (id: number) =>
+    request<{ fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }>(`/videos/${id}/export/defaults`),
+  exportVideo: (id: number, payload: { fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number; timelineState?: TimelineState; sceneState?: CoreTimelineScene }) =>
+    request<{ jobId: number; alreadyRunning?: boolean }>(`/videos/${id}/export`, { method: 'POST', body: JSON.stringify(payload) }),
+  revealPath: (path: string) => request<{ status: string; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path }) }),
   uploadWorkspaceAsset: (id: number, file: File) => {
     const body = new FormData();
     body.append('file', file);
