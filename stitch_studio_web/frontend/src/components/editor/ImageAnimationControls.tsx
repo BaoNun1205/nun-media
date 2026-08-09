@@ -37,9 +37,9 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
     <div className="animation-inspector">
       <div className="inspector-tabs-segmented">
         <div className="tab-indicator" data-tab={activeTab} />
-        <button className={activeTab === 'in' ? 'active' : ''} onClick={() => setActiveTab('in')}>Vào</button>
-        <button className={activeTab === 'out' ? 'active' : ''} onClick={() => setActiveTab('out')}>Ra</button>
-        <button className={activeTab === 'combo' ? 'active' : ''} onClick={() => setActiveTab('combo')}>Kết hợp</button>
+        <button className={activeTab === 'in' ? 'active' : ''} onClick={() => setActiveTab('in')}>In</button>
+        <button className={activeTab === 'out' ? 'active' : ''} onClick={() => setActiveTab('out')}>Out</button>
+        <button className={activeTab === 'combo' ? 'active' : ''} onClick={() => setActiveTab('combo')}>Combo</button>
       </div>
       
       <div className="animation-tab-content">
@@ -63,7 +63,7 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
               ))}
             </div>
             {currentIn && (
-              <Section title="Thời lượng">
+              <Section title="Duration">
                 <InspectorRangeField 
                   label="Duration" 
                   value={inDur} 
@@ -98,7 +98,7 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
               ))}
             </div>
             {currentOut && (
-              <Section title="Thời lượng">
+              <Section title="Duration">
                 <InspectorRangeField 
                   label="Duration" 
                   value={outDur} 

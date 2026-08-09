@@ -132,7 +132,7 @@ function ImageClipInspector({ editor, item }: { editor: EditorController; item: 
       <button className="inspector-reset-button" type="button" onClick={() => update({ scale: 1, x: 0.5, y: 0.5 }, true)}><RotateCcw size={14} /> Reset Transform</button>
     </Section>
 
-    <Section title="Hiệu ứng động">
+    <Section title="Animation">
       <ImageAnimationControls editor={editor} item={item} />
     </Section>
   </>;
