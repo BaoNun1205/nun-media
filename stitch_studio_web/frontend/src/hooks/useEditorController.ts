@@ -225,6 +225,14 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const textStyle = item?.params?.textStyle;
     return { ...DEFAULT_STYLE, ...(typeof textStyle === 'object' && textStyle ? textStyle as TextStyle : {}) } as SubtitleStyle;
   }, [selectedTextItems]);
+  const selectedTimelineAudioItem = useMemo(() => {
+    if (selection.type !== 'timeline-items' || selection.keys.length !== 1) return undefined;
+    return timelineItems.find((item) => item.id === selection.keys[0] && item.kind === 'audio');
+  }, [selection, timelineItems]);
+  const selectedTimelineImageItem = useMemo(() => {
+    if (selection.type !== 'timeline-items' || selection.keys.length !== 1) return undefined;
+    return timelineItems.find((item) => item.id === selection.keys[0] && item.kind === 'image');
+  }, [selection, timelineItems]);
   const timelineDuration = endOfTimeline(timelineItems);
   const hasWorkspaceTimeline = Boolean(project.workspaceId);
   const timelineTrackById = useMemo(() => new Map(timelineState.tracks.map((track, index) => [track.id, { ...track, index }])), [timelineState.tracks]);
@@ -1203,6 +1211,54 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       await commitTimelineItems(next, 'Reset text style', previous);
     }
   }
+
+  async function distributeTimelineTextItems(axis: 'horizontal' | 'vertical') {
+    if (!project.workspaceId || selectedTextItems.length < 3) return;
+    const selected = [...selectedTextItems].sort((a, b) => {
+      const aPos = textItemPosition(a, timelineItems.indexOf(a));
+      const bPos = textItemPosition(b, timelineItems.indexOf(b));
+      return axis === 'horizontal' ? aPos.x - bPos.x : aPos.y - bPos.y;
+    });
+    const first = textItemPosition(selected[0], timelineItems.indexOf(selected[0]));
+    const last = textItemPosition(selected[selected.length - 1], timelineItems.indexOf(selected[selected.length - 1]));
+    const previous = cloneTimeline(timelineItems);
+    const positions = new Map<string, { x: number; y: number }>();
+    selected.forEach((item, index) => {
+      const current = textItemPosition(item, timelineItems.indexOf(item));
+      const ratio = index / Math.max(1, selected.length - 1);
+      positions.set(item.id, {
+        x: axis === 'horizontal' ? first.x + (last.x - first.x) * ratio : current.x,
+        y: axis === 'vertical' ? first.y + (last.y - first.y) * ratio : current.y,
+      });
+    });
+    const next = timelineItems.map((item) => {
+      const position = positions.get(item.id);
+      if (!position) return item;
+      return {
+        ...item,
+        params: {
+          ...(item.params || {}),
+          textPosition: {
+            x: clampClipValue(position.x, 0, 1),
+            y: clampClipValue(position.y, 0, 1),
+          },
+        },
+      };
+    });
+    await commitTimelineItems(next, axis === 'horizontal' ? 'Distributed text clips horizontally.' : 'Distributed text clips vertically.', previous);
+  }
+
+  function textItemPosition(item: TimelineItem, index: number) {
+    const raw = item.params?.textPosition;
+    const position = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const fallbackX = 0.5 + Math.max(0, index) * 0.02;
+    const fallbackY = 0.45 + Math.max(0, index) * 0.08;
+    return {
+      x: clampClipValue(Number(position.x ?? fallbackX), 0, 1),
+      y: clampClipValue(Number(position.y ?? fallbackY), 0, 1),
+    };
+  }
+
   function moveSelectedSubtitles(deltaSeconds: number) {
     moveSubtitleSegments(selectedSubtitleIndexes(), deltaSeconds);
   }
@@ -1462,13 +1518,13 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
   return {
     project, projects, isEmptyWorkspace, jobs: videoJobs, activeJobs, srt, sourceSrt, translatedSrt, edits, setEdits: updateEdits, dirty, voiceSegments, voiceByIndex, timelineIssues, latestVoiceAsset, activeBlurEffect,
-    selectedTextItems,
+    selectedTextItems, selectedTimelineAudioItem, selectedTimelineImageItem,
     selection, setSelection, currentSegment, currentVoice, activeTool, openTool, assetTab, setAssetTab,
     bottomView, setBottomView, playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
     previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob,
-    area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
+    area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
     translationDevice, setTranslationDevice, removeMethod, setRemoveMethod, removeMode, setRemoveMode,

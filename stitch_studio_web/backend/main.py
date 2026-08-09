@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
 import os
 import re
@@ -2002,6 +2003,24 @@ def _timeline_float(item: dict[str, Any], key: str, default: float = 0.0) -> flo
     return max(0.0, value)
 
 
+def _timeline_params_float(item: dict[str, Any], key: str, default: float = 0.0) -> float:
+    params = item.get("params") if isinstance(item.get("params"), dict) else {}
+    try:
+        value = float(params.get(key, default) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, value)
+
+
+def _timeline_volume_gain(item: dict[str, Any]) -> float:
+    try:
+        db = float(item.get("volumeDb", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        db = 0.0
+    db = max(-60.0, min(20.0, db))
+    return 0.0 if db <= -60.0 else math.pow(10.0, db / 20.0)
+
+
 def _timeline_audio_sources(project) -> list[dict[str, Any]]:
     metadata = project.metadata or {}
     timeline_state = metadata.get("timeline_state") if isinstance(metadata.get("timeline_state"), dict) else {}
@@ -2021,6 +2040,10 @@ def _timeline_audio_sources(project) -> list[dict[str, Any]]:
         start = _timeline_float(item, "start")
         duration = max(0.05, _timeline_float(item, "duration", 0.0))
         source_start = _timeline_float(item, "sourceStart")
+        fade_in = _timeline_params_float(item, "audioFadeIn")
+        fade_out = _timeline_params_float(item, "audioFadeOut")
+        fade_in = min(fade_in, duration)
+        fade_out = min(fade_out, max(0.0, duration - fade_in))
         path: Path | None = None
         label = str(item.get("name") or kind or "clip")
         if kind == "audio":
@@ -2055,6 +2078,9 @@ def _timeline_audio_sources(project) -> list[dict[str, Any]]:
                 "start": start,
                 "duration": duration,
                 "source_start": source_start,
+                "volume": _timeline_volume_gain(item),
+                "fade_in": fade_in,
+                "fade_out": fade_out,
                 "label": label,
             })
     return sources
@@ -2078,10 +2104,22 @@ def _render_workspace_timeline_audio(project, progress: Callable[[str], None] | 
         delay_ms = int(round(float(source["start"]) * 1000))
         duration = max(0.05, float(source["duration"]))
         source_start = max(0.0, float(source["source_start"]))
+        volume = max(0.0, float(source.get("volume", 1.0)))
+        fade_in = max(0.0, min(float(source.get("fade_in", 0.0)), duration))
+        fade_out = max(0.0, min(float(source.get("fade_out", 0.0)), max(0.0, duration - fade_in)))
         label = f"a{index}"
+        chain = [
+            f"[{index}:a:0]atrim=start={source_start:.6f}:duration={duration:.6f}",
+            "asetpts=PTS-STARTPTS",
+            f"volume={volume:.8f}",
+        ]
+        if fade_in > 0:
+            chain.append(f"afade=t=in:st=0:d={fade_in:.6f}")
+        if fade_out > 0:
+            chain.append(f"afade=t=out:st={max(0.0, duration - fade_out):.6f}:d={fade_out:.6f}")
+        chain.extend(["aresample=48000", f"adelay={delay_ms}:all=1"])
         filters.append(
-            f"[{index}:a:0]atrim=start={source_start:.6f}:duration={duration:.6f},"
-            f"asetpts=PTS-STARTPTS,aresample=48000,adelay={delay_ms}:all=1[{label}]"
+            ",".join(chain) + f"[{label}]"
         )
         labels.append(f"[{label}]")
     if len(labels) == 1:

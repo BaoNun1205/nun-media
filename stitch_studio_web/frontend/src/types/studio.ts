@@ -35,6 +35,7 @@ export interface SubtitleStyle extends TextStyle {
   letterSpacing?: number;
   lineHeight?: number;
   textAlign?: 'left' | 'center' | 'right';
+  verticalAlign?: 'top' | 'middle' | 'bottom';
 }
 
 export interface Asset {

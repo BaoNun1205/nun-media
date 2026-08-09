@@ -31,6 +31,7 @@ export const DEFAULT_TEXT_STYLE: TextStyle = {
   letterSpacing: 0,
   lineHeight: 1.05,
   textAlign: 'center',
+  verticalAlign: 'bottom',
   opacity: 1,
   staticEffect: 'none',
 };

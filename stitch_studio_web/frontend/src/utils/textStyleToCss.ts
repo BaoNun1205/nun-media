@@ -49,7 +49,6 @@ export function textStyleToCss(style?: TextStyle, options: { previewScale?: numb
   const glowBlur = Math.max(0, px(resolved.glowBlur) * scale);
   const glowStrength = Math.max(0, px(resolved.glowStrength, 1));
   const shadows: string[] = [];
-
   if (secondaryOutline > 0 && resolved.secondaryOutlineColor) {
     shadows.push(`0 0 ${secondaryOutline}px ${resolved.secondaryOutlineColor}`);
   }

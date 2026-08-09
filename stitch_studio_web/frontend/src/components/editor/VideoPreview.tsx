@@ -4,11 +4,13 @@ import { API_BASE } from '../../services/api';
 import { formatClock } from '../../lib/studio';
 import { textStyleToCss } from '../../utils/textStyleToCss';
 import type { EditorController } from '../../hooks/useEditorController';
-import type { SubtitleArea } from '../../types/studio';
+import type { SubtitleArea, TimelineItem } from '../../types/studio';
 import type { TextStyle } from '../../types/textStyle';
 
 type DragMode = 'draw' | 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type FrameFormat = 'original' | '16:9' | '9:16' | '1:1' | '4:5';
+type ImageTransform = { scale: number; x: number; y: number };
+type ImageDragState = { pointerId: number; clientX: number; clientY: number; width: number; height: number; itemId: string; transform: ImageTransform; previousItems: TimelineItem[]; latestItems: TimelineItem[]; moved: boolean };
 
 const FRAME_RATIOS: Record<Exclude<FrameFormat, 'original'>, number> = {
   '16:9': 16 / 9,
@@ -36,6 +38,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const horizontalGuideRef = useRef<HTMLDivElement>(null);
   const verticalGuideRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef(editor.playhead);
+  const imageDragRef = useRef<ImageDragState | null>(null);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -69,6 +72,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
   const activeImageItem = editor.activeTimelineItem?.kind === 'image' && itemEnabled(editor.activeTimelineItem) ? editor.activeTimelineItem : undefined;
+  const activeImageTransform = imageTransformValue(activeImageItem);
   const activeImageUrl = activeImageItem?.projectAssetId
     ? `${API_BASE}/project-assets/${activeImageItem.projectAssetId}/download?preview=1`
     : activeImageItem?.sourceAssetId
@@ -97,6 +101,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
   const editingOcrArea = editor.activeTool === 'subtitles' && editor.subtitleSource === 'hardsub' && editor.ocrAreaMode === 'custom';
+  const activeImageSelected = Boolean(activeImageItem && editor.selection.type === 'timeline-items' && editor.selection.keys.length === 1 && editor.selection.keys[0] === activeImageItem.id);
+  const canDragActiveImage = Boolean(activeImageItem && activeImageSelected && !editingOcrArea && !editor.editArea);
   const editableArea = editingOcrArea ? editor.ocrArea : editor.area;
   const setEditableArea = editingOcrArea ? editor.setOcrArea : editor.setArea;
   editableAreaRef.current = editableArea;
@@ -115,9 +121,9 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
       : activeVideoId ? `${API_BASE}/videos/${activeVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}` : '';
   const timelineClockPlayback = Boolean(activeImageUrl || !sourceUrl);
 
-  function applyDbGain(media: HTMLMediaElement | null, db: number, muted = false) {
+  function applyGainValue(media: HTMLMediaElement | null, gainValue: number, muted = false) {
     if (!media) return;
-    const gainValue = muted || db <= -60 ? 0 : Math.pow(10, db / 20);
+    const finalGain = muted ? 0 : Math.max(0, gainValue);
     try {
       const context = audioContextRef.current || new AudioContext();
       audioContextRef.current = context;
@@ -137,13 +143,29 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
         chain = { gain, limiter };
         audioChainsRef.current.set(media, chain);
       }
-      chain.gain.gain.setTargetAtTime(gainValue, context.currentTime, 0.01);
+      chain.gain.gain.setTargetAtTime(finalGain, context.currentTime, 0.01);
       media.volume = 1;
       media.muted = false;
     } catch {
-      media.volume = Math.max(0, Math.min(1, gainValue));
-      media.muted = muted || db <= -60;
+      media.volume = Math.max(0, Math.min(1, finalGain));
+      media.muted = muted || finalGain <= 0;
     }
+  }
+  function applyDbGain(media: HTMLMediaElement | null, db: number, muted = false) {
+    applyGainValue(media, db <= -60 ? 0 : Math.pow(10, db / 20), muted);
+  }
+  function timelineAudioGain(item: TimelineItem | undefined, timelineTime: number, fallbackDb: number) {
+    const db = item?.volumeDb ?? fallbackDb;
+    const baseGain = db <= -60 ? 0 : Math.pow(10, db / 20);
+    if (!item) return baseGain;
+    const localTime = timelineTime - item.start;
+    const duration = Math.max(0.05, item.duration || 0.05);
+    const fadeIn = audioFadeValue(item, 'audioFadeIn');
+    const fadeOut = audioFadeValue(item, 'audioFadeOut');
+    const fadeInFactor = fadeIn > 0 ? clampNumber(localTime / fadeIn, 0, 1) : 1;
+    const remaining = duration - localTime;
+    const fadeOutFactor = fadeOut > 0 ? clampNumber(remaining / fadeOut, 0, 1) : 1;
+    return baseGain * Math.min(fadeInFactor, fadeOutFactor);
   }
   function setRate(media: HTMLMediaElement | null, rate: number) {
     if (!media) return;
@@ -157,7 +179,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
       : timelineTime;
     if (Math.abs(voice.currentTime - audioTime) > .18) voice.currentTime = audioTime;
     setRate(voice, activeVoiceAudioClip ? 1 : editor.voiceSpeed);
-    applyDbGain(voice, activeVoiceAudioClip?.volumeDb ?? editor.voiceVolumeDb, editor.previewMuted || Boolean(activeVoiceAudioClip && !itemAudible(activeVoiceAudioClip)));
+    applyGainValue(voice, timelineAudioGain(activeVoiceAudioClip, timelineTime, editor.voiceVolumeDb), editor.previewMuted || Boolean(activeVoiceAudioClip && !itemAudible(activeVoiceAudioClip)));
     if (shouldPlay) voice.play().catch(() => undefined);
   }
   function syncSourceAudioAt(timelineTime: number, shouldPlay = false) {
@@ -166,7 +188,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     const audioTime = Math.max(0, timelineTime - activeSourceAudioClip.start + (activeSourceAudioClip.sourceStart || 0));
     if (Math.abs(audio.currentTime - audioTime) > .18) audio.currentTime = audioTime;
     setRate(audio, editor.videoSpeed);
-    applyDbGain(audio, activeSourceAudioClip?.volumeDb ?? editor.videoVolumeDb, editor.previewMuted || !itemAudible(activeSourceAudioClip));
+    applyGainValue(audio, timelineAudioGain(activeSourceAudioClip, timelineTime, editor.videoVolumeDb), editor.previewMuted || !itemAudible(activeSourceAudioClip));
     if (shouldPlay) audio.play().catch(() => undefined);
   }
   function videoTimelineTime(video: HTMLVideoElement) {
@@ -217,7 +239,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     if (video && Math.abs(video.currentTime - mediaTime) > .4) video.currentTime = mediaTime;
     if (video) { syncVoice(video); syncSourceAudio(video); }
     else { syncVoiceAt(editor.playhead); syncSourceAudioAt(editor.playhead); }
-  }, [previewTime, editor.playhead, editor.videoSpeed, sourceAudioUrl, voiceUrl]);
+  }, [previewTime, editor.playhead, editor.videoSpeed, sourceAudioUrl, voiceUrl, activeVoiceAudioClip, activeSourceAudioClip]);
   useEffect(() => {
     playheadRef.current = editor.playhead;
   }, [editor.playhead]);
@@ -246,7 +268,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     setRate(video, editor.videoSpeed);
     syncVoice(video, !video.paused);
     syncSourceAudio(video, !video.paused);
-  }, [editor.videoVolumeDb, editor.videoSpeed, editor.voiceVolumeDb, editor.voiceSpeed, editor.previewMuted, voiceUrl, sourceAudioUrl, sourceAudioMuted]);
+  }, [editor.videoVolumeDb, editor.videoSpeed, editor.voiceVolumeDb, editor.voiceSpeed, editor.previewMuted, voiceUrl, sourceAudioUrl, sourceAudioMuted, activeVoiceAudioClip, activeSourceAudioClip]);
   useEffect(() => () => { voiceRef.current?.pause(); }, [voiceUrl]);
   useEffect(() => () => { sourceAudioRef.current?.pause(); }, [sourceAudioUrl]);
   useEffect(() => {
@@ -296,7 +318,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   }, [playing, timelineClockPlayback, editor.duration, voiceUrl, sourceAudioUrl, activeVoiceAudioClip, activeSourceAudioClip]);
   useEffect(() => {
     if (subtitleMoveRef.current) return;
-    if (liveSubtitleRef.current) liveSubtitleRef.current.style.transform = '';
+    if (liveSubtitleRef.current) liveSubtitleRef.current.style.transform = subtitleAnchorTransform;
     if (safeAreaRef.current) safeAreaRef.current.style.transform = '';
   }, [editor.area]);
   useEffect(() => {
@@ -329,6 +351,60 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
+
+  function beginImageDrag(event: React.PointerEvent<HTMLImageElement>) {
+    if (!activeImageItem || !canDragActiveImage) return;
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    event.stopPropagation();
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imageDragRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      width: bounds.width,
+      height: bounds.height,
+      itemId: activeImageItem.id,
+      transform: activeImageTransform,
+      previousItems: cloneTimelineItemsForPreview(editor.timelineItems),
+      latestItems: editor.timelineItems,
+      moved: false,
+    };
+  }
+  function moveImageDrag(event: React.PointerEvent<HTMLImageElement>) {
+    const drag = imageDragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const deltaX = (event.clientX - drag.clientX) / Math.max(1, drag.width);
+    const deltaY = (event.clientY - drag.clientY) / Math.max(1, drag.height);
+    let x = clampNumber(drag.transform.x + deltaX, 0, 1);
+    let y = clampNumber(drag.transform.y + deltaY, 0, 1);
+    const centeredX = Math.abs(x - 0.5) < 0.018;
+    const centeredY = Math.abs(y - 0.5) < 0.018;
+    if (centeredX) x = 0.5;
+    if (centeredY) y = 0.5;
+    drag.moved = drag.moved || Math.abs(event.clientX - drag.clientX) > 2 || Math.abs(event.clientY - drag.clientY) > 2;
+    const nextTransform = { ...drag.transform, x, y };
+    const nextItems = editor.timelineItems.map((item) => item.id === drag.itemId
+      ? { ...item, params: { ...(item.params || {}), imageTransform: nextTransform } }
+      : item);
+    drag.latestItems = nextItems;
+    editor.previewTimelineItems(nextItems);
+    if (horizontalGuideRef.current) horizontalGuideRef.current.style.display = centeredY ? 'block' : 'none';
+    if (verticalGuideRef.current) verticalGuideRef.current.style.display = centeredX ? 'block' : 'none';
+  }
+  function finishImageDrag(event: React.PointerEvent<HTMLImageElement>) {
+    const drag = imageDragRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.stopPropagation();
+    event.preventDefault();
+    imageDragRef.current = null;
+    if (horizontalGuideRef.current) horizontalGuideRef.current.style.display = 'none';
+    if (verticalGuideRef.current) verticalGuideRef.current.style.display = 'none';
+    if (drag.moved) void editor.commitTimelineItems(drag.latestItems, 'Updated image position.', drag.previousItems);
+  }
 
   function point(event: React.PointerEvent) {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -401,7 +477,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     dragAreaRef.current = nextArea;
     const translateX = (xmin - start.area.xmin) * start.width;
     const translateY = (ymin - start.area.ymin) * start.height;
-    if (liveSubtitleRef.current) liveSubtitleRef.current.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) translateY(-50%)`;
+    if (liveSubtitleRef.current) liveSubtitleRef.current.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) ${subtitleAnchorTransform}`;
     if (safeAreaRef.current) safeAreaRef.current.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
     if (horizontalGuideRef.current) horizontalGuideRef.current.style.display = centeredY ? 'block' : 'none';
     if (verticalGuideRef.current) verticalGuideRef.current.style.display = centeredX ? 'block' : 'none';
@@ -454,7 +530,14 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     width: `${(editor.activeBlurEffect.area.xmax - editor.activeBlurEffect.area.xmin) * 100}%`,
     height: `${(editor.activeBlurEffect.area.ymax - editor.activeBlurEffect.area.ymin) * 100}%`,
   } : undefined;
-  const subtitlePosition = { left: `${editor.area.xmin * 100}%`, top: `${((editor.area.ymin + editor.area.ymax) / 2) * 100}%`, width: `${(editor.area.xmax - editor.area.xmin) * 100}%` };
+  const subtitleVerticalAlign = editor.style.verticalAlign || 'bottom';
+  const subtitleTop = subtitleVerticalAlign === 'top'
+    ? editor.area.ymin
+    : subtitleVerticalAlign === 'middle'
+      ? (editor.area.ymin + editor.area.ymax) / 2
+      : editor.area.ymax;
+  const subtitleAnchorTransform = subtitleVerticalAlign === 'top' ? 'translateY(0)' : subtitleVerticalAlign === 'middle' ? 'translateY(-50%)' : 'translateY(-100%)';
+  const subtitlePosition = { left: `${editor.area.xmin * 100}%`, top: `${subtitleTop * 100}%`, width: `${(editor.area.xmax - editor.area.xmin) * 100}%`, transform: subtitleAnchorTransform };
   const sourcePixelHeight = videoSize.height > 120 ? videoSize.height : 1080;
   const previewTextScale = Math.max(0.2, Math.min(4, frameHeight / sourcePixelHeight));
 
@@ -484,13 +567,22 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     </div>
     <div className="preview-viewport" ref={viewportRef}>
       <div className="video-canvas" style={{ width: frameWidth, height: frameHeight, aspectRatio: frameAspect }} ref={canvasRef} onPointerDown={begin} onPointerMove={move} onPointerUp={() => { const wasEditingArea = Boolean(startRef.current && editor.editArea && !editingOcrArea); startRef.current = null; if (wasEditingArea) void editor.saveSubtitleArea(editableAreaRef.current); }} onPointerCancel={() => { startRef.current = null; }}>
-        <div className="preview-media-layer" style={{ transform: `scale(${editor.videoScale})` }}>
+        <div className={`preview-media-layer ${activeImageUrl ? 'image-mode' : 'video-mode'}`} style={activeImageUrl ? undefined : { transform: `scale(${editor.videoScale})` }}>
           {activeImageUrl ? <img
             ref={imageRef}
-            className="preview-image"
-            style={{ objectFit: editor.fitMode }}
+            className={`preview-image ${canDragActiveImage ? 'draggable' : ''} ${imageDragRef.current ? 'dragging' : ''}`}
+            style={{
+              objectFit: editor.fitMode,
+              left: `${activeImageTransform.x * 100}%`,
+              top: `${activeImageTransform.y * 100}%`,
+              transform: `translate(-50%, -50%) scale(${activeImageTransform.scale})`,
+            }}
             src={activeImageUrl}
             alt={editor.activeTimelineItem?.name || 'Timeline image'}
+            onPointerDown={beginImageDrag}
+            onPointerMove={moveImageDrag}
+            onPointerUp={finishImageDrag}
+            onPointerCancel={finishImageDrag}
             onLoad={(event) => {
               const image = event.currentTarget;
               setVideoSize({ width: image.naturalWidth || 16, height: image.naturalHeight || 9 });
@@ -545,13 +637,14 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
           {activeTextItems.map((item, index) => {
             const itemStyle = (typeof item.params?.textStyle === 'object' && item.params.textStyle ? item.params.textStyle : {}) as TextStyle;
             const text = String(item.params?.text || item.name || 'Text');
+            const position = textPositionValue(item, index);
             return <button
               key={item.id}
               className={`live-text-item effect-${itemStyle.staticEffect || 'none'}`}
               data-text={text}
               style={{
-                left: `${50 + index * 2}%`,
-                top: `${45 + index * 8}%`,
+                left: `${position.x * 100}%`,
+                top: `${position.y * 100}%`,
                 ...textStyleToCss(itemStyle, { previewScale: previewTextScale }),
               }}
               onClick={(event) => { event.stopPropagation(); editor.setSelection({ type: 'timeline-items', keys: [item.id], track: item.track }); }}
@@ -580,4 +673,36 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
 
 function FilmPlaceholder() {
   return <div className="empty-preview-icon"><Play size={28} fill="currentColor" /></div>;
+}
+
+function clampNumber(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? value : minimum));
+}
+
+function audioFadeValue(item: TimelineItem, key: 'audioFadeIn' | 'audioFadeOut') {
+  const value = Number(item.params?.[key] ?? 0);
+  return clampNumber(value, 0, Math.max(0, item.duration || 0));
+}
+
+function imageTransformValue(item?: TimelineItem): ImageTransform {
+  const raw = item?.params?.imageTransform;
+  const transform = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return {
+    scale: clampNumber(Number(transform.scale ?? 1), 0.1, 5),
+    x: clampNumber(Number(transform.x ?? 0.5), 0, 1),
+    y: clampNumber(Number(transform.y ?? 0.5), 0, 1),
+  };
+}
+
+function textPositionValue(item: TimelineItem, index: number) {
+  const raw = item.params?.textPosition;
+  const position = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return {
+    x: clampNumber(Number(position.x ?? 0.5 + index * 0.02), 0, 1),
+    y: clampNumber(Number(position.y ?? 0.45 + index * 0.08), 0, 1),
+  };
+}
+
+function cloneTimelineItemsForPreview(items: TimelineItem[]) {
+  return items.map((item) => ({ ...item, params: item.params ? { ...item.params } : undefined }));
 }

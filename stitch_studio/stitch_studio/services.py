@@ -2954,19 +2954,25 @@ def _write_positioned_ass(
     bg_alpha = int(round((1 - bg_opacity) * 255))
     back_color = _ass_color(str(style_value("backgroundColor", default="#000000")), alpha=bg_alpha) if background else shadow_color
     
-    text_align = style_value("textAlign", default="center")
+    text_align = str(style_value("textAlign", default="center")).lower()
+    vertical_align = str(style_value("verticalAlign", default="bottom")).lower()
+    horizontal_alignment = {"left": 1, "center": 2, "right": 3}.get(text_align, 2)
+    vertical_offset = {"bottom": 0, "middle": 3, "top": 6}.get(vertical_align, 0)
+    alignment = horizontal_alignment + vertical_offset
     if text_align == "left":
-        alignment = 1
         x = xmin + max(8, int(width * 0.02))
     elif text_align == "right":
-        alignment = 3
         x = xmax - max(8, int(width * 0.02))
     else:
-        alignment = 2
         x = (xmin + xmax) // 2
 
-    # Anchors the bottom of the subtitle block
-    y = max(ymin + 8, ymax - max(12, int((ymax - ymin) * 0.07)))
+    inset = max(8, int((ymax - ymin) * 0.07))
+    if vertical_align == "top":
+        y = ymin + inset
+    elif vertical_align == "middle":
+        y = (ymin + ymax) // 2
+    else:
+        y = max(ymin + 8, ymax - max(12, inset))
     glow_enabled = bool(style_value("glowEnabled", default=False))
     glow_hex = str(style_value("glowColor", default=shadow_hex))
     glow_blur = style_float("glowBlur", default=0, minimum=0, maximum=48) * scale

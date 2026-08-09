@@ -1,11 +1,11 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import { AlignCenter, AlignLeft, AlignRight, Bold, Copy, Download, FolderOpen, Gauge, Info, Italic, Languages, MoveHorizontal, Play, RotateCcw, Save, SkipBack, SkipForward, Trash2, Underline, Volume2, VolumeX, WandSparkles } from 'lucide-react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { AlignCenter, AlignLeft, AlignRight, Bold, Copy, Download, FolderOpen, Gauge, Image as ImageIcon, Info, Italic, Languages, MoveHorizontal, Play, RotateCcw, Save, SkipBack, SkipForward, Trash2, Underline, Volume2, VolumeX, WandSparkles } from 'lucide-react';
 import { formatClock, formatDuration, formatSize } from '../../lib/studio';
 import { API_BASE, copyText, studioApi } from '../../services/api';
 import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, fontStack } from '../../config/fontRegistry';
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import type { EditorController } from '../../hooks/useEditorController';
-import type { SubtitleStyle } from '../../types/studio';
+import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 
 export function ContextInspector({ editor }: { editor: EditorController }) {
   return <aside className="context-inspector">
@@ -13,6 +13,8 @@ export function ContextInspector({ editor }: { editor: EditorController }) {
     <div className="inspector-body">{editor.selection.type === 'subtitle' && editor.currentSegment ? <SubtitleInspector editor={editor} />
       : editor.selection.type === 'voice' && editor.currentVoice ? <VoiceInspector editor={editor} />
       : editor.selection.type === 'timeline-items' && isMergedVoiceSelection(editor) ? <VoiceoverInspector editor={editor} />
+      : editor.selection.type === 'timeline-items' && editor.selectedTimelineAudioItem ? <AudioClipInspector editor={editor} item={editor.selectedTimelineAudioItem} />
+      : editor.selection.type === 'timeline-items' && editor.selectedTimelineImageItem ? <ImageClipInspector editor={editor} item={editor.selectedTimelineImageItem} />
       : editor.selection.type === 'timeline-items' ? <MultiSelectionInspector editor={editor} />
       : editor.selection.type === 'video' ? <VideoInspectorControls editor={editor} />
       : editor.selection.type === 'subtitle-track' ? <TrackInspector editor={editor} />
@@ -72,6 +74,105 @@ function VoiceoverInspector({ editor }: { editor: EditorController }) {
   return <><div className="inspector-hero"><span><Volume2 size={18} /></span><div><h2>Voiceover</h2><p>Merged clip on A2</p></div></div><Section title="Âm thanh"><DbControl value={editor.voiceVolumeDb} onChange={editor.updateVoiceVolumeDb} /></Section><Section title="Tốc độ"><ClipRangeControl value={editor.voiceSpeed} min={.1} max={80} step={.1} suffix="×" onChange={editor.updateVoiceSpeed} /></Section><p className="inspector-help">The voice settings are saved with this video version and apply in the preview.</p></>;
 }
 
+function AudioClipInspector({ editor, item }: { editor: EditorController; item: TimelineItem }) {
+  const commit = useTimelineItemDraft(editor, 'Updated audio clip settings.');
+  const fadeIn = audioFadeValue(item, 'audioFadeIn');
+  const fadeOut = audioFadeValue(item, 'audioFadeOut');
+  const duration = Math.max(0.1, item.duration || 0.1);
+  const update = (updates: { volumeDb?: number; audioFadeIn?: number; audioFadeOut?: number }, finish = false) => {
+    const nextFadeIn = updates.audioFadeIn === undefined ? fadeIn : clampNumber(updates.audioFadeIn, 0, Math.max(0, duration - (updates.audioFadeOut ?? fadeOut)));
+    const nextFadeOut = updates.audioFadeOut === undefined ? fadeOut : clampNumber(updates.audioFadeOut, 0, Math.max(0, duration - nextFadeIn));
+    commit.update(item.id, (clip) => ({
+      ...clip,
+      volumeDb: updates.volumeDb === undefined ? item.volumeDb ?? 0 : clampNumber(updates.volumeDb, -60, 20),
+      params: {
+        ...(clip.params || {}),
+        audioFadeIn: nextFadeIn,
+        audioFadeOut: nextFadeOut,
+      },
+    }), finish);
+  };
+  return <>
+    <div className="inspector-hero"><span><Volume2 size={18} /></span><div><h2>{item.name}</h2><p>{item.track || 'Audio'} clip</p></div></div>
+    <Section title="Basic">
+      <InspectorRangeField label="Volume" value={item.volumeDb ?? 0} min={-60} max={20} step={0.1} suffix="dB" mutedAtMin onChange={(value, finish) => update({ volumeDb: value }, finish)} />
+      <InspectorRangeField label="Fade In" value={fadeIn} min={0} max={Math.max(0, duration - fadeOut)} step={0.1} suffix="s" onChange={(value, finish) => update({ audioFadeIn: value }, finish)} />
+      <InspectorRangeField label="Fade Out" value={fadeOut} min={0} max={Math.max(0, duration - fadeIn)} step={0.1} suffix="s" onChange={(value, finish) => update({ audioFadeOut: value }, finish)} />
+      <button className="inspector-reset-button" type="button" onClick={() => update({ volumeDb: 0, audioFadeIn: 0, audioFadeOut: 0 }, true)}><RotateCcw size={14} /> Reset</button>
+    </Section>
+  </>;
+}
+
+function ImageClipInspector({ editor, item }: { editor: EditorController; item: TimelineItem }) {
+  const commit = useTimelineItemDraft(editor, 'Updated image transform.');
+  const transform = imageTransformValue(item);
+  const update = (updates: Partial<{ scale: number; x: number; y: number }>, finish = false) => {
+    const nextTransform = {
+      scale: clampNumber(updates.scale ?? transform.scale, 0.1, 5),
+      x: clampNumber(updates.x ?? transform.x, 0, 1),
+      y: clampNumber(updates.y ?? transform.y, 0, 1),
+    };
+    commit.update(item.id, (clip) => ({
+      ...clip,
+      params: {
+        ...(clip.params || {}),
+        imageTransform: nextTransform,
+      },
+    }), finish);
+  };
+  return <>
+    <div className="inspector-hero"><span><ImageIcon size={18} /></span><div><h2>{item.name}</h2><p>{item.track || 'Image'} clip</p></div></div>
+    <Section title="Basic">
+      <StyleGroup title="Transform">
+        <InspectorRangeField label="Scale" value={Math.round(transform.scale * 100)} min={10} max={500} step={1} suffix="%" onChange={(value, finish) => update({ scale: value / 100 }, finish)} />
+        <InspectorRangeField label="Position X" value={Math.round(transform.x * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ x: value / 100 }, finish)} />
+        <InspectorRangeField label="Position Y" value={Math.round(transform.y * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ y: value / 100 }, finish)} />
+        <button className="inspector-reset-button" type="button" onClick={() => update({ scale: 1, x: 0.5, y: 0.5 }, true)}><RotateCcw size={14} /> Reset Transform</button>
+      </StyleGroup>
+    </Section>
+  </>;
+}
+
+function useTimelineItemDraft(editor: EditorController, message: string) {
+  const previousRef = useRef<TimelineItem[] | null>(null);
+  const latestRef = useRef<TimelineItem[] | null>(null);
+  const cloneItems = (items: TimelineItem[]) => items.map((clip) => ({ ...clip, params: clip.params ? { ...clip.params } : undefined }));
+  const finish = () => {
+    const previous = previousRef.current;
+    const latest = latestRef.current;
+    if (!previous || !latest) return;
+    previousRef.current = null;
+    latestRef.current = null;
+    void editor.commitTimelineItems(latest, message, previous);
+  };
+  return {
+    update(id: string, updater: (item: TimelineItem) => TimelineItem, shouldFinish = false) {
+      if (!previousRef.current) previousRef.current = cloneItems(editor.timelineItems);
+      const next = editor.timelineItems.map((clip) => clip.id === id ? updater(clip) : clip);
+      latestRef.current = next;
+      editor.previewTimelineItems(next);
+      if (shouldFinish) finish();
+    },
+  };
+}
+
+function InspectorRangeField({ label, value, min, max, step, suffix, mutedAtMin, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; mutedAtMin?: boolean; onChange: (value: number, finish: boolean) => void }) {
+  const normalized = clampNumber(value, min, max);
+  const muted = Boolean(mutedAtMin && normalized <= min);
+  return (
+    <FieldRow label={label}>
+      <div className="style-range-field inspector-range-field">
+        <input type="range" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value), false)} onPointerUp={(event) => onChange(Number(event.currentTarget.value), true)} onKeyUp={(event) => { if (event.key === 'Enter') onChange(Number(event.currentTarget.value), true); }} />
+        <label className={`style-number-box ${muted ? 'muted' : ''}`}>
+          {muted ? <VolumeX size={13} /> : null}
+          <input type="number" min={min} max={max} step={step} value={Number.isInteger(step) ? normalized : normalized.toFixed(1)} onChange={(event) => onChange(Number(event.target.value), false)} onBlur={(event) => onChange(Number(event.currentTarget.value), true)} />
+          <span>{muted ? '-inf dB' : suffix}</span>
+        </label>
+      </div>
+    </FieldRow>
+  );
+}
+
 function DbControl({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   const muted = value <= -60;
   return <div className="clip-control"><input aria-label="Volume in decibels" type="range" min="-60" max="20" step=".1" value={value} onChange={(event) => onChange(Number(event.target.value))} /><label className={`clip-value ${muted ? 'muted' : ''}`}>{muted ? <VolumeX size={15} /> : null}<input type="number" min="-60" max="20" step=".1" value={value} onChange={(event) => onChange(Number(event.target.value))} /><span>{muted ? '−∞ dB' : 'dB'}</span></label></div>;
@@ -128,6 +229,8 @@ function SubtitleStyleControls({ editor }: { editor: EditorController }) {
     onUpdate={editor.updateSubtitleStyle}
     onPreset={editor.applySubtitleStylePreset}
     onReset={editor.resetSubtitleStylePreset}
+    canDistribute={editor.selectedTextItems.length >= 3}
+    onDistribute={editor.distributeTimelineTextItems}
   />;
 }
 
@@ -138,6 +241,8 @@ function TimelineTextStyleControls({ editor }: { editor: EditorController }) {
     onUpdate={editor.updateTimelineTextStyle}
     onPreset={editor.applyTimelineTextStylePreset}
     onReset={editor.resetTimelineTextStylePreset}
+    canDistribute={editor.selectedTextItems.length >= 3}
+    onDistribute={editor.distributeTimelineTextItems}
   />;
 }
 
@@ -147,12 +252,16 @@ function TextStyleControls({
   onUpdate,
   onPreset,
   onReset,
+  canDistribute,
+  onDistribute,
 }: {
   title: string;
   style: SubtitleStyle;
   onUpdate: (updates: Partial<SubtitleStyle>) => void;
   onPreset: (presetId: string) => void;
   onReset: () => void;
+  canDistribute: boolean;
+  onDistribute: (axis: 'horizontal' | 'vertical') => void;
 }) {
   const backgroundEnabled = Boolean(style.backgroundEnabled ?? style.background);
   const weightActive = style.fontWeight === 'bold' || Number(style.fontWeight) >= 700;
@@ -186,12 +295,12 @@ function TextStyleControls({
             />
           </FieldRow>
           <FieldRow label="Align">
-            <SegmentedControl
-              options={[
-                { id: 'left', label: 'Left', icon: <AlignLeft size={15} />, active: style.textAlign === 'left', onClick: () => onUpdate({ textAlign: 'left' }) },
-                { id: 'center', label: 'Center', icon: <AlignCenter size={15} />, active: !style.textAlign || style.textAlign === 'center', onClick: () => onUpdate({ textAlign: 'center' }) },
-                { id: 'right', label: 'Right', icon: <AlignRight size={15} />, active: style.textAlign === 'right', onClick: () => onUpdate({ textAlign: 'right' }) },
-              ]}
+            <AlignToolbar
+              horizontal={style.textAlign || 'center'}
+              vertical={style.verticalAlign || 'bottom'}
+              canDistribute={canDistribute}
+              onUpdate={onUpdate}
+              onDistribute={onDistribute}
             />
           </FieldRow>
         </StyleGroup>
@@ -328,6 +437,43 @@ function SegmentedControl({ options }: { options: Array<{ id: string; label: str
   ))}</div>;
 }
 
+function AlignToolbar({ horizontal, vertical, canDistribute, onUpdate, onDistribute }: { horizontal: 'left' | 'center' | 'right'; vertical: 'top' | 'middle' | 'bottom'; canDistribute: boolean; onUpdate: (updates: Partial<SubtitleStyle>) => void; onDistribute: (axis: 'horizontal' | 'vertical') => void }) {
+  return (
+    <div className="align-toolbar" role="toolbar" aria-label="Text alignment">
+      <button type="button" className={horizontal === 'left' ? 'active' : ''} title="Align left" onClick={() => onUpdate({ textAlign: 'left' })}><AlignLeft size={15} /></button>
+      <button type="button" className={horizontal === 'center' ? 'active' : ''} title="Align horizontal center" onClick={() => onUpdate({ textAlign: 'center' })}><AlignCenter size={15} /></button>
+      <button type="button" className={horizontal === 'right' ? 'active' : ''} title="Align right" onClick={() => onUpdate({ textAlign: 'right' })}><AlignRight size={15} /></button>
+      <i aria-hidden="true" />
+      <button type="button" className={vertical === 'top' ? 'active' : ''} title="Align top" onClick={() => onUpdate({ verticalAlign: 'top' })}><AlignTopIcon /></button>
+      <button type="button" className={vertical === 'middle' ? 'active' : ''} title="Align vertical center" onClick={() => onUpdate({ verticalAlign: 'middle' })}><AlignMiddleIcon /></button>
+      <button type="button" className={vertical === 'bottom' ? 'active' : ''} title="Align bottom" onClick={() => onUpdate({ verticalAlign: 'bottom' })}><AlignBottomIcon /></button>
+      <i aria-hidden="true" />
+      <button type="button" disabled={!canDistribute} title={canDistribute ? 'Distribute horizontally' : 'Select at least 3 text clips to distribute horizontally'} onClick={() => onDistribute('horizontal')}><DistributeHorizontalIcon /></button>
+      <button type="button" disabled={!canDistribute} title={canDistribute ? 'Distribute vertically' : 'Select at least 3 text clips to distribute vertically'} onClick={() => onDistribute('vertical')}><DistributeVerticalIcon /></button>
+    </div>
+  );
+}
+
+function AlignTopIcon() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10M5 6h6M6 9h4M7 12h2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+}
+
+function AlignMiddleIcon() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M5 4h6M5 12h6" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+}
+
+function AlignBottomIcon() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13h10M5 10h6M6 7h4M7 4h2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>;
+}
+
+function DistributeHorizontalIcon() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3v10M13 3v10M6 5h4M5 8h6M6 11h4" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" /></svg>;
+}
+
+function DistributeVerticalIcon() {
+  return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10M3 13h10M5 6v4M8 5v6M11 6v4" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" /></svg>;
+}
+
 function NumericSliderField({ label, value, min, max, step, suffix, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; onChange: (value: number) => void }) {
   const normalized = clampNumber(value, min, max);
   return (
@@ -355,6 +501,21 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
       <code>{value.toUpperCase()}</code>
     </label>
   );
+}
+
+function audioFadeValue(item: TimelineItem, key: 'audioFadeIn' | 'audioFadeOut') {
+  const value = Number(item.params?.[key] ?? 0);
+  return clampNumber(value, 0, Math.max(0, item.duration || 0));
+}
+
+function imageTransformValue(item: TimelineItem) {
+  const raw = item.params?.imageTransform;
+  const transform = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return {
+    scale: clampNumber(Number(transform.scale ?? 1), 0.1, 5),
+    x: clampNumber(Number(transform.x ?? 0.5), 0, 1),
+    y: clampNumber(Number(transform.y ?? 0.5), 0, 1),
+  };
 }
 
 function clampNumber(value: number, min: number, max: number) {
