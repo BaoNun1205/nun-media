@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
-import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, ScanText, Settings2, Share2, Upload, Volume2 } from 'lucide-react';
+import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2 } from 'lucide-react';
 import { CAPCUT_LANGUAGES, LANGUAGES, POCKET_LANGUAGES, SOURCE_LANGUAGES, formatDuration } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 import { JobProgress } from '../common/JobProgress';
+import { SliderNumericField } from './NumericField';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
@@ -12,7 +13,6 @@ const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, str
   ['subtitles', Captions, 'Subtitles', 'Generate or import'],
   ['translate', Languages, 'Translate', 'Create translated SRT'],
   ['remove', Eraser, 'Remove / Hide', 'Clean source captions'],
-  ['insert', ScanText, 'Insert Subtitles', 'Burn styled captions'],
   ['voiceover', Volume2, 'Voiceover', 'Generate and merge TTS'],
   ['audio', Music2, 'Audio', 'Source audio controls'],
   ['export', Share2, 'Export', 'Deliver versions and assets'],
@@ -143,16 +143,15 @@ export function AssetToolPanel({ editor }: { editor: EditorController }) {
 function ToolForm({ editor }: { editor: EditorController }) {
   const importSrtRef = useRef<HTMLInputElement>(null);
   const busy = editor.activeJobs.length > 0;
-  const jobKinds: Record<ToolKey, string[]> = {
+  const jobKinds: Partial<Record<ToolKey, string[]>> = {
     subtitles: ['srt'],
     translate: ['translate'],
     remove: ['remove'],
-    insert: ['replace'],
     voiceover: ['tts', 'tts-segment', 'tts-mux'],
     audio: ['audio-separate'],
     export: [],
   };
-  const activeJob = editor.activeJobs.find((job) => jobKinds[editor.activeTool].includes(job.kind));
+  const activeJob = editor.activeJobs.find((job) => (jobKinds[editor.activeTool] || []).includes(job.kind));
   const title = TOOLS.find(([key]) => key === editor.activeTool)?.[2];
   return <div className="tool-form">
     <div className="tool-form-heading"><span className="eyebrow">AI tool</span><h2>{title}</h2></div>
@@ -180,15 +179,6 @@ function ToolForm({ editor }: { editor: EditorController }) {
        : <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}><button onClick={() => editor.setEditArea(!editor.editArea)}><Settings2 size={15} /> {editor.editArea ? 'Finish area' : 'Adjust blur area on preview'}</button><button onClick={() => void editor.saveSubtitleArea({ xmin: .04, xmax: .96, ymin: .60, ymax: .98 })}>Reset bottom area</button></div>}
       <button className="primary full" disabled={busy || (editor.removeMethod === 'auto' && !editor.srt.asset)} onClick={editor.remove}><Eraser size={16} /> {editor.activeBlurEffect ? 'Update blur effect' : 'Add blur effect'}</button>
     </>}
-    {editor.activeTool === 'insert' && <>
-      {editor.project.processingState?.subtitleInserted ? <div className="operation-done"><ScanText size={18} /><strong>Subtitles inserted</strong><p>This is a rendered video version. Undo opens its ancestor.</p><button className="full" onClick={() => editor.undo('insert')}>Undo to ancestor version</button></div> : <>
-        <label>Subtitle SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-        <label>Original subtitle background<div className="segmented three">{['none', 'blur', 'cover'].map((mode) => <button key={mode} className={editor.insertMode === mode ? 'active' : ''} onClick={() => editor.setInsertMode(mode)}>{mode === 'none' ? 'Keep' : mode}</button>)}</div></label>
-        <button onClick={() => editor.setEditArea(!editor.editArea)}><Settings2 size={15} /> {editor.editArea ? 'Finish position' : 'Position on preview'}</button>
-        <div className="style-fields"><label>Font<input value={editor.style.fontFamily} onChange={(e) => editor.setStyle({ ...editor.style, fontFamily: e.target.value })} /></label><label>Size<input type="number" min="12" max="48" value={editor.style.fontSize} onChange={(e) => editor.setStyle({ ...editor.style, fontSize: Number(e.target.value) })} /></label><label>Text<input type="color" value={editor.style.fontColor} onChange={(e) => editor.setStyle({ ...editor.style, fontColor: e.target.value })} /></label><label>Outline<input type="color" value={editor.style.outlineColor} onChange={(e) => editor.setStyle({ ...editor.style, outlineColor: e.target.value })} /></label><label>Outline px<input type="number" min="0" max="6" value={editor.style.outline} onChange={(e) => editor.setStyle({ ...editor.style, outline: Number(e.target.value) })} /></label><label className="check-line"><input type="checkbox" checked={editor.style.background} onChange={(event) => editor.setStyle({ ...editor.style, background: event.target.checked })} /> Background</label></div>
-        <button className="primary full" disabled={!editor.srt.asset || busy} onClick={editor.insert}><ScanText size={16} /> Insert subtitles & create version</button>
-      </>}
-    </>}
     {editor.activeTool === 'voiceover' && <>
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label>Engine<select value={editor.ttsEngine} onChange={(e) => { const next = e.target.value; editor.setTtsEngine(next); editor.setTtsLanguage(next === 'capcut' ? 'en-US' : next === 'pocket' ? 'english' : 'vi-VN'); }}><option value="vieneu">VieNeu Vietnamese</option><option value="capcut">CapCut Multi-language</option><option value="pocket">Pocket TTS</option></select></label>
@@ -198,7 +188,7 @@ function ToolForm({ editor }: { editor: EditorController }) {
       <button className="primary full" disabled={!editor.srt.asset || busy} onClick={() => editor.generateVoice()}><Volume2 size={16} /> Generate voiceover</button>
       <p className="form-help">Voiceover is automatically merged into one clip on A2 and added to the preview.</p>
     </>}
-    {editor.activeTool === 'audio' && <><div className="operation-done"><Music2 size={18} /><strong>{editor.audioMode === 'remove_vocals' ? 'Removing vocals' : editor.audioMode === 'remove_music' ? 'Removing music' : 'Original audio'}</strong><p>Right-click the video on the timeline to change audio mode. Model: UVR-MDX-NET Inst HQ 3 · instrumental 95% + original audio 5%.</p></div><label>Video volume (dB)<input type="range" min="-60" max="20" step=".1" value={editor.videoVolumeDb} onChange={(event) => editor.updateVideoVolumeDb(Number(event.target.value))} /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute preview</label></>}
+    {editor.activeTool === 'audio' && <><div className="operation-done"><Music2 size={18} /><strong>{editor.audioMode === 'remove_vocals' ? 'Removing vocals' : editor.audioMode === 'remove_music' ? 'Removing music' : 'Original audio'}</strong><p>Right-click the video on the timeline to change audio mode. Model: UVR-MDX-NET Inst HQ 3 · instrumental 95% + original audio 5%.</p></div><label>Video volume<SliderNumericField value={editor.videoVolumeDb} min={-60} max={20} step={0.1} unit="dB" onChange={editor.updateVideoVolumeDb} ariaLabel="Video volume in decibels" /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute preview</label></>}
     {editor.activeTool === 'export' && <><a className={`button primary full ${editor.audioMode !== 'original' && !editor.audioSeparationReady ? 'disabled' : ''}`} aria-disabled={editor.audioMode !== 'original' && !editor.audioSeparationReady} href={`${API_BASE}/videos/${editor.project.id}/media?audioMode=${editor.audioMode}&renderEffects=true`} onClick={(event) => { if (editor.audioMode !== 'original' && !editor.audioSeparationReady) event.preventDefault(); }}><Download size={16} /> Export current video</a>{editor.srt.asset && <a className="button full" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={16} /> Export selected SRT</a>}<p className="form-help">The exported video uses the audio mode selected on the timeline and renders active FX clips.</p></>}
     {activeJob && <><JobProgress job={activeJob} /><button className="danger full cancel-job" onClick={() => editor.cancelJob(activeJob.id)}>Cancel job #{activeJob.id}</button></>}
     {editor.message && <p className="tool-message">{editor.message}</p>}

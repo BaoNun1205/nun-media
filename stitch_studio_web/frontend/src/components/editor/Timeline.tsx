@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Captions, Check, ChevronRight, Clipboard, Copy, Eye, EyeOff, FileAudio2, Film, Flag, Layers, Magnet, Minus, Music2, Plus, Redo2, Scissors, Trash2, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { formatClock, percent } from '../../lib/studio';
+import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { InspectorSelection, TimelineItem, TimelineTrack, TimelineTrackKind } from '../../types/studio';
 
@@ -627,7 +628,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       </div>
       <div>
         <button aria-label="Zoom timeline out" title="Zoom out" disabled={editor.timelineWidth <= minimumWidth} onClick={() => editor.setTimelineWidth(Math.max(minimumWidth, editor.timelineWidth - 200))}><Minus size={14} /></button>
-        <input aria-label="Timeline zoom" type="range" min={minimumWidth} max={maximumWidth} step="50" value={editor.timelineWidth} onChange={(event) => editor.setTimelineWidth(Number(event.target.value))} />
+        <SliderNumericField className="timeline-zoom-control" value={editor.timelineWidth} min={minimumWidth} max={maximumWidth} step={50} unit="px" onChange={editor.setTimelineWidth} ariaLabel="Timeline zoom" />
         <button aria-label="Zoom timeline in" title="Zoom in" disabled={editor.timelineWidth >= maximumWidth} onClick={() => editor.setTimelineWidth(Math.min(maximumWidth, editor.timelineWidth + 200))}><Plus size={14} /></button>
       </div>
     </header>
@@ -697,7 +698,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
               className={`effect-clip ${isItemSelected(`effect:${legacyEffectOperation}`) ? 'selected' : ''}`}
               style={{ width: '100%' }}
               onClick={(event) => selectItem(event, `effect:${legacyEffectOperation}`, { type: 'effect', operation: legacyEffectOperation })}
-            ><Flag size={12} /> {legacyEffectOperation === 'insert' ? 'Subtitles inserted - rendered version' : 'Original subtitle hidden - rendered version'}</button>}
+            ><Flag size={12} /> {legacyEffectOperation === 'insert' ? 'Rendered captions - version' : 'Original subtitle hidden - rendered version'}</button>}
         </div>}
         {!legacySingleVideo && !editor.timelineItems.length && <div className="timeline-empty-drop">
           <span><Film size={16} /> Drag media here to start editing</span>

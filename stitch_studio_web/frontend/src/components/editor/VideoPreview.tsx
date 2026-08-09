@@ -3,6 +3,7 @@ import { Camera, Expand, Maximize2, Pause, Play, RotateCcw, SkipBack, SkipForwar
 import { API_BASE } from '../../services/api';
 import { formatClock } from '../../lib/studio';
 import { textStyleToCss } from '../../utils/textStyleToCss';
+import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleArea, TimelineItem } from '../../types/studio';
 import type { TextStyle } from '../../types/textStyle';
@@ -625,7 +626,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
           /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
           {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
           {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
-          {(editor.activeTool === 'insert' || editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''} ${editor.activeTool === 'insert' ? `mode-${editor.insertMode}` : ''}`} style={box}>
+          {(editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''}`} style={box}>
             <i className="handle tl" /><i className="handle tr" /><i className="handle bl" /><i className="handle br" />
           </div>}
           <div ref={horizontalGuideRef} className="subtitle-center-guide horizontal" aria-hidden="true" />
@@ -666,7 +667,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     </div>
     <div className="playback-controls">
       <div><button onClick={() => editor.setPlayhead(Math.max(0, editor.playhead - 5))}><SkipBack size={17} /></button><button className="play-button" onClick={togglePlayback}>{playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button><button onClick={() => editor.setPlayhead(Math.min(editor.duration, editor.playhead + 5))}><SkipForward size={17} /></button><span>{formatClock(editor.playhead)} <i>/</i> {formatClock(editor.duration)}</span></div>
-      <div><button className={editor.previewMuted ? 'active' : ''} title={editor.previewMuted ? 'Unmute' : 'Mute'} onClick={() => editor.setPreviewMuted(!editor.previewMuted)}><Volume2 size={16} /></button><input aria-label="Volume in decibels" type="range" min="-60" max="20" step=".1" value={editor.videoVolumeDb} onChange={(event) => editor.updateVideoVolumeDb(Number(event.target.value))} /><button title="Fullscreen" onClick={() => viewportRef.current?.requestFullscreen()}><Expand size={16} /></button></div>
+      <div><button className={editor.previewMuted ? 'active' : ''} title={editor.previewMuted ? 'Unmute' : 'Mute'} onClick={() => editor.setPreviewMuted(!editor.previewMuted)}><Volume2 size={16} /></button><SliderNumericField className="playback-volume-control" value={editor.videoVolumeDb} min={-60} max={20} step={0.1} unit="dB" onChange={editor.updateVideoVolumeDb} ariaLabel="Volume in decibels" /><button title="Fullscreen" onClick={() => viewportRef.current?.requestFullscreen()}><Expand size={16} /></button></div>
     </div>
   </section>;
 }

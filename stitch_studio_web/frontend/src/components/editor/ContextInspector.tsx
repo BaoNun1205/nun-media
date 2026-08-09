@@ -4,6 +4,7 @@ import { formatClock, formatDuration, formatSize } from '../../lib/studio';
 import { API_BASE, copyText, studioApi } from '../../services/api';
 import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, fontStack } from '../../config/fontRegistry';
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
+import { NumericField as NumericControl, SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 
@@ -63,7 +64,7 @@ function ProjectInspector({ editor }: { editor: EditorController }) {
 }
 
 function VideoInspector({ editor }: { editor: EditorController }) {
-  return <><div className="inspector-hero"><span><Play size={18} /></span><div><h2>{editor.project.title}</h2><p>Main video clip</p></div></div><Section title="Timing"><Field label="Timeline start" value="00:00:00" /><Field label="Source in" value="00:00:00" /><Field label="Source out" value={formatClock(editor.duration)} /><Field label="Duration" value={formatClock(editor.duration)} /></Section><Section title="Preview speed"><label className="stack-label">Playback speed<select value={editor.playbackRate} onChange={(event) => editor.setPlaybackRate(Number(event.target.value))}><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><span className="pending-label"><Gauge size={12} /> Preview only · export retiming unavailable</span></Section><Section title="Preview audio"><label className="stack-label">Volume<input type="range" min="0" max="1" step=".05" value={editor.previewVolume} onChange={(event) => editor.setPreviewVolume(Number(event.target.value))} /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute source audio</label></Section><button className="full" onClick={() => studioApi.revealProject(editor.project.id)}><FolderOpen size={15} /> Reveal source file</button></>;
+  return <><div className="inspector-hero"><span><Play size={18} /></span><div><h2>{editor.project.title}</h2><p>Main video clip</p></div></div><Section title="Timing"><Field label="Timeline start" value="00:00:00" /><Field label="Source in" value="00:00:00" /><Field label="Source out" value={formatClock(editor.duration)} /><Field label="Duration" value={formatClock(editor.duration)} /></Section><Section title="Preview speed"><label className="stack-label">Playback speed<select value={editor.playbackRate} onChange={(event) => editor.setPlaybackRate(Number(event.target.value))}><option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><span className="pending-label"><Gauge size={12} /> Preview only · export retiming unavailable</span></Section><Section title="Preview audio"><label className="stack-label">Volume<SliderNumericField value={editor.previewVolume} min={0} max={1} step={0.05} precision={2} onChange={editor.setPreviewVolume} ariaLabel="Preview volume" /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute source audio</label></Section><button className="full" onClick={() => studioApi.revealProject(editor.project.id)}><FolderOpen size={15} /> Reveal source file</button></>;
 }
 
 function VideoInspectorControls({ editor }: { editor: EditorController }) {
@@ -161,26 +162,30 @@ function InspectorRangeField({ label, value, min, max, step, suffix, mutedAtMin,
   const muted = Boolean(mutedAtMin && normalized <= min);
   return (
     <FieldRow label={label}>
-      <div className="style-range-field inspector-range-field">
-        <input type="range" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value), false)} onPointerUp={(event) => onChange(Number(event.currentTarget.value), true)} onKeyUp={(event) => { if (event.key === 'Enter') onChange(Number(event.currentTarget.value), true); }} />
-        <label className={`style-number-box ${muted ? 'muted' : ''}`}>
-          {muted ? <VolumeX size={13} /> : null}
-          <input type="number" min={min} max={max} step={step} value={Number.isInteger(step) ? normalized : normalized.toFixed(1)} onChange={(event) => onChange(Number(event.target.value), false)} onBlur={(event) => onChange(Number(event.currentTarget.value), true)} />
-          <span>{muted ? '-inf dB' : suffix}</span>
-        </label>
-      </div>
+      <SliderNumericField
+        className={`style-range-field inspector-range-field ${muted ? 'is-muted' : ''}`}
+        value={normalized}
+        min={min}
+        max={max}
+        step={step}
+        unit={suffix}
+        prefix={muted ? <VolumeX size={13} /> : undefined}
+        onChange={(nextValue) => onChange(nextValue, false)}
+        onCommit={(nextValue) => onChange(nextValue, true)}
+        ariaLabel={`${label} value`}
+      />
     </FieldRow>
   );
 }
 
 function DbControl({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   const muted = value <= -60;
-  return <div className="clip-control"><input aria-label="Volume in decibels" type="range" min="-60" max="20" step=".1" value={value} onChange={(event) => onChange(Number(event.target.value))} /><label className={`clip-value ${muted ? 'muted' : ''}`}>{muted ? <VolumeX size={15} /> : null}<input type="number" min="-60" max="20" step=".1" value={value} onChange={(event) => onChange(Number(event.target.value))} /><span>{muted ? '−∞ dB' : 'dB'}</span></label></div>;
+  return <SliderNumericField className={`clip-control ${muted ? 'is-muted' : ''}`} value={value} min={-60} max={20} step={0.1} unit="dB" prefix={muted ? <VolumeX size={15} /> : undefined} onChange={onChange} ariaLabel="Volume in decibels" />;
 }
 
 function ClipRangeControl({ value, min, max, step, suffix, onChange }: { value: number; min: number; max: number; step: number; suffix: string; onChange: (value: number) => void }) {
   const normalized = Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
-  return <div className="clip-control"><input aria-label={`Value in ${suffix}`} type="range" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} /><label className="clip-value"><input type="number" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} /><span>{suffix}</span></label></div>;
+  return <SliderNumericField className="clip-control" value={normalized} min={min} max={max} step={step} unit={suffix} onChange={onChange} ariaLabel={`Value in ${suffix}`} />;
 }
 
 function SubtitleInspector({ editor }: { editor: EditorController }) {
@@ -198,7 +203,7 @@ function VoiceInspector({ editor }: { editor: EditorController }) {
 }
 
 function TrackInspector({ editor }: { editor: EditorController }) {
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><SubtitleStyleControls editor={editor} /><div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button><button onClick={() => editor.openTool('insert')}>Use for subtitle insertion</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><SubtitleStyleControls editor={editor} /><div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
 }
 
 function EffectInspector({ editor }: { editor: EditorController }) {
@@ -212,7 +217,8 @@ function EffectInspector({ editor }: { editor: EditorController }) {
   const completed = operation === 'insert'
     ? editor.project.processingState.subtitleInserted
     : editor.project.processingState.subtitleHidden;
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{operation === 'insert' ? 'Insert subtitles' : 'Remove / Hide'}</h2><p>{completed ? 'Rendered backend operation' : 'Operation setup'}</p></div></div><Section title="Operation"><Field label="Mode" value={operation === 'insert' ? editor.project.processingState.insertMode || editor.insertMode : editor.project.processingState.hideMode || editor.removeMode} /><Field label="Version" value={`#${editor.project.id}`} /><Field label="Status" value={completed ? 'Completed' : 'Not rendered'} /></Section><p className="inspector-help">{completed ? 'This timeline item visualizes the existing version operation; it is not a frontend-only effect.' : 'Configure and run this operation in AI Tools. No video version has been changed yet.'}</p>{completed ? <button className="full" onClick={() => editor.undo(operation)}><RotateCcw size={14} /> Undo to ancestor version</button> : <button className="primary full" onClick={() => editor.openTool(operation === 'insert' ? 'insert' : 'remove')}>Open operation settings</button>}</>;
+  const legacyInsert = operation === 'insert';
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{legacyInsert ? 'Rendered captions' : 'Remove / Hide'}</h2><p>{completed ? 'Rendered backend operation' : 'Operation setup'}</p></div></div><Section title="Operation"><Field label="Mode" value={legacyInsert ? editor.project.processingState.insertMode || editor.insertMode : editor.project.processingState.hideMode || editor.removeMode} /><Field label="Version" value={`#${editor.project.id}`} /><Field label="Status" value={completed ? 'Completed' : 'Not rendered'} /></Section><p className="inspector-help">{legacyInsert ? 'This timeline item visualizes an existing rendered version. The creation UI for this operation has been removed.' : completed ? 'This timeline item visualizes the existing version operation; it is not a frontend-only effect.' : 'Configure and run this operation in AI Tools. No video version has been changed yet.'}</p>{completed ? <button className="full" onClick={() => editor.undo(operation)}><RotateCcw size={14} /> Undo to ancestor version</button> : !legacyInsert && <button className="primary full" onClick={() => editor.openTool('remove')}>Open operation settings</button>}</>;
 }
 
 function AssetInspector({ editor }: { editor: EditorController }) {
@@ -478,19 +484,13 @@ function NumericSliderField({ label, value, min, max, step, suffix, onChange }: 
   const normalized = clampNumber(value, min, max);
   return (
     <FieldRow label={label}>
-      <div className="style-range-field">
-        <input type="range" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} />
-        <label className="style-number-box">
-          <input type="number" min={min} max={max} step={step} value={normalized} onChange={(event) => onChange(Number(event.target.value))} />
-          <span>{suffix}</span>
-        </label>
-      </div>
+      <SliderNumericField className="style-range-field" value={normalized} min={min} max={max} step={step} unit={suffix} onChange={onChange} ariaLabel={`${label} value`} />
     </FieldRow>
   );
 }
 
 function NumericField({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
-  return <label className="style-mini-field"><span>{label}</span><input type="number" min={min} max={max} step={step} value={clampNumber(value, min, max)} onChange={(event) => onChange(Number(event.target.value))} /></label>;
+  return <div className="style-mini-field"><span>{label}</span><NumericControl value={clampNumber(value, min, max)} min={min} max={max} step={step} onChange={onChange} compact ariaLabel={`${label} value`} /></div>;
 }
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
@@ -520,102 +520,4 @@ function imageTransformValue(item: TimelineItem) {
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
-}
-
-function LegacyTextStyleControls({
-  title,
-  style,
-  onUpdate,
-  onPreset,
-  onReset,
-}: {
-  title: string;
-  style: SubtitleStyle;
-  onUpdate: (updates: Partial<SubtitleStyle>) => void;
-  onPreset: (presetId: string) => void;
-  onReset: () => void;
-}) {
-  const updateSubtitleStyle = onUpdate;
-  return (
-    <Section title={title}>
-      <TextStylePresetGrid activePresetId={style.presetId} onSelect={onPreset} onReset={onReset} />
-      <div className="style-controls">
-        <div className="style-row">
-          <span>Phông chữ</span>
-          <select value={style.fontFamily || 'Hệ thống'} onChange={(e) => updateSubtitleStyle({ fontFamily: e.target.value })}>
-            <option value="Hệ thống">Hệ thống</option>
-            <option value="Arial">Arial</option>
-            <option value="Roboto">Roboto</option>
-            <option value="Inter">Inter</option>
-            <option value="Outfit">Outfit</option>
-          </select>
-        </div>
-        <div className="style-row dual">
-          <span>Cỡ chữ</span>
-          <input type="range" min="1" max="100" value={style.fontSize || 6} onChange={(e) => updateSubtitleStyle({ fontSize: Number(e.target.value) })} />
-          <input type="number" min="1" max="100" value={style.fontSize || 6} onChange={(e) => updateSubtitleStyle({ fontSize: Number(e.target.value) })} className="number-box" />
-        </div>
-        <div className="style-row">
-          <span>Hoa văn</span>
-          <div className="button-group">
-            <button className={style.fontWeight === 'bold' ? 'active' : ''} onClick={() => updateSubtitleStyle({ fontWeight: style.fontWeight === 'bold' ? 'normal' : 'bold' })}><b>B</b></button>
-            <button className={style.textDecoration === 'underline' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textDecoration: style.textDecoration === 'underline' ? 'none' : 'underline' })}><u>U</u></button>
-            <button className={style.fontStyle === 'italic' ? 'active' : ''} onClick={() => updateSubtitleStyle({ fontStyle: style.fontStyle === 'italic' ? 'normal' : 'italic' })}><i>I</i></button>
-          </div>
-        </div>
-        <div className="style-row">
-          <span>Chữ hoa/thường</span>
-          <div className="button-group">
-            <button className={style.textTransform === 'uppercase' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'uppercase' ? 'none' : 'uppercase' })}>TT</button>
-            <button className={style.textTransform === 'lowercase' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'lowercase' ? 'none' : 'lowercase' })}>tt</button>
-            <button className={style.textTransform === 'capitalize' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textTransform: style.textTransform === 'capitalize' ? 'none' : 'capitalize' })}>Tt</button>
-          </div>
-        </div>
-        <div className="style-row">
-          <span>Màu sắc</span>
-          <input type="color" value={style.fontColor || style.color || '#ffffff'} onChange={(e) => updateSubtitleStyle({ fontColor: e.target.value, color: e.target.value })} />
-        </div>
-        <div className="style-row">
-          <span>Outline</span>
-          <input type="color" value={style.outlineColor || '#000000'} onChange={(e) => updateSubtitleStyle({ outlineColor: e.target.value })} />
-        </div>
-        <div className="style-row dual">
-          <span>Outline px</span>
-          <input type="range" min="0" max="12" step=".5" value={style.outline ?? style.outlineWidth ?? 0} onChange={(e) => updateSubtitleStyle({ outline: Number(e.target.value), outlineWidth: Number(e.target.value) })} />
-          <input type="number" min="0" max="12" step=".5" value={style.outline ?? style.outlineWidth ?? 0} onChange={(e) => updateSubtitleStyle({ outline: Number(e.target.value), outlineWidth: Number(e.target.value) })} className="number-box" />
-        </div>
-        <div className="style-row dual">
-          <span>Ký tự</span>
-          <input type="number" value={style.letterSpacing || 0} onChange={(e) => updateSubtitleStyle({ letterSpacing: Number(e.target.value) })} className="number-box" />
-          <span>Đường nét</span>
-          <input type="number" value={style.lineHeight || 0} onChange={(e) => updateSubtitleStyle({ lineHeight: Number(e.target.value) })} className="number-box" />
-        </div>
-        <div className="style-row">
-          <span>Căn chỉnh</span>
-          <div className="button-group">
-            <button className={style.textAlign === 'left' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'left' })}>⫷</button>
-            <button className={style.textAlign === 'center' || !style.textAlign ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'center' })}>≣</button>
-            <button className={style.textAlign === 'right' ? 'active' : ''} onClick={() => updateSubtitleStyle({ textAlign: 'right' })}>⫸</button>
-          </div>
-        </div>
-        <label className="check-line"><input type="checkbox" checked={Boolean(style.backgroundEnabled ?? style.background)} onChange={(event) => updateSubtitleStyle({ background: event.target.checked, backgroundEnabled: event.target.checked })} /> Background</label>
-        {(style.backgroundEnabled ?? style.background) && <div className="style-row dual">
-          <span>Fill</span>
-          <input type="color" value={style.backgroundColor || '#000000'} onChange={(e) => updateSubtitleStyle({ backgroundColor: e.target.value })} />
-          <input type="number" min="0" max="1" step=".05" value={style.backgroundOpacity ?? .55} onChange={(e) => updateSubtitleStyle({ backgroundOpacity: Number(e.target.value) })} className="number-box" />
-        </div>}
-        <div className="style-row dual">
-          <span>Shadow</span>
-          <input type="color" value={style.shadowColor || '#000000'} onChange={(e) => updateSubtitleStyle({ shadowColor: e.target.value })} />
-          <input type="number" min="0" max="24" step=".5" value={style.shadowBlur || 0} onChange={(e) => updateSubtitleStyle({ shadowBlur: Number(e.target.value) })} className="number-box" />
-        </div>
-        <label className="check-line"><input type="checkbox" checked={Boolean(style.glowEnabled)} onChange={(event) => updateSubtitleStyle({ glowEnabled: event.target.checked })} /> Glow</label>
-        {style.glowEnabled && <div className="style-row dual">
-          <span>Glow</span>
-          <input type="color" value={style.glowColor || '#ffffff'} onChange={(e) => updateSubtitleStyle({ glowColor: e.target.value })} />
-          <input type="number" min="0" max="32" step=".5" value={style.glowBlur || 0} onChange={(e) => updateSubtitleStyle({ glowBlur: Number(e.target.value) })} className="number-box" />
-        </div>}
-      </div>
-    </Section>
-  );
 }

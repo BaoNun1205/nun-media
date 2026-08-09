@@ -49,7 +49,7 @@ export function EditorTopBar({ editor, versions, onBack, onOpenVersion }: {
           {project.hasSrt && <span>SRT Ready</span>}
           {project.hasTranslatedSrt && <span>Translated</span>}
           {project.processingState?.subtitleHidden && <span>Subtitle Hidden</span>}
-          {project.processingState?.subtitleInserted && <span>Subtitle Inserted</span>}
+          {project.processingState?.subtitleInserted && <span>Rendered Captions</span>}
           {project.hasTts && <span>Voice Ready</span>}
         </div>
       </div>
