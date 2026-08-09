@@ -135,6 +135,8 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [voiceSpeed, setVoiceSpeed] = useState(project.clipSettings?.voiceSpeed ?? 1);
   const [timelineWidth, setTimelineWidth] = useState(1200);
   const [timelineState, setTimelineState] = useState<TimelineState>(() => timelineStateFromSceneOrProject(project));
+  const timelineStateRef = useRef(timelineState);
+  useEffect(() => { timelineStateRef.current = timelineState; }, [timelineState]);
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>(() => timelineStateFromSceneOrProject(project).items);
   const [timelineScene, setTimelineScene] = useState<CoreTimelineScene>(() => sceneFromProject(project));
   const [timelineHistory, setTimelineHistory] = useState<TimelineHistory>({ past: [], future: [] });
@@ -161,6 +163,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [ttsVoice, setTtsVoice] = useState('default');
   const [ttsRate, setTtsRate] = useState('1.0');
   const autoMuxTtsJobRef = useRef<number | null>(null);
+  const handledSrtJobRef = useRef<number | null>(null);
   const isEmptyWorkspace = project.id < 0 || project.mediaType === 'workspace';
 
   const videoJobs = useMemo(() => jobs.filter((job) => job.videoId === project.id || (project.workspaceId && job.videoId === -project.workspaceId) || (job.videoId === -project.id)), [jobs, project.id, project.workspaceId]);
@@ -382,9 +385,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   useEffect(() => { if (!voices.some((voice) => voice.id === ttsVoice)) setTtsVoice(voices[0]?.id || 'default'); }, [voices, ttsVoice]);
   useEffect(() => {
     if (!latestJob || latestJob.status !== 'completed') return;
-    if (['srt', 'translate'].includes(latestJob.kind)) {
+    if (['srt', 'translate'].includes(latestJob.kind) && handledSrtJobRef.current !== latestJob.id) {
+      handledSrtJobRef.current = latestJob.id;
       const resultAssetId = Number(latestJob.result?.assetId || latestJob.result?.sourceAssetId || 0);
-      loadSrt(resultAssetId || undefined);
+      attachSrtToTimeline(resultAssetId).catch(() => undefined);
     }
     if (['tts', 'tts-segment'].includes(latestJob.kind)) { loadSegments(); loadTimelineIssues(); }
     if (latestJob.kind === 'remove') setBlurEffectHidden(false);
@@ -458,6 +462,37 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage(error instanceof Error ? error.message : 'Unable to save timeline');
       return false;
     }
+  }
+
+  async function attachSrtToTimeline(assetId: number) {
+    if (!project.workspaceId || !assetId) return;
+
+    const loadedData = await loadSrt(assetId);
+    const currentTimeline = timelineStateRef.current;
+    
+    const nextItems = currentTimeline.items.filter((item) => !(item.track === 'S1' && item.kind === 'srt'));
+    const durationBase = loadedData?.segments?.at(-1)?.end || 10;
+    
+    const track = 'S1';
+    
+    const item: TimelineItem = {
+      id: nextTimelineClipId('srt', assetId),
+      kind: 'srt',
+      name: loadedData?.asset?.name || 'Subtitles',
+      sourceStart: 0,
+      sourceDuration: durationBase,
+      sourceAssetId: assetId,
+      track,
+      start: 0,
+      duration: frameRound(durationBase, currentTimeline.fps),
+    };
+    
+    const nextState = normalizeTimelineState({
+      ...currentTimeline,
+      items: [...nextItems, item]
+    });
+    
+    await commitTimelineState(nextState, 'Attached generated SRT', currentTimeline);
   }
 
   async function commitTimelineItems(next: TimelineItem[], messageText = 'Timeline updated.', previousItems: TimelineItem[] = timelineItems) {
@@ -599,8 +634,19 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage('This asset type cannot be placed on the timeline yet.');
       return;
     }
+    let durationBase = srt.segments.at(-1)?.end || 0;
+    if (asset.kind === 'srt') {
+      try {
+        const loaded = await loadSrt(asset.sourceAssetId || asset.id);
+        if (loaded && loaded.segments && loaded.segments.length > 0) {
+          durationBase = loaded.segments.at(-1)?.end || durationBase;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
     const previous = cloneTimelineState(timelineState);
-    const created = createItemFromProjectAsset(asset, timelineState, srt.segments.at(-1)?.end || 0);
+    const created = createItemFromProjectAsset(asset, timelineState, durationBase);
     const baseItem = created.item;
     const placement = placementOptions
       ? resolvePlacement({

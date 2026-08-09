@@ -594,7 +594,8 @@ export function Timeline({ editor }: { editor: EditorController }) {
       </div>;
     }
     if (track.kind === 'subtitle') {
-      return <SubtitleTrack key={track.id} editor={editor} duration={displayDuration} selectedKeys={selectedKeys} trackSelected={isTrackSelected(track.id)} items={rowItems.filter((item) => item.kind === 'srt')} trackId={track.id} onSelect={selectItem} />;
+      const srtJob = editor.activeJobs.find((job) => job.kind === 'srt');
+      return <SubtitleTrack key={track.id} editor={editor} duration={displayDuration} selectedKeys={selectedKeys} trackSelected={isTrackSelected(track.id)} items={rowItems.filter((item) => item.kind === 'srt')} trackId={track.id} onSelect={selectItem} job={srtJob} />;
     }
     if (track.kind === 'audio') {
       return <div key={track.id} data-track-row={track.id} className={`${rowClass} audio-track voice-track`}>
@@ -848,7 +849,7 @@ function TrackLabel({
   </div>;
 }
 
-function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, trackId, onSelect }: {
+function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, trackId, onSelect, job }: {
   editor: EditorController;
   duration: number;
   selectedKeys: Set<string>;
@@ -856,6 +857,7 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
   items: TimelineItem[];
   trackId: string;
   onSelect: (event: React.MouseEvent, key: string, selection: InspectorSelection) => void;
+  job?: { kind: string; progress?: number; detail?: string };
 }) {
   const projectAssetsById = new Map((editor.project.projectAssets || []).map((asset) => [asset.id, asset]));
   const currentSrtAssetId = editor.srt.asset?.id;
@@ -880,10 +882,12 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
     const selected = selectedKeys.has(key) || (editor.selection.type === 'subtitle' && editor.selection.index === segment.index);
     const text = editor.edits[segment.index] ?? segment.text;
     return <button key={segment.index} data-timeline-item={key} className={selected ? 'selected' : ''} style={{ left: percent(segment.start, duration), width: `${width}%` }} title={text} onClick={(event) => { onSelect(event, key, { type: 'subtitle', index: segment.index }); }}>{text}</button>;
-  })}{items.map((item) => {
+  })}{items.filter((item) => !(hasCurrentSrtItem && source.length > 0 && srtAssetIdForItem(item) === currentSrtAssetId)).map((item) => {
     const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
     return <button key={item.id} data-timeline-item={item.id} className={`subtitle-asset-clip ${selectedKeys.has(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, duration), width }} title="Select then press Delete or Backspace to remove this SRT clip" onKeyDown={(event) => deleteSrtItem(event, item.id)} onClick={(event) => onSelect(event, item.id, { type: 'timeline-items', keys: [item.id], track: trackId })}>{item.name}</button>;
-  })}</div>;
+  })}
+  {job && <TimelineJob job={job} />}
+  </div>;
 }
 
 function ScriptEditor({ editor }: { editor: EditorController }) {
