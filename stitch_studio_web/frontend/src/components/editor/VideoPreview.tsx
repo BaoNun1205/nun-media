@@ -7,10 +7,12 @@ import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleArea, TimelineItem } from '../../types/studio';
 import type { TextStyle } from '../../types/textStyle';
+import { evaluateImageAnimation, composeImageTransform, type BaseImageTransform } from '../../utils/image-animation/evaluateImageAnimation';
+import { getDefaultAnimationDelta } from '../../utils/image-animation/presets';
 
 type DragMode = 'draw' | 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type FrameFormat = 'original' | '16:9' | '9:16' | '1:1' | '4:5';
-type ImageTransform = { scale: number; x: number; y: number };
+type ImageTransform = BaseImageTransform;
 type ImageDragState = { pointerId: number; clientX: number; clientY: number; width: number; height: number; itemId: string; transform: ImageTransform; previousItems: TimelineItem[]; latestItems: TimelineItem[]; moved: boolean };
 
 const FRAME_RATIOS: Record<Exclude<FrameFormat, 'original'>, number> = {
@@ -39,7 +41,9 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const horizontalGuideRef = useRef<HTMLDivElement>(null);
   const verticalGuideRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef(editor.playhead);
+  const [imageDrag, setImageDrag] = useState<ImageDragState | null>(null);
   const imageDragRef = useRef<ImageDragState | null>(null);
+  useEffect(() => { imageDragRef.current = imageDrag; }, [imageDrag]);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -48,8 +52,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const [viewportSize, setViewportSize] = useState({ width: 800, height: 450 });
   const originalAspect = videoSize.width / videoSize.height;
   const frameAspect = frameFormat === 'original' ? originalAspect : FRAME_RATIOS[frameFormat];
-  const availableWidth = Math.max(1, viewportSize.width - 40);
-  const availableHeight = Math.max(1, viewportSize.height - 26);
+  const availableWidth = Math.max(1, viewportSize.width - 32);
+  const availableHeight = Math.max(1, viewportSize.height - 24);
   const frameWidth = Math.min(availableWidth, availableHeight * frameAspect);
   const frameHeight = frameWidth / frameAspect;
   const hasWorkspaceTimeline = Boolean(editor.project.workspaceId);
@@ -73,7 +77,10 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
   const activeImageItem = editor.activeTimelineItem?.kind === 'image' && itemEnabled(editor.activeTimelineItem) ? editor.activeTimelineItem : undefined;
-  const activeImageTransform = imageTransformValue(activeImageItem);
+  const activeImageBaseTransform = imageTransformValue(activeImageItem);
+  const activeImageLocalTime = activeImageItem ? editor.playhead - activeImageItem.start : 0;
+  const activeImageAnimationDelta = activeImageItem ? evaluateImageAnimation(activeImageItem, activeImageLocalTime) : getDefaultAnimationDelta();
+  const activeImageTransform = composeImageTransform(activeImageBaseTransform, activeImageAnimationDelta);
   const activeImageUrl = activeImageItem?.projectAssetId
     ? `${API_BASE}/project-assets/${activeImageItem.projectAssetId}/download?preview=1`
     : activeImageItem?.sourceAssetId
@@ -355,23 +362,23 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
 
   function beginImageDrag(event: React.PointerEvent<HTMLImageElement>) {
     if (!activeImageItem || !canDragActiveImage) return;
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    if (!bounds) return;
+    const viewport = viewportRef.current?.getBoundingClientRect();
+    if (!viewport) return;
     event.stopPropagation();
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    imageDragRef.current = {
+    setImageDrag({
       pointerId: event.pointerId,
       clientX: event.clientX,
       clientY: event.clientY,
-      width: bounds.width,
-      height: bounds.height,
+      width: viewport.width,
+      height: viewport.height,
       itemId: activeImageItem.id,
-      transform: activeImageTransform,
-      previousItems: cloneTimelineItemsForPreview(editor.timelineItems),
-      latestItems: editor.timelineItems,
+      transform: activeImageBaseTransform,
+      previousItems: editor.timelineItems.map((clip) => ({ ...clip, params: clip.params ? { ...clip.params } : undefined })),
+      latestItems: editor.timelineItems.map((clip) => ({ ...clip, params: clip.params ? { ...clip.params } : undefined })),
       moved: false,
-    };
+    });
   }
   function moveImageDrag(event: React.PointerEvent<HTMLImageElement>) {
     const drag = imageDragRef.current;
@@ -576,7 +583,9 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
               objectFit: editor.fitMode,
               left: `${activeImageTransform.x * 100}%`,
               top: `${activeImageTransform.y * 100}%`,
-              transform: `translate(-50%, -50%) scale(${activeImageTransform.scale})`,
+              transform: `translate(-50%, -50%) scale(${activeImageTransform.scale}) rotate(${activeImageTransform.rotation}deg)`,
+              opacity: activeImageTransform.opacity,
+              filter: activeImageTransform.blur > 0 ? `blur(${activeImageTransform.blur}px)` : undefined,
             }}
             src={activeImageUrl}
             alt={editor.activeTimelineItem?.name || 'Timeline image'}

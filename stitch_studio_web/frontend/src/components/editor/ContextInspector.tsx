@@ -5,6 +5,7 @@ import { API_BASE, copyText, studioApi } from '../../services/api';
 import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, fontStack } from '../../config/fontRegistry';
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import { NumericField as NumericControl, SliderNumericField } from './NumericField';
+import { ImageAnimationControls } from './ImageAnimationControls';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 
@@ -51,7 +52,7 @@ function MultiSelectionInspector({ editor }: { editor: EditorController }) {
   return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{hasTextClip && <Field label="Text clips" value={editor.selectedTextItems.length} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{(subtitles > 0 || hasSrtClip || selection.track === 'S1') && <SubtitleStyleControls editor={editor} />}{hasTextClip && <TimelineTextStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+export function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section className="inspector-section"><h3>{title}</h3>{children}</section>;
 }
 function Field({ label, value }: { label: string; value: ReactNode }) {
@@ -123,18 +124,21 @@ function ImageClipInspector({ editor, item }: { editor: EditorController; item: 
   };
   return <>
     <div className="inspector-hero"><span><ImageIcon size={18} /></span><div><h2>{item.name}</h2><p>{item.track || 'Image'} clip</p></div></div>
-    <Section title="Basic">
-      <StyleGroup title="Transform">
-        <InspectorRangeField label="Scale" value={Math.round(transform.scale * 100)} min={10} max={500} step={1} suffix="%" onChange={(value, finish) => update({ scale: value / 100 }, finish)} />
-        <InspectorRangeField label="Position X" value={Math.round(transform.x * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ x: value / 100 }, finish)} />
-        <InspectorRangeField label="Position Y" value={Math.round(transform.y * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ y: value / 100 }, finish)} />
-        <button className="inspector-reset-button" type="button" onClick={() => update({ scale: 1, x: 0.5, y: 0.5 }, true)}><RotateCcw size={14} /> Reset Transform</button>
-      </StyleGroup>
+    
+    <Section title="Transform">
+      <InspectorRangeField label="Scale" value={Math.round(transform.scale * 100)} min={10} max={500} step={1} suffix="%" onChange={(value, finish) => update({ scale: value / 100 }, finish)} />
+      <InspectorRangeField label="Position X" value={Math.round(transform.x * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ x: value / 100 }, finish)} />
+      <InspectorRangeField label="Position Y" value={Math.round(transform.y * 100)} min={0} max={100} step={1} suffix="%" onChange={(value, finish) => update({ y: value / 100 }, finish)} />
+      <button className="inspector-reset-button" type="button" onClick={() => update({ scale: 1, x: 0.5, y: 0.5 }, true)}><RotateCcw size={14} /> Reset Transform</button>
+    </Section>
+
+    <Section title="Hiệu ứng động">
+      <ImageAnimationControls editor={editor} item={item} />
     </Section>
   </>;
 }
 
-function useTimelineItemDraft(editor: EditorController, message: string) {
+export function useTimelineItemDraft(editor: EditorController, message: string) {
   const previousRef = useRef<TimelineItem[] | null>(null);
   const latestRef = useRef<TimelineItem[] | null>(null);
   const cloneItems = (items: TimelineItem[]) => items.map((clip) => ({ ...clip, params: clip.params ? { ...clip.params } : undefined }));
@@ -157,7 +161,7 @@ function useTimelineItemDraft(editor: EditorController, message: string) {
   };
 }
 
-function InspectorRangeField({ label, value, min, max, step, suffix, mutedAtMin, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; mutedAtMin?: boolean; onChange: (value: number, finish: boolean) => void }) {
+export function InspectorRangeField({ label, value, min, max, step, suffix, mutedAtMin, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; mutedAtMin?: boolean; onChange: (value: number, finish: boolean) => void }) {
   const normalized = clampNumber(value, min, max);
   const muted = Boolean(mutedAtMin && normalized <= min);
   return (
@@ -210,7 +214,7 @@ function EffectInspector({ editor }: { editor: EditorController }) {
   const operation = editor.selection.type === 'effect' ? editor.selection.operation : 'hide';
   if (operation === 'blur') {
     const effect = editor.activeBlurEffect;
-    if (!effect) return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>Subtitle blur</h2><p>Non-destructive effect</p></div></div><Section title="Effect"><Field label="Status" value="Not added" /></Section><p className="inspector-help">Choose Auto or Manual in AI Tools, then add the effect to the FX track.</p><button className="primary full" onClick={() => editor.openTool('remove')}>Open effect settings</button></>;
+    if (!effect) return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>Subtitle blur</h2><p>Non-destructive effect</p></div></div><Section title="Effect"><Field label="Status" value="Not added" /></Section><p className="inspector-help">Choose Auto or Manual in Tools, then add the effect to the FX track.</p><button className="primary full" onClick={() => editor.openTool('remove')}>Open effect settings</button></>;
     const area = effect.area;
     return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>Subtitle blur</h2><p>Non-destructive FX clip</p></div></div><Section title="Effect"><Field label="Mode" value={effect.mode === 'auto' ? 'Automatic' : 'Manual'} /><Field label="Detection" value={effect.source === 'ocr-longest-srt-line' ? 'OCR longest SRT line' : effect.source === 'fallback' ? 'Default subtitle area' : 'User-defined area'} /><Field label="Area" value={`${Math.round((area.xmax - area.xmin) * 100)}% × ${Math.round((area.ymax - area.ymin) * 100)}%`} /><Field label="Status" value="Active on export" /></Section>{effect.longest_segment_text && <Section title="OCR reference"><Field label="SRT line" value={`#${effect.longest_segment_index}`} /><p className="source-copy">{effect.longest_segment_text}</p></Section>}<p className="inspector-help">The source video remains unchanged. Select this FX clip and press Delete or Backspace to remove it.</p><button className="primary full" onClick={() => editor.openTool('remove')}>Edit effect settings</button></>;
   }
@@ -218,7 +222,7 @@ function EffectInspector({ editor }: { editor: EditorController }) {
     ? editor.project.processingState.subtitleInserted
     : editor.project.processingState.subtitleHidden;
   const legacyInsert = operation === 'insert';
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{legacyInsert ? 'Rendered captions' : 'Remove / Hide'}</h2><p>{completed ? 'Rendered backend operation' : 'Operation setup'}</p></div></div><Section title="Operation"><Field label="Mode" value={legacyInsert ? editor.project.processingState.insertMode || editor.insertMode : editor.project.processingState.hideMode || editor.removeMode} /><Field label="Version" value={`#${editor.project.id}`} /><Field label="Status" value={completed ? 'Completed' : 'Not rendered'} /></Section><p className="inspector-help">{legacyInsert ? 'This timeline item visualizes an existing rendered version. The creation UI for this operation has been removed.' : completed ? 'This timeline item visualizes the existing version operation; it is not a frontend-only effect.' : 'Configure and run this operation in AI Tools. No video version has been changed yet.'}</p>{completed ? <button className="full" onClick={() => editor.undo(operation)}><RotateCcw size={14} /> Undo to ancestor version</button> : !legacyInsert && <button className="primary full" onClick={() => editor.openTool('remove')}>Open operation settings</button>}</>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{legacyInsert ? 'Rendered captions' : 'Remove / Hide'}</h2><p>{completed ? 'Rendered backend operation' : 'Operation setup'}</p></div></div><Section title="Operation"><Field label="Mode" value={legacyInsert ? editor.project.processingState.insertMode || editor.insertMode : editor.project.processingState.hideMode || editor.removeMode} /><Field label="Version" value={`#${editor.project.id}`} /><Field label="Status" value={completed ? 'Completed' : 'Not rendered'} /></Section><p className="inspector-help">{legacyInsert ? 'This timeline item visualizes an existing rendered version. The creation UI for this operation has been removed.' : completed ? 'This timeline item visualizes the existing version operation; it is not a frontend-only effect.' : 'Configure and run this operation in Tools. No video version has been changed yet.'}</p>{completed ? <button className="full" onClick={() => editor.undo(operation)}><RotateCcw size={14} /> Undo to ancestor version</button> : !legacyInsert && <button className="primary full" onClick={() => editor.openTool('remove')}>Open operation settings</button>}</>;
 }
 
 function AssetInspector({ editor }: { editor: EditorController }) {
@@ -362,7 +366,7 @@ function StyleGroup({ title, children }: { title: string; children: ReactNode })
   return <div className="style-control-group"><h4>{title}</h4><div className="style-control-stack">{children}</div></div>;
 }
 
-function FieldRow({ label, children }: { label: string; children: ReactNode }) {
+export function FieldRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return <div className="style-field-row"><span>{label}</span><div>{children}</div></div>;
 }
 

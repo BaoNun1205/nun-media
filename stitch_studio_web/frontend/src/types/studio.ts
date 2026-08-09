@@ -1,5 +1,6 @@
 import type { CoreTimelineScene } from '../editor-core/types';
 import type { TextStyle } from './textStyle';
+import type { ImageAnimationConfig } from '../utils/image-animation/types';
 
 export type ViewKey = 'projects' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
 export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'export';
@@ -88,7 +89,7 @@ export interface TimelineItem {
   volumeDb?: number;
   speed?: number;
   opacity?: number;
-  params?: Record<string, unknown>;
+  params?: Record<string, unknown> & { imageAnimation?: ImageAnimationConfig };
   effects?: Array<Record<string, unknown>>;
   masks?: Array<Record<string, unknown>>;
   animations?: Record<string, unknown>;

@@ -2736,47 +2736,118 @@ def _browser_preview_path(video) -> Path:
     return preview_path
 
 
-def _render_subtitle_blur_effect(video, source_path: Path) -> Path:
-    effect = (video.metadata or {}).get("subtitle_blur_effect") or {}
-    if not effect.get("enabled"):
-        return source_path
-    area = effect.get("area") or {}
+from stitch_studio.image_animation import build_static_image_filters, RenderContext
+
+def _render_visual_effects(video, source_path: Path) -> Path:
+    metadata = video.metadata or {}
+    timeline_state = metadata.get("timeline_state") or {}
+    timeline_items = timeline_state.get("items") or []
+    
+    # Resolve asset paths for image items
+    for item in timeline_items:
+        if item.get("kind") == "image" and not item.get("hidden"):
+            # Try to resolve path
+            source_asset_id = item.get("sourceAssetId")
+            project_asset_id = item.get("projectAssetId")
+            source_video_id = item.get("sourceVideoId")
+            
+            asset_path = None
+            if project_asset_id is not None:
+                project_asset = storage.get_project_asset(int(project_asset_id))
+                if project_asset:
+                    asset_path = project_asset.path
+            if asset_path is None and source_asset_id is not None:
+                asset = storage.get_asset(int(source_asset_id))
+                if asset:
+                    asset_path = asset.path
+            if asset_path is None and source_video_id is not None:
+                src_vid = storage.get_video(int(source_video_id))
+                if src_vid:
+                    asset_path = src_vid.path
+                    
+            if asset_path and asset_path.exists():
+                item["_resolved_path"] = asset_path
+    
     try:
         width, height = _probe_video_size(source_path)
-        xmin = max(0, min(width - 2, int(round(width * float(area["xmin"])))))
-        xmax = max(xmin + 2, min(width, int(round(width * float(area["xmax"])))))
-        ymin = max(0, min(height - 2, int(round(height * float(area["ymin"])))))
-        ymax = max(ymin + 2, min(height, int(round(height * float(area["ymax"])))))
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(500, "Saved subtitle blur area is invalid")
-    box_width = max(2, xmax - xmin)
-    box_height = max(2, ymax - ymin)
-    smallest = max(2, min(box_width, box_height))
-    radius = max(16, min(90, max(1, (smallest - 1) // 2)))
-    chroma_radius = max(8, min(45, max(1, (smallest - 1) // 4), max(1, radius // 2)))
-    blur = (
-        "boxblur="
-        f"luma_radius={radius}:luma_power=10:"
-        f"chroma_radius={chroma_radius}:chroma_power=6,"
-        "drawbox=x=0:y=0:w=iw:h=ih:color=white@0.05:t=fill"
+    except Exception:
+        width, height = 1920, 1080 # Fallback
+        
+    duration_ms = video.duration_ms or _probe_video_duration_ms(source_path) or 0
+    fps = 30.0 # Standard fallback
+    
+    context = RenderContext(
+        width=width,
+        height=height,
+        fps=fps,
+        duration_ms=duration_ms,
+        timeline_items=timeline_items
     )
-    filter_complex = (
-        f"[0:v]split[base][region];"
-        f"[region]crop={box_width}:{box_height}:{xmin}:{ymin},{blur}[blurred];"
-        f"[base][blurred]overlay={xmin}:{ymin}[v]"
-    )
-    effect_key = "frosted-v4-" + "-".join(
-        f"{float(area[key]):.4f}".replace(".", "_")
-        for key in ("xmin", "xmax", "ymin", "ymax")
-    )
+    
+    img_inputs, img_filters, final_img_label = build_static_image_filters(context)
+    
+    effect = metadata.get("subtitle_blur_effect") or {}
+    has_blur = effect.get("enabled")
+    
+    if not img_filters and not has_blur:
+        return source_path
+        
+    filter_complex_parts = []
+    if img_filters:
+        filter_complex_parts.append(";".join(img_filters))
+        
+    final_label = final_img_label
+    
+    effect_key = "visual"
+    if has_blur:
+        area = effect.get("area") or {}
+        try:
+            xmin = max(0, min(width - 2, int(round(width * float(area["xmin"])))))
+            xmax = max(xmin + 2, min(width, int(round(width * float(area["xmax"])))))
+            ymin = max(0, min(height - 2, int(round(height * float(area["ymin"])))))
+            ymax = max(ymin + 2, min(height, int(round(height * float(area["ymax"])))))
+            box_width = max(2, xmax - xmin)
+            box_height = max(2, ymax - ymin)
+            smallest = max(2, min(box_width, box_height))
+            radius = max(16, min(90, max(1, (smallest - 1) // 2)))
+            chroma_radius = max(8, min(45, max(1, (smallest - 1) // 4), max(1, radius // 2)))
+            blur_filter = (
+                "boxblur="
+                f"luma_radius={radius}:luma_power=10:"
+                f"chroma_radius={chroma_radius}:chroma_power=6,"
+                "drawbox=x=0:y=0:w=iw:h=ih:color=white@0.05:t=fill"
+            )
+            
+            blur_chain = (
+                f"{final_label}split[base][region];"
+                f"[region]crop={box_width}:{box_height}:{xmin}:{ymin},{blur_filter}[blurred];"
+                f"[base][blurred]overlay={xmin}:{ymin}[v]"
+            )
+            filter_complex_parts.append(blur_chain)
+            final_label = "[v]"
+            
+            effect_key += "-blur-" + "-".join(
+                f"{float(area[key]):.4f}".replace(".", "_")
+                for key in ("xmin", "xmax", "ymin", "ymax")
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+            
+    if img_filters:
+        effect_key += f"-img-{len(img_filters)}"
+        
+    filter_complex = ";".join(filter_complex_parts)
+    if final_label != "[v]":
+        filter_complex += f";{final_label}copy[v]"
+        
     output_dir = config.outputs_dir / f"video_{video.id}" / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{source_path.stem}.subtitle-blur.{effect_key}.mp4"
+    output_path = output_dir / f"{source_path.stem}.{effect_key}.mp4"
     if output_path.exists() and output_path.stat().st_mtime_ns >= source_path.stat().st_mtime_ns:
         return output_path
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        raise HTTPException(500, "FFmpeg is required to export the subtitle blur effect")
+        raise HTTPException(500, "FFmpeg is required to export visual effects")
 
     def run(audio_codec: str) -> subprocess.CompletedProcess[str]:
         audio_args = ["-c:a", "copy"] if audio_codec == "copy" else ["-c:a", "aac", "-b:a", "192k"]
@@ -2786,6 +2857,7 @@ def _render_subtitle_blur_effect(video, source_path: Path) -> Path:
                 "-y",
                 "-i",
                 str(source_path),
+                *img_inputs,
                 "-filter_complex",
                 filter_complex,
                 "-map",
@@ -2837,7 +2909,7 @@ def media(video_id: int, audioMode: str | None = None, renderEffects: bool = Fal
         except HTTPException:
             media_path = _mux_video_with_stem(video.path, stem, output_path, transcode_video=True)
     if renderEffects:
-        media_path = _render_subtitle_blur_effect(video, media_path)
+        media_path = _render_visual_effects(video, media_path)
     media_type = "video/mp4" if media_path.suffix.lower() == ".mp4" else mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
     return FileResponse(media_path, media_type=media_type, filename=media_path.name)
 

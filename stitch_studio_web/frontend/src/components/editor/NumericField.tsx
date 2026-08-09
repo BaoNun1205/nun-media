@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 
 type NumericFieldProps = {
   value: number;
@@ -70,6 +71,11 @@ export function NumericField({
     onCommit?.(next);
   };
 
+  const parsedDraft = parseDraft(draft);
+  const currentValue = parsedDraft !== null ? parsedDraft : value;
+  const isAtMax = max !== undefined && currentValue >= max;
+  const isAtMin = min !== undefined && currentValue <= min;
+
   return (
     <label className={numericClassName}>
       {prefix && <span className="numeric-field-prefix">{prefix}</span>}
@@ -112,6 +118,28 @@ export function NumericField({
         }}
       />
       {(unit || suffix) && <span className="numeric-field-unit">{suffix || unit}</span>}
+      <div className="numeric-field-stepper">
+        <button
+          type="button"
+          tabIndex={-1}
+          className="numeric-field-step numeric-field-step--up"
+          disabled={disabled || isAtMax}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => { event.preventDefault(); stepValue(1); }}
+        >
+          <ChevronUp size={11} strokeWidth={3} />
+        </button>
+        <button
+          type="button"
+          tabIndex={-1}
+          className="numeric-field-step numeric-field-step--down"
+          disabled={disabled || isAtMin}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => { event.preventDefault(); stepValue(-1); }}
+        >
+          <ChevronDown size={11} strokeWidth={3} />
+        </button>
+      </div>
     </label>
   );
 }
