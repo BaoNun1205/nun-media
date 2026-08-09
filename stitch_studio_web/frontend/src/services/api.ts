@@ -47,6 +47,7 @@ export const studioApi = {
     request<Project>(`/videos/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   deleteProject: (id: number) => request<{ deletedFiles: number }>(`/videos/${id}`, { method: 'DELETE' }),
   deleteAsset: (id: number) => request<{ deletedAssetIds: number[] }>(`/assets/${id}`, { method: 'DELETE' }),
+  deleteProjectAsset: (id: number) => request<{ deletedProjectAssetId: number }>(`/project-assets/${id}`, { method: 'DELETE' }),
   saveClipSettings: (id: number, settings: Partial<NonNullable<Project['clipSettings']>>) =>
     request<{ clipSettings: Project['clipSettings'] }>(`/videos/${id}/clip-settings`, { method: 'PUT', body: JSON.stringify(settings) }),
   saveSubtitleArea: (id: number, area: SubtitleArea, options?: { blurEffectArea?: SubtitleArea; style?: any }) =>

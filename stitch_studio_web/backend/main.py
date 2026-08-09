@@ -3170,33 +3170,43 @@ def save_asset_srt(asset_id: int, payload: SrtSaveRequest) -> dict[str, str]:
     return {"status": "saved"}
 
 
+@app.delete("/api/project-assets/{asset_id}")
+def api_delete_project_asset(asset_id: int):
+    project_asset = storage.get_project_asset(asset_id)
+    if not project_asset:
+        raise HTTPException(404, "Asset not found")
+    storage.delete_project_asset(project_asset.id)
+    removed_files = _delete_owned_path_if_unreferenced(project_asset.path)
+    return {"deletedProjectAssetId": project_asset.id, "deletedFiles": 1 if removed_files else 0}
+
+
 @app.delete("/api/assets/{asset_id}")
-def delete_voiceover_asset(asset_id: int) -> dict[str, list[int]]:
+def api_delete_asset(asset_id: int) -> dict[str, Any]:
     asset = _asset_or_404(asset_id)
-    if asset.kind != "tts":
-        raise HTTPException(409, "Only the merged voiceover can be removed from the timeline")
+    if asset.kind == "tts":
+        video = _video_or_404(asset.video_id)
+        voiceover_kinds = {"tts", "tts_video", "tts_working_audio", "tts_working_srt", "tts_timeline_manifest"}
+        assets_to_remove = [candidate for candidate in storage.list_assets(video.id) if candidate.kind in voiceover_kinds]
 
-    video = _video_or_404(asset.video_id)
-    # A2 represents one merged voiceover, even when prior regenerations left
-    # several TTS assets behind. Remove the whole voiceover set so the next
-    # render starts with an empty A2 track rather than revealing an older one.
-    voiceover_kinds = {"tts", "tts_video", "tts_working_audio", "tts_working_srt", "tts_timeline_manifest"}
-    assets_to_remove = [candidate for candidate in storage.list_assets(video.id) if candidate.kind in voiceover_kinds]
-
-    deleted_ids: list[int] = []
-    output_root = config.outputs_dir.resolve()
-    for candidate in assets_to_remove:
-        if storage.delete_asset(candidate.id):
-            deleted_ids.append(candidate.id)
-
-    for candidate in assets_to_remove:
-        try:
-            resolved = candidate.path.resolve()
-            if resolved.is_relative_to(output_root) and candidate.path.is_file() and not storage.path_is_referenced(candidate.path):
-                candidate.path.unlink()
-        except OSError:
-            pass
-    return {"deletedAssetIds": deleted_ids}
+        deleted_ids: list[int] = []
+        output_root = config.outputs_dir.resolve()
+        for candidate in assets_to_remove:
+            if storage.delete_asset(candidate.id):
+                deleted_ids.append(candidate.id)
+        
+        for candidate in assets_to_remove:
+            try:
+                resolved = candidate.path.resolve()
+                if resolved.is_relative_to(output_root) and candidate.path.is_file() and not storage.path_is_referenced(candidate.path):
+                    candidate.path.unlink()
+            except OSError:
+                pass
+        return {"deletedAssetIds": deleted_ids}
+    else:
+        path = asset.path
+        storage.delete_asset(asset.id)
+        removed_files = _delete_owned_path_if_unreferenced(path)
+        return {"deletedAssetIds": [asset.id], "deletedFiles": 1 if removed_files else 0}
 
 
 @app.post("/api/assets/{asset_id}/reveal")

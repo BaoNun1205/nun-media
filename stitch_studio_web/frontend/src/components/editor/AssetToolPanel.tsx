@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2 } from 'lucide-react';
+import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2, Trash2 } from 'lucide-react';
 import { CAPCUT_LANGUAGES, LANGUAGES, POCKET_LANGUAGES, SOURCE_LANGUAGES, formatDuration } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
@@ -40,7 +40,14 @@ function AssetRow({ asset, editor }: { asset: Asset; editor: EditorController })
     if (asset.kind === 'tts_video') editor.setPreviewSource(`tts:${asset.id}`);
     else if (asset.kind.includes('video')) editor.setPreviewSource(`asset:${asset.id}`);
     else if (asset.kind === 'tts' || asset.kind.includes('audio')) new Audio(`${API_BASE}/assets/${asset.id}/download?preview=1`).play().catch(() => editor.setMessage('Unable to preview this audio asset.'));
-  }}><span className={`asset-card-thumb ${asset.kind}`}>{previewUrl ? <img src={previewUrl} alt="" /> : <Icon size={22} />}</span><strong>{asset.name}</strong><small>{detail}</small><span className="asset-card-action"><Plus size={13} /></span></button>;
+  }}><span className={`asset-card-thumb ${asset.kind}`}>{previewUrl ? <img src={previewUrl} alt="" /> : <Icon size={22} />}</span><strong>{asset.name}</strong><small>{detail}</small>
+    <div className="asset-actions">
+      <span className="asset-card-action" onClick={(e) => {
+        e.stopPropagation();
+        studioApi.deleteAsset(asset.id).catch(() => {}).finally(() => editor.refresh());
+      }} title="Delete"><Trash2 size={13} /></span>
+    </div>
+  </button>;
 }
 
 function ProjectAssetRow({ asset, editor }: { asset: ProjectAsset; editor: EditorController }) {
@@ -49,7 +56,15 @@ function ProjectAssetRow({ asset, editor }: { asset: ProjectAsset; editor: Edito
   const previewUrl = projectAssetPreviewUrl(asset);
   return <button draggable onDragStart={(event) => event.dataTransfer.setData('application/x-stitch-asset', JSON.stringify({ type: 'projectAsset', id: asset.id, kind: asset.kind, sourceVideoId: asset.sourceVideoId }))} className="asset-card" onClick={() => {
     void editor.addProjectAssetToTimeline(asset);
-  }}><span className={`asset-card-thumb ${asset.kind}`}>{previewUrl ? <img src={previewUrl} alt="" /> : <Icon size={22} />}{asset.kind === 'video' && <em>{assetDurationLabel(asset)}</em>}</span><strong>{asset.name}</strong><small>{detail}</small><span className="asset-card-action"><Plus size={13} /></span></button>;
+  }}><span className={`asset-card-thumb ${asset.kind}`}>{previewUrl ? <img src={previewUrl} alt="" /> : <Icon size={22} />}{asset.kind === 'video' && <em>{assetDurationLabel(asset)}</em>}</span><strong>{asset.name}</strong><small>{detail}</small>
+    <div className="asset-actions">
+      <span className="asset-card-action delete-action" onClick={(e) => {
+        e.stopPropagation();
+        studioApi.deleteProjectAsset(asset.id).catch(() => {}).finally(() => editor.refresh());
+      }} title="Delete"><Trash2 size={13} /></span>
+      <span className="asset-card-action add-action" title="Add to timeline"><Plus size={13} /></span>
+    </div>
+  </button>;
 }
 
 function AssetBin({ editor }: { editor: EditorController }) {
