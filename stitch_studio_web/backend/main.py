@@ -2026,16 +2026,18 @@ def preview_project_template(project_id: int) -> dict[str, Any]:
 @app.post("/api/projects/{project_id}/templates")
 def save_project_template(project_id: int, payload: TemplateSaveRequest) -> dict[str, Any]:
     project = _project_or_404(project_id)
+    manifest = analyze_template_from_project(project, storage)
+    
     template = storage.create_template(
         name=payload.name.strip() or (project.title + " Template"),
         source_project_id=project.id,
-        manifest_json=json.dumps(payload.manifest, ensure_ascii=False)
+        manifest_json=json.dumps(manifest, ensure_ascii=False)
     )
     return {
         "template": {
             "id": template.id,
             "name": template.name,
-            "manifest": payload.manifest
+            "manifest": manifest
         }
     }
 class TemplateSummary(BaseModel):
@@ -2048,7 +2050,7 @@ class TemplateSummary(BaseModel):
     inputCount: int
     inputs: list[dict[str, Any]]
     generatedSummary: list[dict[str, Any]]
-    canvas: dict[str, int] | None
+    canvas: dict[str, Any] | None
     fps: int | None
 
 @app.get("/api/templates")
@@ -2056,21 +2058,26 @@ def list_templates() -> dict[str, list[TemplateSummary]]:
     templates = storage.list_templates()
     summaries = []
     for t in templates:
-        manifest = json.loads(t.manifest_json)
-        timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
-        summaries.append(TemplateSummary(
-            id=t.id,
-            name=t.name,
-            version=manifest.get("version", 1),
-            sourceProjectId=t.source_project_id,
-            createdAt=t.created_at,
-            updatedAt=t.updated_at,
-            inputCount=len(manifest.get("inputs", [])),
-            inputs=manifest.get("inputs", []),
-            generatedSummary=manifest.get("generated", []),
-            canvas=timeline_state.get("canvas"),
-            fps=timeline_state.get("fps")
-        ))
+        try:
+            manifest = json.loads(t.manifest_json)
+            timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
+            summaries.append(TemplateSummary(
+                id=t.id,
+                name=t.name,
+                version=manifest.get("version", 1),
+                sourceProjectId=t.source_project_id,
+                createdAt=t.created_at,
+                updatedAt=t.updated_at,
+                inputCount=len(manifest.get("inputs", [])),
+                inputs=manifest.get("inputs", []),
+                generatedSummary=manifest.get("generated", []),
+                canvas=timeline_state.get("canvas"),
+                fps=timeline_state.get("fps")
+            ))
+        except Exception as e:
+            # isolate corrupt manifest and continue
+            print(f"Skipping corrupt template {t.id}: {e}")
+            continue
     return {"templates": summaries}
 
 @app.get("/api/templates/{template_id}")

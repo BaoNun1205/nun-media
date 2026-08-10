@@ -8,8 +8,8 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
     """
     metadata = project.metadata or {}
     timeline = metadata.get("timeline", [])
-    timeline_state = metadata.get("timeline_state", {})
-    scene_state = metadata.get("scene_state", {})
+    timeline_state = dict(metadata.get("timeline_state", {}))
+    scene_state = dict(metadata.get("scene_state", {}))
     
     # Analyze media sources used in timeline
     # We will deduplicate based on projectAssetId
@@ -95,7 +95,7 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
     if has_srt:
         srt_source_slot = None
         audio_slots = [s["slotId"] for s in inputs if s["kind"] == "audio"]
-        if len(audio_slots) >= 1:
+        if len(audio_slots) == 1:
             srt_source_slot = audio_slots[0]
             
         generated.append({
@@ -108,6 +108,9 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
 
     subtitle_style = metadata.get("subtitle_style")
     subtitle_area = metadata.get("subtitle_area")
+
+    if "items" in timeline_state:
+        timeline_state["items"] = template_timeline
 
     manifest = {
         "version": 1,
