@@ -24,6 +24,35 @@ WINDOWS_INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 RESOLUTION_HEIGHTS = {"720p": 720, "1080p": 1080, "1440p": 1440, "4K": 2160}
 ASPECT_RATIO_VALUES = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:3": 4 / 3}
 ENCODER_CACHE: dict[str, Any] | None = None
+FILTER_SCRIPT_CAPABILITY: str | None = None
+
+
+def get_filter_script_arg(ffmpeg: str) -> str:
+    global FILTER_SCRIPT_CAPABILITY
+    if FILTER_SCRIPT_CAPABILITY is not None:
+        return FILTER_SCRIPT_CAPABILITY
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ffgraph") as tmp:
+            tmp.write("nullsrc=s=16x16:d=0.1[v];[v]nullsink")
+            tmp_path = tmp.name
+        
+        proc = subprocess.run([ffmpeg, "-hide_banner", "-filter_complex_script", tmp_path, "-f", "null", "NUL" if sys.platform.startswith("win") else "/dev/null"], capture_output=True)
+        if proc.returncode == 0:
+            FILTER_SCRIPT_CAPABILITY = "-filter_complex_script"
+        else:
+            proc2 = subprocess.run([ffmpeg, "-hide_banner", "-filter_complex", tmp_path, "-f", "null", "NUL" if sys.platform.startswith("win") else "/dev/null"], capture_output=True)
+            if proc2.returncode == 0:
+                FILTER_SCRIPT_CAPABILITY = "-filter_complex"
+            else:
+                FILTER_SCRIPT_CAPABILITY = "-filter_complex_script"
+    except Exception:
+        FILTER_SCRIPT_CAPABILITY = "-filter_complex_script"
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+    return FILTER_SCRIPT_CAPABILITY
 
 
 @dataclass
@@ -171,18 +200,30 @@ def render_project_timeline(
             temp_dir=Path(tmp),
             primary_video=primary_video,
         )
-        command, passes = build_ffmpeg_command(ffmpeg, ctx, encoder)
+        command, passes, filter_len = build_ffmpeg_command(ffmpeg, ctx, encoder)
+        
+        import shlex
+        cmd_str = subprocess.list2cmdline(command) if sys.platform.startswith("win") else shlex.join(command)
+        print("==================================================")
+        print("FFMPEG EXPORT DIAGNOSTICS")
+        print(f"Output path length: {len(str(output_path))} chars")
+        print(f"Filter graph length: {filter_len} chars")
+        print(f"Argument count: {len(command)}")
+        print(f"Command string length: {len(cmd_str)} chars")
+        print(f"Media inputs count: {len(active_items)}")
+        print("==================================================")
+
         if progress:
             progress("ffmpeg progress: 15% Rendering video")
-        proc = _run_ffmpeg_with_progress(command, duration, progress)
+        proc = _run_ffmpeg_with_progress(command, duration, progress, filter_len=filter_len)
         used_encoder = encoder["name"]
         if proc.returncode != 0 and encoder["name"] != "libx264":
             fallback = {"name": "libx264", "args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]}
-            command, passes = build_ffmpeg_command(ffmpeg, ctx, fallback)
+            command, passes, filter_len = build_ffmpeg_command(ffmpeg, ctx, fallback)
             used_encoder = "libx264"
             if progress:
                 progress("Hardware encoder failed; retrying with libx264")
-            proc = _run_ffmpeg_with_progress(command, duration, progress)
+            proc = _run_ffmpeg_with_progress(command, duration, progress, filter_len=filter_len)
         if proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
             raise RuntimeError(f"Could not export timeline: {(proc.stderr or proc.stdout)[-1600:]}")
@@ -205,7 +246,7 @@ def render_project_timeline(
     }
 
 
-def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any]) -> tuple[list[str], int]:
+def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any]) -> tuple[list[str], int, int]:
     registry = InputRegistry()
     filters: list[str] = [f"color=c=black:s={ctx.width}x{ctx.height}:r={ctx.fps}:d={ctx.duration:.6f}[vbase0]"]
     current = "[vbase0]"
@@ -230,7 +271,14 @@ def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any
     text_label = _add_text_and_subtitle_layers(ctx, filters, current)
     audio_label = _add_audio_layers(ctx, registry, filters)
 
-    command = [ffmpeg, "-y", "-hide_banner", "-nostats", *registry.args, "-filter_complex", ";".join(filters)]
+    filter_graph = ";".join(filters)
+    filter_len = len(filter_graph)
+    graph_path = ctx.temp_dir / "g.ffgraph"
+    graph_path.write_text(filter_graph, encoding="utf-8")
+    
+    filter_arg = get_filter_script_arg(ffmpeg)
+
+    command = [ffmpeg, "-y", "-hide_banner", "-nostats", *registry.args, filter_arg, str(graph_path)]
     command.extend(["-map", text_label, "-map", audio_label])
     command.extend([
         "-r", str(ctx.fps),
@@ -244,7 +292,7 @@ def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any
         "-progress", "pipe:1",
         str(ctx.output_path),
     ])
-    return command, 1
+    return command, 1, filter_len
 
 
 def resolve_timeline_item_source(project: Any, storage: Any, item: dict[str, Any]) -> Path | None:
@@ -479,8 +527,14 @@ def _add_audio_layers(ctx: RenderContext, registry: InputRegistry, filters: list
     return "[aout]"
 
 
-def _run_ffmpeg_with_progress(command: list[str], duration: float, progress: Callable[[str], None] | None) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+def _run_ffmpeg_with_progress(command: list[str], duration: float, progress: Callable[[str], None] | None, filter_len: int = 0) -> subprocess.CompletedProcess[str]:
+    import shlex
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        cmd_str = subprocess.list2cmdline(command) if sys.platform.startswith("win") else shlex.join(command)
+        print(f"[WinError] Popen failed! command length={len(cmd_str)}, args={len(command)}, filter_len={filter_len}")
+        raise RuntimeError(f"Failed to spawn FFmpeg (OSError: {exc}). Command length: {len(cmd_str)}") from exc
     output_lines: list[str] = []
     assert proc.stdout is not None
     for line in proc.stdout:
