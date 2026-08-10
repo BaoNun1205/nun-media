@@ -1,5 +1,5 @@
 import type { CoreTimelineScene } from '../editor-core/types';
-import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
+import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, Template, TemplateManifest, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -43,6 +43,10 @@ export const studioApi = {
     request<{ fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }>(`/videos/${id}/export/defaults`),
   exportVideo: (id: number, payload: { fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number; timelineState?: TimelineState; sceneState?: CoreTimelineScene }) =>
     request<{ jobId: number; alreadyRunning?: boolean }>(`/videos/${id}/export`, { method: 'POST', body: JSON.stringify(payload) }),
+  previewTemplate: (id: number) =>
+    request<{ manifest: TemplateManifest }>(`/projects/${id}/template-preview`),
+  saveTemplate: (id: number, payload: { name: string; manifest: TemplateManifest }) =>
+    request<{ template: Template }>(`/projects/${id}/templates`, { method: 'POST', body: JSON.stringify(payload) }),
   revealPath: (path: string) => request<{ status: string; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path }) }),
   uploadWorkspaceAsset: (id: number, file: File) => {
     const body = new FormData();

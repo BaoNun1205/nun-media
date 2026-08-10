@@ -42,6 +42,16 @@ class ProjectItem:
 
 
 @dataclass
+class TemplateItem:
+    id: int
+    name: str
+    source_project_id: Optional[int]
+    manifest_json: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class ProjectAssetItem:
     id: int
     project_id: int

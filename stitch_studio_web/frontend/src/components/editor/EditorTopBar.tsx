@@ -4,8 +4,8 @@ import { studioApi } from '../../services/api';
 import type { Project } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 
-export function EditorTopBar({ editor, versions, onBack, onOpenVersion, onOpenExport }: {
-  editor: EditorController; versions: Project[]; onBack: () => void; onOpenVersion: (id: number) => void; onOpenExport: () => void;
+export function EditorTopBar({ editor, versions, onBack, onOpenVersion, onOpenExport, onOpenTemplate }: {
+  editor: EditorController; versions: Project[]; onBack: () => void; onOpenVersion: (id: number) => void; onOpenExport: () => void; onOpenTemplate: () => void;
 }) {
   const { project } = editor;
   const currentIndex = versions.findIndex((item) => item.id === project.id);
@@ -66,6 +66,7 @@ export function EditorTopBar({ editor, versions, onBack, onOpenVersion, onOpenEx
       <div className="editor-top-actions">
         {editor.activeJobs.length > 0 && <span className="global-job"><i /> {editor.activeJobs.length} running</span>}
         <button className="icon-button" disabled={timelineEmpty} onClick={() => studioApi.revealProject(project.id)} title="Open project folder"><FolderOpen size={17} /></button>
+        <button className="secondary" disabled={timelineEmpty} onClick={onOpenTemplate} style={{ marginRight: 8, height: 28, fontSize: 13 }}>Save as Template</button>
         <button className="primary export-button" disabled={exportDisabled} onClick={onOpenExport}><Share2 size={16} /> Export</button>
       </div>
     </header>

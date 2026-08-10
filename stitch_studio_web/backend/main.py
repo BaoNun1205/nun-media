@@ -34,6 +34,7 @@ from stitch_studio.rendering.timeline_renderer import ExportSettings, render_pro
 from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
+from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
 
 
 app = FastAPI(title="Nun Studio API")
@@ -2008,6 +2009,35 @@ def update_project_timeline(project_id: int, payload: ProjectTimelineRequest) ->
         metadata["scene_state"] = payload.sceneState
     updated = storage.update_project_metadata(project.id, metadata)
     return {"project": _workspace_project_payload(updated or storage.get_project(project.id))}
+
+
+class TemplateSaveRequest(BaseModel):
+    name: str
+    manifest: dict[str, Any]
+
+
+@app.get("/api/projects/{project_id}/template-preview")
+def preview_project_template(project_id: int) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    manifest = analyze_template_from_project(project, storage)
+    return {"manifest": manifest}
+
+
+@app.post("/api/projects/{project_id}/templates")
+def save_project_template(project_id: int, payload: TemplateSaveRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    template = storage.create_template(
+        name=payload.name.strip() or (project.title + " Template"),
+        source_project_id=project.id,
+        manifest_json=json.dumps(payload.manifest, ensure_ascii=False)
+    )
+    return {
+        "template": {
+            "id": template.id,
+            "name": template.name,
+            "manifest": payload.manifest
+        }
+    }
 
 
 def _default_export_directory(project=None) -> Path:

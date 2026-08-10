@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .models import AssetItem, ProjectAssetItem, ProjectItem, VideoItem, YoutubeChannelItem, YoutubePromptItem
+from .models import AssetItem, ProjectAssetItem, ProjectItem, TemplateItem, VideoItem, YoutubeChannelItem, YoutubePromptItem
 
 
 class Storage:
@@ -108,6 +108,16 @@ class Storage:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(channel_id) REFERENCES youtube_channels(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_project_id INTEGER,
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(source_project_id) REFERENCES projects(id) ON DELETE SET NULL
             );
             """
         )
@@ -729,6 +739,43 @@ class Storage:
             source_asset_id=int(row["source_asset_id"]) if row["source_asset_id"] is not None else None,
             metadata=metadata,
         )
+
+    def _template_from_row(self, row: sqlite3.Row | None) -> Optional[TemplateItem]:
+        if not row:
+            return None
+        return TemplateItem(
+            id=int(row["id"]),
+            name=row["name"],
+            source_project_id=int(row["source_project_id"]) if row["source_project_id"] is not None else None,
+            manifest_json=row["manifest_json"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def list_templates(self) -> list[TemplateItem]:
+        rows = self.conn.execute("SELECT * FROM templates ORDER BY updated_at DESC, id DESC").fetchall()
+        return [self._template_from_row(row) for row in rows if row]
+
+    def get_template(self, template_id: int) -> Optional[TemplateItem]:
+        row = self.conn.execute("SELECT * FROM templates WHERE id = ?", (int(template_id),)).fetchone()
+        return self._template_from_row(row)
+
+    def create_template(self, name: str, source_project_id: int, manifest_json: str) -> TemplateItem:
+        cur = self.conn.execute(
+            """
+            INSERT INTO templates (name, source_project_id, manifest_json)
+            VALUES (?, ?, ?)
+            """,
+            (name, source_project_id, manifest_json),
+        )
+        self.conn.commit()
+        template_id = int(cur.lastrowid)
+        return self.get_template(template_id)
+
+    def delete_template(self, template_id: int) -> bool:
+        cur = self.conn.execute("DELETE FROM templates WHERE id = ?", (int(template_id),))
+        self.conn.commit()
+        return cur.rowcount > 0
 
 
 def _guess_media_type(path: Path) -> str:

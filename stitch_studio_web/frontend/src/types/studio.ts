@@ -307,3 +307,39 @@ export interface YoutubePrompt {
   created_at: string;
   updated_at: string;
 }
+
+export interface TemplateInputSlot {
+  slotId: string;
+  kind: 'image' | 'video' | 'audio';
+  label: string;
+  required: boolean;
+  behavior: string;
+  sourceProjectAssetId?: number;
+}
+
+export interface TemplateManifest {
+  version: number;
+  name: string;
+  sourceProjectId: number;
+  inputs: TemplateInputSlot[];
+  generated: {
+    kind: string;
+    source: {
+      type: string;
+      slotId?: string;
+    };
+  }[];
+  timelineTemplate: {
+    items: any[];
+    timelineState?: any;
+    sceneState?: any;
+    subtitleStyle?: any;
+    subtitleArea?: any;
+  };
+}
+
+export interface Template {
+  id: number;
+  name: string;
+  manifest: TemplateManifest;
+}

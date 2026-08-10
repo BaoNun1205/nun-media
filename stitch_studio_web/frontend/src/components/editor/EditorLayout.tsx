@@ -3,6 +3,7 @@ import { AssetToolPanel } from './AssetToolPanel';
 import { ContextInspector } from './ContextInspector';
 import { EditorTopBar } from './EditorTopBar';
 import { ExportVideoModal } from './ExportVideoModal';
+import { SaveAsTemplateModal } from './SaveAsTemplateModal';
 import { Timeline } from './Timeline';
 import { VideoPreview } from './VideoPreview';
 import { useEditorController } from '../../hooks/useEditorController';
@@ -16,6 +17,7 @@ export function EditorLayout({ project, projects, jobs, voices, refresh, loadVoi
   const editor = useEditorController({ project, projects, jobs, voices, refresh, loadVoices, onOpenVersion });
   const [timelineHeight, setTimelineHeight] = useState(310);
   const [exportOpen, setExportOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const versions = useMemo(() => projects.filter((item) => item.projectId === project.projectId).sort((a, b) => b.id - a.id), [projects, project.projectId]);
   function resizeTimeline(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -30,7 +32,7 @@ export function EditorLayout({ project, projects, jobs, voices, refresh, loadVoi
     window.addEventListener('pointerup', stop);
   }
   return <div className="editor-layout" style={{ gridTemplateRows: `54px minmax(260px, 1fr) 5px ${timelineHeight}px` }}>
-    <EditorTopBar editor={editor} versions={versions} onBack={onBack} onOpenVersion={onOpenVersion} onOpenExport={() => setExportOpen(true)} />
+    <EditorTopBar editor={editor} versions={versions} onBack={onBack} onOpenVersion={onOpenVersion} onOpenExport={() => setExportOpen(true)} onOpenTemplate={() => setTemplateOpen(true)} />
     {editor.message && <div className="editor-status-toast" role="status">{editor.message}</div>}
     <div className="editor-workspace">
       <AssetToolPanel editor={editor} onOpenExport={() => setExportOpen(true)} />
@@ -40,5 +42,6 @@ export function EditorLayout({ project, projects, jobs, voices, refresh, loadVoi
     <div className="timeline-resizer" onPointerDown={resizeTimeline} />
     <Timeline editor={editor} />
     <ExportVideoModal editor={editor} open={exportOpen} onClose={() => setExportOpen(false)} />
+    <SaveAsTemplateModal editor={editor} open={templateOpen} onClose={() => setTemplateOpen(false)} />
   </div>;
 }
