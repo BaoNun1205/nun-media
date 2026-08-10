@@ -4,6 +4,7 @@ import { EditorLayout } from './components/editor/EditorLayout';
 import { useStudioData } from './hooks/useStudioData';
 import { DownloadsPage } from './pages/DownloadsPage';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { TemplatesPage } from './pages/TemplatesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { StandaloneTTSPage } from './pages/StandaloneTTSPage';
 import { YoutubePage } from './pages/YoutubePage';
@@ -46,7 +47,7 @@ export default function App() {
   const studio = useStudioData();
   const [view, setView] = useState<ViewKey>(() => {
     const requested = new URLSearchParams(window.location.search).get('view') as ViewKey | null;
-    return requested && ['projects', 'downloads', 'tts', 'youtube', 'settings', 'editor'].includes(requested) ? requested : 'projects';
+    return requested && ['projects', 'templates', 'downloads', 'tts', 'youtube', 'settings', 'editor'].includes(requested) ? requested : 'projects';
   });
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
   const activeJobs = studio.jobs.filter((job) => ['queued', 'running'].includes(job.status)).length;
@@ -98,6 +99,7 @@ export default function App() {
     <main className="app-content">
       {studio.error && <div className="connection-banner">{studio.error}</div>}
       {view === 'projects' && <ProjectsPage projects={studio.workspaceProjects} onOpen={openWorkspaceEditor} onRefresh={studio.refresh} />}
+      {view === 'templates' && <TemplatesPage />}
       {view === 'downloads' && <DownloadsPage jobs={studio.jobs} projects={studio.projects} workspaceProjects={studio.workspaceProjects} onRefresh={studio.refresh} onOpenEditor={openEditor} onOpenWorkspace={openWorkspaceEditor} />}
       {view === 'tts' && <StandaloneTTSPage jobs={studio.jobs} workspaceProjects={studio.workspaceProjects} voices={studio.voices} loadVoices={studio.loadVoices} refresh={studio.refresh} />}
       {view === 'youtube' && <YoutubePage />}

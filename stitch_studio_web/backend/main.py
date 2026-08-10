@@ -2038,6 +2038,63 @@ def save_project_template(project_id: int, payload: TemplateSaveRequest) -> dict
             "manifest": payload.manifest
         }
     }
+class TemplateSummary(BaseModel):
+    id: int
+    name: str
+    version: int
+    sourceProjectId: int | None
+    createdAt: str
+    updatedAt: str
+    inputCount: int
+    inputs: list[dict[str, Any]]
+    generatedSummary: list[dict[str, Any]]
+    canvas: dict[str, int] | None
+    fps: int | None
+
+@app.get("/api/templates")
+def list_templates() -> dict[str, list[TemplateSummary]]:
+    templates = storage.list_templates()
+    summaries = []
+    for t in templates:
+        manifest = json.loads(t.manifest_json)
+        timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
+        summaries.append(TemplateSummary(
+            id=t.id,
+            name=t.name,
+            version=manifest.get("version", 1),
+            sourceProjectId=t.source_project_id,
+            createdAt=t.created_at,
+            updatedAt=t.updated_at,
+            inputCount=len(manifest.get("inputs", [])),
+            inputs=manifest.get("inputs", []),
+            generatedSummary=manifest.get("generated", []),
+            canvas=timeline_state.get("canvas"),
+            fps=timeline_state.get("fps")
+        ))
+    return {"templates": summaries}
+
+@app.get("/api/templates/{template_id}")
+def get_template(template_id: int) -> dict[str, Any]:
+    template = storage.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {
+        "template": {
+            "id": template.id,
+            "name": template.name,
+            "sourceProjectId": template.source_project_id,
+            "createdAt": template.created_at,
+            "updatedAt": template.updated_at,
+            "manifest": json.loads(template.manifest_json)
+        }
+    }
+
+@app.delete("/api/templates/{template_id}")
+def delete_template(template_id: int) -> dict[str, bool]:
+    success = storage.delete_template(template_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"success": True}
 
 
 def _default_export_directory(project=None) -> Path:

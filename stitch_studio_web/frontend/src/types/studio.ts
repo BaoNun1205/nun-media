@@ -2,7 +2,7 @@ import type { CoreTimelineScene } from '../editor-core/types';
 import type { TextStyle } from './textStyle';
 import type { ImageAnimationConfig } from '../utils/image-animation/types';
 
-export type ViewKey = 'projects' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
+export type ViewKey = 'projects' | 'templates' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
 export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'export';
 export type AudioMode = 'original' | 'remove_vocals' | 'remove_music';
 export type InspectorSelection =
@@ -341,5 +341,22 @@ export interface TemplateManifest {
 export interface Template {
   id: number;
   name: string;
+  sourceProjectId?: number;
+  createdAt?: string;
+  updatedAt?: string;
   manifest: TemplateManifest;
+}
+
+export interface TemplateSummary {
+  id: number;
+  name: string;
+  version: number;
+  sourceProjectId?: number;
+  createdAt: string;
+  updatedAt: string;
+  inputCount: number;
+  inputs: TemplateInputSlot[];
+  generatedSummary: any[];
+  canvas?: { width: number; height: number };
+  fps?: number;
 }
