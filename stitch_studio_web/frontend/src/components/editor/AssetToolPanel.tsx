@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2, Trash2 } from 'lucide-react';
-import { CAPCUT_LANGUAGES, LANGUAGES, POCKET_LANGUAGES, SOURCE_LANGUAGES, formatDuration } from '../../lib/studio';
+import { CAPCUT_LANGUAGES, LANGUAGES, POCKET_LANGUAGES, SOURCE_LANGUAGES, formatDuration, getAssetGroup, isMediaFileAsset } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
@@ -69,24 +69,58 @@ function ProjectAssetRow({ asset, editor }: { asset: ProjectAsset; editor: Edito
 
 function AssetBin({ editor }: { editor: EditorController }) {
   const uploadRef = useRef<HTMLInputElement>(null);
-  const [kind, setKind] = useState<AssetKind>('video');
+  const [assetGroup, setAssetGroup] = useState<'media' | 'subs'>('media');
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'video' | 'image' | 'audio'>('all');
+
   const videoAssets = editor.project.assets.filter((asset) => asset.kind !== 'srt' && !asset.kind.includes('tts') && !asset.kind.includes('audio'));
   const audioAssets = editor.project.assets.filter((asset) => asset.kind.includes('tts') || asset.kind.includes('audio'));
   const projectAssets = editor.project.projectAssets || [];
-  const projectKindAssets = projectAssets.filter((asset) => asset.kind === kind);
-  const imageAssets = projectAssets.filter((asset) => asset.kind === 'image');
-  const localKindAssets = editor.project.workspaceId ? [] : kind === 'video' ? videoAssets : kind === 'srt' ? editor.srtAssets : kind === 'audio' ? audioAssets : [];
-  const hasMainVideo = kind === 'video' && !editor.project.workspaceId && !editor.isEmptyWorkspace;
-  const visibleCount = kind === 'image'
-      ? imageAssets.length
-      : projectKindAssets.length + localKindAssets.length + (hasMainVideo ? 1 : 0);
-  const accept = kind === 'video'
-    ? 'video/mp4,video/quicktime,video/x-matroska,video/webm,.m4v,.avi'
-    : kind === 'srt'
-      ? '.srt,application/x-subrip,text/plain'
-      : kind === 'image'
-        ? 'image/*,.jpg,.jpeg,.png,.webp,.gif,.bmp'
-        : 'audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg';
+  
+  const allProjectMediaAssets = projectAssets.filter((asset) => getAssetGroup(asset.kind) === 'media');
+  const projectImageAssets = projectAssets.filter((asset) => asset.kind === 'image');
+  const projectVideoAssets = projectAssets.filter((asset) => asset.kind === 'video');
+  const projectAudioAssets = projectAssets.filter((asset) => asset.kind === 'audio' || asset.kind.includes('tts'));
+  const projectSubsAssets = projectAssets.filter((asset) => getAssetGroup(asset.kind) === 'subs');
+
+  const localVideoAssets = editor.project.workspaceId ? [] : videoAssets;
+  const localAudioAssets = editor.project.workspaceId ? [] : audioAssets;
+  const localSubsAssets = editor.project.workspaceId ? [] : editor.srtAssets;
+
+  let visibleProjectAssets: ProjectAsset[] = [];
+  let visibleLocalAssets: Asset[] = [];
+  let showMainVideo = false;
+
+  const hasMainVideo = !editor.project.workspaceId && !editor.isEmptyWorkspace;
+
+  if (assetGroup === 'media') {
+    if (mediaFilter === 'all') {
+      visibleProjectAssets = allProjectMediaAssets;
+      visibleLocalAssets = [...localVideoAssets, ...localAudioAssets];
+      showMainVideo = hasMainVideo;
+    } else if (mediaFilter === 'video') {
+      visibleProjectAssets = projectVideoAssets;
+      visibleLocalAssets = localVideoAssets;
+      showMainVideo = hasMainVideo;
+    } else if (mediaFilter === 'image') {
+      visibleProjectAssets = projectImageAssets;
+      visibleLocalAssets = [];
+      showMainVideo = false;
+    } else if (mediaFilter === 'audio') {
+      visibleProjectAssets = projectAudioAssets;
+      visibleLocalAssets = localAudioAssets;
+      showMainVideo = false;
+    }
+  } else if (assetGroup === 'subs') {
+    visibleProjectAssets = projectSubsAssets;
+    visibleLocalAssets = localSubsAssets;
+    showMainVideo = false;
+  }
+
+  const visibleCount = visibleProjectAssets.length + visibleLocalAssets.length + (showMainVideo ? 1 : 0);
+
+  const accept = assetGroup === 'subs'
+    ? '.srt,application/x-subrip,text/plain'
+    : 'video/*,image/*,audio/*,.mp4,.quicktime,.mkv,.webm,.m4v,.avi,.jpg,.jpeg,.png,.webp,.gif,.bmp,.mp3,.wav,.m4a,.aac,.flac,.ogg';
 
   async function upload(files?: FileList | File[]) {
     const items = Array.from(files || []);
@@ -113,30 +147,50 @@ function AssetBin({ editor }: { editor: EditorController }) {
     void upload(event.dataTransfer.files);
   }
 
-  return <div className="asset-browser asset-bin">
-    <div className="asset-kind-tabs">
-      <button className={kind === 'video' ? 'active' : ''} onClick={() => setKind('video')}><FileVideo2 size={15} /> Video</button>
-      <button className={kind === 'srt' ? 'active' : ''} onClick={() => setKind('srt')}><Captions size={15} /> Sub</button>
-      <button className={kind === 'audio' ? 'active' : ''} onClick={() => setKind('audio')}><FileAudio size={15} /> Audio</button>
-      <button className={kind === 'image' ? 'active' : ''} onClick={() => setKind('image')}><ImageIcon size={15} /> Image</button>
+  return <div className="asset-bin">
+    <div className="asset-index">
+      <button className={assetGroup === 'media' ? 'active' : ''} onClick={() => setAssetGroup('media')} title="Media Files">
+        <span><FileVideo2 size={17} /></span>
+        <span><strong>Media</strong></span>
+      </button>
+      <button className={assetGroup === 'subs' ? 'active' : ''} onClick={() => setAssetGroup('subs')} title="Subs">
+        <span><Captions size={17} /></span>
+        <span><strong>Subs</strong></span>
+      </button>
     </div>
     <div className="asset-kind-content">
       <input ref={uploadRef} className="visually-hidden" type="file" accept={accept} multiple onChange={(event) => upload(event.target.files || undefined)} />
       {visibleCount === 0
         ? <div className="asset-bin-list empty-asset-bin" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-          <div className="asset-bin-bar"><span>{kind === 'srt' ? 'Sub' : kind[0].toUpperCase() + kind.slice(1)}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import</button></div>
+          <div className="asset-bin-bar"><span>{assetGroup === 'subs' ? 'Subs' : 'Media Files'}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import{assetGroup === 'subs' ? ' SRT' : ''}</button></div>
+          {assetGroup === 'media' && (
+            <div className="style-segmented" style={{ marginBottom: '12px' }}>
+              <button className={mediaFilter === 'all' ? 'active' : ''} onClick={() => setMediaFilter('all')}><span>All</span></button>
+              <button className={mediaFilter === 'video' ? 'active' : ''} onClick={() => setMediaFilter('video')}><span>Video</span></button>
+              <button className={mediaFilter === 'image' ? 'active' : ''} onClick={() => setMediaFilter('image')}><span>Image</span></button>
+              <button className={mediaFilter === 'audio' ? 'active' : ''} onClick={() => setMediaFilter('audio')}><span>Audio</span></button>
+            </div>
+          )}
           <div className="asset-drop-zone" onClick={() => uploadRef.current?.click()}>
             <span><Plus size={18} /></span>
-            <strong>Import media</strong>
-            <small>Drag and drop {kind === 'srt' ? 'subtitle files' : `${kind} files`} here</small>
+            <strong>{assetGroup === 'subs' ? 'Import subtitles' : 'Import media'}</strong>
+            <small>Drag and drop {assetGroup === 'subs' ? 'subtitle files' : 'media files'} here</small>
           </div>
         </div>
         : <div className="asset-bin-list" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-          <div className="asset-bin-bar"><span>{kind === 'srt' ? 'Sub' : kind[0].toUpperCase() + kind.slice(1)}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import</button></div>
+          <div className="asset-bin-bar"><span>{assetGroup === 'subs' ? 'Subs' : 'Media Files'}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import{assetGroup === 'subs' ? ' SRT' : ''}</button></div>
+          {assetGroup === 'media' && (
+            <div className="style-segmented" style={{ marginBottom: '12px' }}>
+              <button className={mediaFilter === 'all' ? 'active' : ''} onClick={() => setMediaFilter('all')}><span>All</span></button>
+              <button className={mediaFilter === 'video' ? 'active' : ''} onClick={() => setMediaFilter('video')}><span>Video</span></button>
+              <button className={mediaFilter === 'image' ? 'active' : ''} onClick={() => setMediaFilter('image')}><span>Image</span></button>
+              <button className={mediaFilter === 'audio' ? 'active' : ''} onClick={() => setMediaFilter('audio')}><span>Audio</span></button>
+            </div>
+          )}
           <div className="asset-card-grid">
-            {hasMainVideo && <button className="asset-card active" onClick={() => editor.setSelection({ type: 'video', id: editor.project.id })}><span className="asset-card-thumb video"><img src={`${API_BASE}/videos/${editor.project.id}/thumbnail`} alt="" /><em>{formatDuration(editor.project.durationMs)}</em></span><strong>{editor.project.name}</strong><small>Main</small><span className="asset-card-action"><Play size={13} /></span></button>}
-            {(kind === 'image' ? imageAssets : projectKindAssets).map((asset) => <ProjectAssetRow key={asset.id} asset={asset} editor={editor} />)}
-            {localKindAssets.map((asset) => <AssetRow key={asset.id} asset={asset} editor={editor} />)}
+            {showMainVideo && <button className="asset-card active" onClick={() => editor.setSelection({ type: 'video', id: editor.project.id })}><span className="asset-card-thumb video"><img src={`${API_BASE}/videos/${editor.project.id}/thumbnail`} alt="" /><em>{formatDuration(editor.project.durationMs)}</em></span><strong>{editor.project.name}</strong><small>Main</small><span className="asset-card-action"><Play size={13} /></span></button>}
+            {visibleProjectAssets.map((asset) => <ProjectAssetRow key={asset.id} asset={asset} editor={editor} />)}
+            {visibleLocalAssets.map((asset) => <AssetRow key={asset.id} asset={asset} editor={editor} />)}
           </div>
         </div>}
     </div>

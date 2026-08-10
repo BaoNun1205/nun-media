@@ -324,11 +324,16 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .left-panel-tabs button.active { color: white; }
 .left-panel-tabs button.active::after { content: ""; position: absolute; left: 22%; right: 22%; bottom: 0; height: 2px; background: var(--accent); }
 .asset-browser { height: calc(100% - 42px); overflow: auto; padding: 9px; }
-.asset-bin { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; overflow: hidden; padding: 10px; }
-.asset-kind-tabs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.asset-kind-tabs button { justify-content: flex-start; width: 100%; min-height: 38px; padding: 8px 9px; border-color: transparent; color: #a2a8b2; background: transparent; }
-.asset-kind-tabs button.active { color: #10d7e2; background: #25282f; border-color: #303641; box-shadow: inset 2px 0 #10d7e2; }
-.asset-kind-content { min-width: 0; min-height: 0; overflow: hidden; }
+.asset-bin { height: calc(100% - 42px); min-height: 0; display: grid; grid-template-columns: 76px minmax(0, 1fr); }
+.asset-index { overflow: auto; border-right: 1px solid var(--line); padding: 6px 4px; background: #0d0f13; }
+.asset-index > button { width: 100%; min-height: 62px; flex-direction: column; gap: 4px; padding: 6px 2px; border: 0; background: transparent; }
+.asset-index > button.active { color: white; background: #162428; }
+.asset-index > button > span:first-child { color: #10d7e2; }
+.asset-index strong, .asset-index small { display: block; text-align: center; }
+.asset-index strong { font-size: 8px; font-weight: 700; color: #7f8794; }
+.asset-index > button.active strong { color: white; }
+.asset-index small { display: none; }
+.asset-kind-content { min-width: 0; min-height: 0; overflow: hidden; padding: 9px; }
 .asset-drop-zone { min-height: 216px; display: grid; place-items: center; align-content: center; gap: 8px; border: 1px dashed #2f3744; border-radius: 8px; color: #d6d9df; background: linear-gradient(180deg, #171a20, #14171d); box-shadow: inset 0 0 0 1px #ffffff05; cursor: pointer; transition: border-color .12s ease, background .12s ease, box-shadow .12s ease; }
 .asset-drop-zone:hover { border-color: #10d7e288; background: linear-gradient(180deg, #191d24, #151a20); box-shadow: inset 0 0 0 1px #10d7e218; }
 .asset-drop-zone span { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: #061114; background: #10d7e2; box-shadow: 0 0 18px #10d7e233; }
@@ -353,7 +358,7 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .asset-row strong { color: #daddE4; font-size: 10px; }
 .asset-row small { margin-top: 3px; color: #626a77; font-size: 8px; }
 .asset-row > svg { color: #555d68; }
-.asset-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; align-content: start; }
+.asset-card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-content: start; }
 .asset-card { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto auto; align-items: start; gap: 5px; padding: 0; border: 1px solid transparent; background: transparent; text-align: left; }
 .asset-card:hover, .asset-card.active { border-color: #313846; background: #1a1d23; }
 .asset-card-thumb { position: relative; width: 100%; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; border-radius: 6px; color: #8db4ff; background: #20242b; }
