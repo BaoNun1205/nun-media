@@ -2096,6 +2096,71 @@ def get_template(template_id: int) -> dict[str, Any]:
         }
     }
 
+class TemplateApplyRequest(BaseModel):
+    slotMap: dict[str, int]  # slotId -> projectAssetId
+
+@app.post("/api/projects/{project_id}/templates/{template_id}/apply")
+def apply_template(project_id: int, template_id: int, payload: TemplateApplyRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    template = storage.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+        
+    manifest = json.loads(template.manifest_json)
+    import uuid
+    id_map = {}
+    
+    items = manifest.get("timelineTemplate", {}).get("items", [])
+    new_items = []
+    
+    for item in items:
+        new_item = dict(item)
+        old_id = new_item.get("id")
+        new_id = str(uuid.uuid4())
+        id_map[old_id] = new_id
+        new_item["id"] = new_id
+        
+        src = new_item.get("templateSource")
+        if isinstance(src, dict) and src.get("type") == "media-slot":
+            slot_id = src.get("slotId")
+            if slot_id in payload.slotMap:
+                new_item["projectAssetId"] = payload.slotMap[slot_id]
+            new_item.pop("templateSource", None)
+            
+        new_items.append(new_item)
+        
+    timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
+    scene_state = manifest.get("timelineTemplate", {}).get("sceneState", {})
+    
+    if "items" in timeline_state:
+        for t_item in timeline_state["items"]:
+            old_id = t_item.get("id")
+            if old_id in id_map:
+                t_item["id"] = id_map[old_id]
+                
+            src = t_item.get("templateSource")
+            if isinstance(src, dict) and src.get("type") == "media-slot":
+                slot_id = src.get("slotId")
+                if slot_id in payload.slotMap:
+                    t_item["projectAssetId"] = payload.slotMap[slot_id]
+                t_item.pop("templateSource", None)
+                
+    metadata = project.metadata or {}
+    metadata["timeline"] = new_items
+    metadata["timeline_state"] = timeline_state
+    metadata["scene_state"] = scene_state
+    
+    if "subtitleStyle" in manifest.get("timelineTemplate", {}):
+        metadata["subtitle_style"] = manifest["timelineTemplate"]["subtitleStyle"]
+    if "subtitleArea" in manifest.get("timelineTemplate", {}):
+        metadata["subtitle_area"] = manifest["timelineTemplate"]["subtitleArea"]
+        
+    storage.update_project_metadata(project.id, metadata)
+    
+    needs_srt = any(g.get("kind") == "subtitle" and g.get("source", {}).get("type") == "srt-from-audio" for g in manifest.get("generated", []))
+    
+    return {"success": True, "needsSrt": needs_srt}
+
 @app.delete("/api/templates/{template_id}")
 def delete_template(template_id: int) -> dict[str, bool]:
     success = storage.delete_template(template_id)

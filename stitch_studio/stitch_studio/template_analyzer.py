@@ -2,14 +2,31 @@ import json
 from typing import Any, Dict, List, Optional
 import uuid
 
+def _sanitize_media_identity(obj: Any):
+    """Recursively removes asset identity references to prevent stale bindings."""
+    if isinstance(obj, dict):
+        obj.pop("projectAssetId", None)
+        obj.pop("sourceAssetId", None)
+        obj.pop("sourceVideoId", None)
+        if obj.get("kind") == "srt":
+            obj.pop("segments", None)
+            obj.pop("text", None)
+        for v in obj.values():
+            _sanitize_media_identity(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _sanitize_media_identity(item)
+
 def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
     """
     Analyzes a Workspace Project and its timeline to produce a Template Manifest.
     """
     metadata = project.metadata or {}
     timeline = metadata.get("timeline", [])
-    timeline_state = dict(metadata.get("timeline_state", {}))
-    scene_state = dict(metadata.get("scene_state", {}))
+    
+    # Deep copy state so we don't accidentally mutate the project in-memory
+    timeline_state = json.loads(json.dumps(metadata.get("timeline_state", {})))
+    scene_state = json.loads(json.dumps(metadata.get("scene_state", {})))
     
     # Analyze media sources used in timeline
     # We will deduplicate based on projectAssetId
@@ -66,28 +83,24 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
     template_timeline: List[Dict[str, Any]] = []
     has_srt = False
     for item in timeline:
-        t_item = dict(item)
+        t_item = json.loads(json.dumps(item))
         kind = t_item.get("kind")
         
-        if kind in {"image", "video", "audio"} and "projectAssetId" in t_item:
-            asset_id = t_item.pop("projectAssetId")
-            slot_id = slot_map.get(asset_id)
-            if slot_id:
-                t_item["templateSource"] = {
-                    "type": "media-slot",
-                    "slotId": slot_id
-                }
+        if kind in {"image", "video", "audio"}:
+            asset_id = t_item.get("projectAssetId")
+            if asset_id:
+                slot_id = slot_map.get(asset_id)
+                if slot_id:
+                    t_item["templateSource"] = {
+                        "type": "media-slot",
+                        "slotId": slot_id
+                    }
         
         if kind == "srt":
             has_srt = True
-            if "projectAssetId" in t_item:
-                t_item.pop("projectAssetId")
-            
             t_item["templateSource"] = {
                 "type": "generated-srt"
             }
-            if "segments" in t_item:
-                t_item.pop("segments")
                 
         template_timeline.append(t_item)
 
@@ -111,6 +124,11 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
 
     if "items" in timeline_state:
         timeline_state["items"] = template_timeline
+
+    # Recursively sanitize all identity references out of the reusable states
+    _sanitize_media_identity(template_timeline)
+    _sanitize_media_identity(timeline_state)
+    _sanitize_media_identity(scene_state)
 
     manifest = {
         "version": 1,

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { LayoutTemplate, Play, Trash2, Box, Image, Video, FileAudio, FileText } from 'lucide-react';
 import { studioApi } from '../services/api';
 import type { TemplateSummary } from '../types/studio';
+import { ProjectPickerModal } from '../components/common/ProjectPickerModal';
+import { TemplateSlotMappingModal } from '../components/common/TemplateSlotMappingModal';
 
 export function TemplatesPage() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -36,6 +38,32 @@ export function TemplatesPage() {
       setMessage(err instanceof Error ? err.message : 'Failed to delete template');
     }
   }
+  const [projects, setProjects] = useState<any[]>([]);
+  const [activeTemplate, setActiveTemplate] = useState<TemplateSummary | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [pickingProjectFor, setPickingProjectFor] = useState<TemplateSummary | null>(null);
+
+  const fetchProjectsAndShowPicker = async (template: TemplateSummary) => {
+    try {
+      setLoading(true);
+      const res = await studioApi.workspaceProjects();
+      setProjects(res);
+      setPickingProjectFor(template);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load projects');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleProjectSelected = (projectId: number) => {
+    const template = pickingProjectFor;
+    setPickingProjectFor(null);
+    if (template) {
+      setSelectedProjectId(projectId);
+      setActiveTemplate(template);
+    }
+  };
 
   return (
     <section className="page projects-page">
@@ -101,8 +129,10 @@ export function TemplatesPage() {
                   <span>{new Date(template.createdAt).toLocaleDateString()}</span>
                 </div>
                 
-                <div className="project-actions" style={{ justifyContent: 'flex-end' }}>
-                  {/* Primary Use Template button will be added in Phase 2 */}
+                <div className="project-actions" style={{ justifyContent: 'flex-end', gap: '8px' }}>
+                  <button className="button-primary" style={{ padding: '6px 12px' }} onClick={() => fetchProjectsAndShowPicker(template)}>
+                    Use Template
+                  </button>
                   <div style={{ flex: 1 }} /> 
                   <button className="icon-button danger" onClick={() => removeTemplate(template)} title="Delete Template">
                     <Trash2 size={15} />
@@ -113,6 +143,36 @@ export function TemplatesPage() {
           ))
         )}
       </div>
+
+      {pickingProjectFor && (
+        <ProjectPickerModal
+          open={true}
+          projects={projects}
+          title="Select Target Project"
+          description="Choose a project to add these template items to."
+          confirmLabel="Select Project"
+          onClose={() => setPickingProjectFor(null)}
+          onConfirm={(ids) => {
+            if (ids.length > 0) handleProjectSelected(ids[0]);
+          }}
+        />
+      )}
+
+      {activeTemplate && selectedProjectId && (
+        <TemplateSlotMappingModal
+          template={activeTemplate}
+          projectId={selectedProjectId}
+          onClose={() => {
+            setActiveTemplate(null);
+            setSelectedProjectId(null);
+          }}
+          onApplied={(projectId) => {
+            setActiveTemplate(null);
+            setSelectedProjectId(null);
+            window.location.hash = `#projects/${projectId}`;
+          }}
+        />
+      )}
     </section>
   );
 }

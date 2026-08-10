@@ -126,7 +126,12 @@ export const studioApi = {
         body: JSON.stringify({ name, content }),
       }),
     deletePrompt: (promptId: number) => request<{ deleted: boolean }>(`/youtube/prompts/${promptId}`, { method: 'DELETE' }),
-  }
+  },
+  applyTemplate: (projectId: number, templateId: number, slotMap: Record<string, number>) =>
+    request<{ success: boolean; needsSrt: boolean }>(`/projects/${projectId}/templates/${templateId}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ slotMap })
+    }),
 };
 
 export async function copyText(text: string) {
