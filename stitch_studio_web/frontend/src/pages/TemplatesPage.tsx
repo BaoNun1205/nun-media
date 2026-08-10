@@ -4,7 +4,7 @@ import { studioApi } from '../services/api';
 import type { TemplateSummary } from '../types/studio';
 import { UseTemplateModal } from '../components/common/UseTemplateModal';
 
-export function TemplatesPage() {
+export function TemplatesPage({ onOpenWorkspace }: { onOpenWorkspace?: (project: any) => void }) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -124,7 +124,13 @@ export function TemplatesPage() {
           onClose={() => setActiveTemplate(null)}
           onCreated={(projectId) => {
             setActiveTemplate(null);
-            window.location.hash = `#projects/${projectId}`;
+            if (onOpenWorkspace) {
+              studioApi.workspace(projectId)
+                .then(res => onOpenWorkspace(res.project))
+                .catch(() => window.location.hash = `#projects/${projectId}`);
+            } else {
+              window.location.hash = `#projects/${projectId}`;
+            }
           }}
         />
       )}

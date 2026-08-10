@@ -1092,13 +1092,18 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setSubtitleBlurEffect({ ...activeBlurEffect, area: nextArea, mode: 'manual', source: 'manual-editor' });
     }
     try {
-      const result = await studioApi.saveSubtitleArea(
-        project.id,
-        nextArea,
-        updateBlurEffect ? { blurEffectArea: nextArea } : undefined,
-      );
-      if (result.subtitleArea) setArea(result.subtitleArea);
-      if (result.subtitleBlurEffect) setSubtitleBlurEffect(result.subtitleBlurEffect);
+      if (project.workspaceId && !updateBlurEffect) {
+        const result = await studioApi.saveWorkspaceSubtitleArea(project.workspaceId, nextArea);
+        if (result.subtitleArea) setArea(result.subtitleArea);
+      } else {
+        const result = await studioApi.saveSubtitleArea(
+          project.id,
+          nextArea,
+          updateBlurEffect ? { blurEffectArea: nextArea } : undefined,
+        );
+        if (result.subtitleArea) setArea(result.subtitleArea);
+        if (result.subtitleBlurEffect) setSubtitleBlurEffect(result.subtitleBlurEffect);
+      }
       setMessage('Subtitle position saved.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save subtitle position');
@@ -1108,12 +1113,17 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   async function saveSubtitleStyle(nextStyle: SubtitleStyle, messageText?: string) {
     setStyle(nextStyle);
     try {
-      const result = await studioApi.saveSubtitleArea(
-        project.id,
-        area,
-        { style: nextStyle }
-      );
-      if (result.subtitleStyle) setStyle(result.subtitleStyle);
+      if (project.workspaceId) {
+        const result = await studioApi.saveWorkspaceSubtitleArea(project.workspaceId, area, { style: nextStyle });
+        if (result.subtitleStyle) setStyle(result.subtitleStyle);
+      } else {
+        const result = await studioApi.saveSubtitleArea(
+          project.id,
+          area,
+          { style: nextStyle }
+        );
+        if (result.subtitleStyle) setStyle(result.subtitleStyle);
+      }
       if (messageText) setMessage(messageText);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to save subtitle style');

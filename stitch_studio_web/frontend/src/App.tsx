@@ -65,8 +65,14 @@ export default function App() {
           workspaceTimeline: selectedWorkspace.timeline || [],
           timelineState: selectedWorkspace.timelineState,
           sceneState: selectedWorkspace.sceneState,
+          subtitleStyle: (selectedWorkspace.metadata?.subtitle_style as any) ?? (studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo)?.metadata?.subtitle_style,
+          subtitleArea: (selectedWorkspace.metadata?.subtitle_area as any) ?? (studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo)?.metadata?.subtitle_area,
         }
-      : emptyWorkspaceProject(selectedWorkspace)
+      : {
+          ...emptyWorkspaceProject(selectedWorkspace),
+          subtitleStyle: (selectedWorkspace.metadata?.subtitle_style as any),
+          subtitleArea: (selectedWorkspace.metadata?.subtitle_area as any),
+        }
     : studio.selectedProject;
 
   function openEditor(id: number) {
@@ -99,7 +105,7 @@ export default function App() {
     <main className="app-content">
       {studio.error && <div className="connection-banner">{studio.error}</div>}
       {view === 'projects' && <ProjectsPage projects={studio.workspaceProjects} onOpen={openWorkspaceEditor} onRefresh={studio.refresh} />}
-      {view === 'templates' && <TemplatesPage />}
+      {view === 'templates' && <TemplatesPage onOpenWorkspace={openWorkspaceEditor} />}
       {view === 'downloads' && <DownloadsPage jobs={studio.jobs} projects={studio.projects} workspaceProjects={studio.workspaceProjects} onRefresh={studio.refresh} onOpenEditor={openEditor} onOpenWorkspace={openWorkspaceEditor} />}
       {view === 'tts' && <StandaloneTTSPage jobs={studio.jobs} workspaceProjects={studio.workspaceProjects} voices={studio.voices} loadVoices={studio.loadVoices} refresh={studio.refresh} />}
       {view === 'youtube' && <YoutubePage />}

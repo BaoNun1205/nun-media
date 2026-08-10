@@ -2148,7 +2148,7 @@ def apply_template(project_id: int, template_id: int, payload: TemplateApplyRequ
     metadata = project.metadata or {}
     metadata["timeline"] = new_items
     metadata["timeline_state"] = timeline_state
-    metadata["scene_state"] = scene_state
+    # scene_state is deliberately omitted to prevent stale media references
     
     if "subtitleStyle" in manifest.get("timelineTemplate", {}):
         metadata["subtitle_style"] = manifest["timelineTemplate"]["subtitleStyle"]
@@ -2251,7 +2251,7 @@ def instantiate_template(
         metadata = project.metadata or {}
         metadata["timeline"] = new_items
         metadata["timeline_state"] = timeline_state
-        metadata["scene_state"] = scene_state
+        # scene_state is deliberately omitted to prevent stale media references
         
         if "subtitleStyle" in manifest.get("timelineTemplate", {}):
             metadata["subtitle_style"] = manifest["timelineTemplate"]["subtitleStyle"]
@@ -2296,7 +2296,7 @@ def instantiate_template(
                                 raise RuntimeError("Timeline SRT was generated but not registered.")
                             project_asset = storage.project_asset_for_asset(p.id, srt_asset.id)
                             if not project_asset:
-                                storage.add_project_asset(
+                                new_id = storage.add_project_asset(
                                     project_id=p.id,
                                     kind="srt",
                                     path=srt_asset.path,
@@ -2309,6 +2309,31 @@ def instantiate_template(
                                         "engine": srt_asset.engine,
                                     },
                                 )
+                                project_asset = storage.get_project_asset(new_id)
+
+                            if project_asset:
+                                current_project = storage.get_project(p.id)
+                                meta = current_project.metadata or {}
+                                updated = False
+                                
+                                for t_item in meta.get("timeline", []):
+                                    src = t_item.get("templateSource")
+                                    if isinstance(src, dict) and src.get("type") == "generated-srt":
+                                        t_item["projectAssetId"] = project_asset.id
+                                        t_item.pop("templateSource", None)
+                                        updated = True
+                                        
+                                if "items" in meta.get("timeline_state", {}):
+                                    for ts_item in meta["timeline_state"]["items"]:
+                                        src = ts_item.get("templateSource")
+                                        if isinstance(src, dict) and src.get("type") == "generated-srt":
+                                            ts_item["projectAssetId"] = project_asset.id
+                                            ts_item.pop("templateSource", None)
+                                            updated = True
+                                            
+                                if updated:
+                                    storage.update_project_metadata(p.id, meta)
+
                             return {"assetId": srt_asset.id}
 
                         srt_job_id = _new_job("srt", f"Generate Slot SRT: {project.title}", -project.id)
@@ -2328,6 +2353,29 @@ def delete_template(template_id: int) -> dict[str, bool]:
     if not success:
         raise HTTPException(status_code=404, detail="Template not found")
     return {"success": True}
+
+
+class WorkspaceSubtitleSettingsRequest(BaseModel):
+    area: Any = None
+    style: Any = None
+
+
+@app.put("/api/projects/{project_id}/subtitle-settings")
+def update_workspace_subtitle_settings(project_id: int, payload: WorkspaceSubtitleSettingsRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    metadata = project.metadata or {}
+    
+    if payload.area is not None:
+        metadata["subtitle_area"] = payload.area
+    if payload.style is not None:
+        metadata["subtitle_style"] = payload.style
+        
+    storage.update_project_metadata(project.id, metadata)
+    
+    return {
+        "subtitleArea": metadata.get("subtitle_area"),
+        "subtitleStyle": metadata.get("subtitle_style")
+    }
 
 
 def _default_export_directory(project=None) -> Path:

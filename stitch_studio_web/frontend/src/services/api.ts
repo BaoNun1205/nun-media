@@ -73,6 +73,11 @@ export const studioApi = {
       `/videos/${id}/subtitle-settings`,
       { method: 'PUT', body: JSON.stringify({ area, ...options }) },
     ),
+  saveWorkspaceSubtitleArea: (projectId: number, area: SubtitleArea, options?: { style?: any }) =>
+    request<{ subtitleArea: SubtitleArea; subtitleStyle?: any }>(
+      `/projects/${projectId}/subtitle-settings`,
+      { method: 'PUT', body: JSON.stringify({ area, ...options }) },
+    ),
   revealProject: (id: number) => request(`/videos/${id}/reveal`, { method: 'POST' }),
   setAudioMode: (id: number, mode: AudioMode) =>
     request<{ mode: AudioMode; ready: boolean; jobId?: number; alreadyRunning?: boolean; reused?: boolean }>(
