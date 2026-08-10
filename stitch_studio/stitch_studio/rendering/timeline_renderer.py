@@ -176,7 +176,10 @@ def render_project_timeline(
     ]
     if not active_items:
         raise RuntimeError("Timeline does not contain any active items.")
-    duration = max(_start(item) + _duration(item) for item in active_items)
+    
+    media_items = [item for item in active_items if _kind(item) in {"video", "audio", "image"}]
+    duration_items = media_items if media_items else active_items
+    duration = max(_start(item) + _duration(item) for item in duration_items)
     output_path = unique_output_path(output_dir, settings.file_name)
     primary_video = storage.get_video(project.primary_video_id) if getattr(project, "primary_video_id", None) else None
 
@@ -401,17 +404,67 @@ def _add_image_layer(ctx: RenderContext, registry: InputRegistry, filters: list[
 
 def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], current: str) -> str:
     label = _add_canvas_effects(ctx, filters, current)
-    draw_index = 0
+    
+    srt_events = []
+    text_events = []
+    
     for item in _items_in_track_order(ctx):
         if _kind(item) == "srt" and _visual_enabled(ctx, item):
-            label, draw_index = _draw_srt_item(ctx, filters, label, item, draw_index)
+            source = resolve_timeline_item_source(ctx.project, ctx.storage, item)
+            if not source:
+                raise RuntimeError(f"Missing subtitle media: {item.get('name') or item.get('id')}")
+            source_start = _source_start(item)
+            item_start = _start(item)
+            item_end = _end(item)
+            for segment in read_srt(source):
+                start = item_start + max(0.0, segment.start - source_start)
+                end = item_start + max(0.0, segment.end - source_start)
+                start = max(item_start, start)
+                end = min(item_end, end)
+                if end > start:
+                    srt_events.append((start, end, segment.text))
+                    
         if _kind(item) == "text" and _visual_enabled(ctx, item):
-            label, draw_index = _draw_text_item(ctx, filters, label, item, draw_index)
-    if label == current:
-        out = "[vout]"
-        filters.append(f"{current}format=yuv420p{out}")
-        return out
-    return label
+            params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            style = params.get("textStyle") if isinstance(params.get("textStyle"), dict) else {}
+            position = params.get("textPosition") if isinstance(params.get("textPosition"), dict) else {}
+            text = str(params.get("text") or item.get("name") or "Text")
+            x = _clamp_float(position.get("x"), 0.5, 0.0, 1.0)
+            y = _clamp_float(position.get("y"), 0.45, 0.0, 1.0)
+            text_events.append({
+                "start": _start(item),
+                "end": _end(item),
+                "text": text,
+                "style": style,
+                "x": x,
+                "y": y
+            })
+            
+    if not srt_events and not text_events:
+        if label == current:
+            out = "[vout]"
+            filters.append(f"{current}format=yuv420p{out}")
+            return out
+        return label
+        
+    from stitch_studio.rendering.subtitle_ass_generator import generate_ass_file
+    
+    ass_path = ctx.temp_dir / "subtitles.ass"
+    generate_ass_file(
+        out_path=ass_path,
+        timeline_width=ctx.width,
+        timeline_height=ctx.height,
+        project_canvas_height=_project_canvas_height(ctx),
+        srt_events=srt_events,
+        text_events=text_events,
+        global_style=_primary_subtitle_style(ctx),
+        subtitle_area=_primary_subtitle_area(ctx)
+    )
+    
+    out = "[vsubs]"
+    escaped_ass = _escape_filter_path(ass_path)
+    filters.append(f"{label}subtitles='{escaped_ass}'{out}")
+    return out
 
 
 def _add_canvas_effects(ctx: RenderContext, filters: list[str], current: str) -> str:
@@ -440,47 +493,6 @@ def _add_canvas_effects(ctx: RenderContext, filters: list[str], current: str) ->
         f"[blurbase][blurred]overlay={xmin}:{ymin}{out}"
     )
     return out
-
-
-def _draw_text_item(ctx: RenderContext, filters: list[str], current: str, item: dict[str, Any], draw_index: int) -> tuple[str, int]:
-    params = item.get("params") if isinstance(item.get("params"), dict) else {}
-    style = params.get("textStyle") if isinstance(params.get("textStyle"), dict) else {}
-    position = params.get("textPosition") if isinstance(params.get("textPosition"), dict) else {}
-    text = str(params.get("text") or item.get("name") or "Text")
-    x = _clamp_float(position.get("x"), 0.5, 0.0, 1.0)
-    y = _clamp_float(position.get("y"), 0.45, 0.0, 1.0)
-    out = f"[vtext{draw_index}]"
-    text_path = _write_text_file(ctx, draw_index, text)
-    filters.append(f"{current}{_drawtext_filter(ctx, style, text_path, x, y, _start(item), _end(item), centered=True)}{out}")
-    return out, draw_index + 1
-
-
-def _draw_srt_item(ctx: RenderContext, filters: list[str], current: str, item: dict[str, Any], draw_index: int) -> tuple[str, int]:
-    source = resolve_timeline_item_source(ctx.project, ctx.storage, item)
-    if not source:
-        raise RuntimeError(f"Missing subtitle media: {item.get('name') or item.get('id')}")
-    style = _primary_subtitle_style(ctx)
-    area = _primary_subtitle_area(ctx)
-    vertical = str(style.get("verticalAlign") or "bottom")
-    x = (area["xmin"] + area["xmax"]) / 2
-    y = area["ymin"] if vertical == "top" else (area["ymin"] + area["ymax"]) / 2 if vertical == "middle" else area["ymax"]
-    source_start = _source_start(item)
-    item_start = _start(item)
-    item_end = _end(item)
-    label = current
-    for segment in read_srt(source):
-        start = item_start + max(0.0, segment.start - source_start)
-        end = item_start + max(0.0, segment.end - source_start)
-        start = max(item_start, start)
-        end = min(item_end, end)
-        if end <= start:
-            continue
-        out = f"[vtext{draw_index}]"
-        text_path = _write_text_file(ctx, draw_index, segment.text)
-        filters.append(f"{label}{_drawtext_filter(ctx, style, text_path, x, y, start, end, centered=True, vertical=vertical)}{out}")
-        label = out
-        draw_index += 1
-    return label, draw_index
 
 
 def _add_audio_layers(ctx: RenderContext, registry: InputRegistry, filters: list[str]) -> str:

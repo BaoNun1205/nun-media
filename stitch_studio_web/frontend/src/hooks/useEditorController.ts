@@ -53,7 +53,9 @@ function formatSrtTimestamp(seconds: number) {
 }
 
 function endOfTimeline(items: TimelineItem[]) {
-  return items.reduce((end, item) => Math.max(end, item.start + item.duration), 0);
+  const mediaItems = items.filter(i => i.kind === 'video' || i.kind === 'audio' || i.kind === 'image');
+  const itemsToMeasure = mediaItems.length > 0 ? mediaItems : items;
+  return itemsToMeasure.reduce((end, item) => Math.max(end, item.start + item.duration), 0);
 }
 
 function endOfTrack(items: TimelineItem[], track: TimelineItem['track']) {
@@ -248,7 +250,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const activeTimelineAudioReady = Boolean(activeTimelineProject?.audioSeparation?.ready);
   const effectivePreviewAudioMode: AudioMode = activeTimelineAudioMode !== 'original' && !activeTimelineAudioReady ? 'original' : activeTimelineAudioMode;
   const duration = hasWorkspaceTimeline
-    ? Math.max(timelineDuration, srt.segments.at(-1)?.end || 0, 1)
+    ? Math.max(timelineDuration, 1)
     : Math.max(((project.durationMs || 0) / 1000) / Math.max(.1, videoSpeed), srt.segments.at(-1)?.end || 0, 1);
   const latestJob = [...videoJobs].sort((a, b) => b.id - a.id)[0];
   const dirty = useMemo(() => Boolean(srt.asset) && serializeSrt(srt.segments, edits) !== baselineSrt, [srt.asset, srt.segments, edits, baselineSrt]);
