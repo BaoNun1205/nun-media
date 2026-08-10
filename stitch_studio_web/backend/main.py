@@ -2158,8 +2158,169 @@ def apply_template(project_id: int, template_id: int, payload: TemplateApplyRequ
     storage.update_project_metadata(project.id, metadata)
     
     needs_srt = any(g.get("kind") == "subtitle" and g.get("source", {}).get("type") == "srt-from-audio" for g in manifest.get("generated", []))
+    if needs_srt:
+        return {"success": True, "needsSrt": True}
+        
+    return {"success": True, "needsSrt": False}
+
+
+@app.post("/api/templates/{template_id}/instantiate")
+def instantiate_template(
+    template_id: int, 
+    projectName: str = Form(None), 
+    slotIds: str = Form(...), 
+    files: list[UploadFile] = File(...)
+) -> dict[str, Any]:
+    template = storage.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+        
+    try:
+        parsed_slot_ids = json.loads(slotIds)
+        if not isinstance(parsed_slot_ids, list):
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="slotIds must be a JSON array of strings")
+
+    if len(parsed_slot_ids) != len(files):
+        raise HTTPException(status_code=400, detail="Mismatched number of slotIds and files")
+        
+    manifest = json.loads(template.manifest_json)
     
-    return {"success": True, "needsSrt": needs_srt}
+    title = projectName.strip() if projectName and projectName.strip() else ""
+    if not title:
+        if files:
+            title = Path(files[0].filename or "Untitled").stem
+        else:
+            import datetime
+            title = f"{template.name} - {datetime.datetime.now().strftime('%b %d, %H:%M')}"
+            
+    project = storage.create_project(title=title)
+    
+    try:
+        slot_map = {}
+        for slot_id, file in zip(parsed_slot_ids, files):
+            input_def = next((i for i in manifest.get("inputs", []) if i.get("slotId") == slot_id), None)
+            if input_def:
+                expected_kind = input_def.get("kind")
+                kind = _classify_project_upload(Path(file.filename or "asset").name)
+                if expected_kind and kind != expected_kind:
+                    raise HTTPException(status_code=400, detail=f"Slot '{input_def.get('label')}' requires a {expected_kind} file, but a {kind} file was provided.")
+                    
+            project_asset_id, video_id = _save_project_upload(project, file)
+            slot_map[slot_id] = project_asset_id
+
+        import uuid
+        id_map = {}
+        
+        items = manifest.get("timelineTemplate", {}).get("items", [])
+        new_items = []
+        
+        for item in items:
+            new_item = dict(item)
+            old_id = new_item.get("id")
+            new_id = str(uuid.uuid4())
+            id_map[old_id] = new_id
+            new_item["id"] = new_id
+            
+            src = new_item.get("templateSource")
+            if isinstance(src, dict) and src.get("type") == "media-slot":
+                sid = src.get("slotId")
+                if sid in slot_map:
+                    new_item["projectAssetId"] = slot_map[sid]
+                new_item.pop("templateSource", None)
+                
+            new_items.append(new_item)
+            
+        timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
+        scene_state = manifest.get("timelineTemplate", {}).get("sceneState", {})
+        
+        if "items" in timeline_state:
+            for t_item in timeline_state["items"]:
+                old_id = t_item.get("id")
+                if old_id in id_map:
+                    t_item["id"] = id_map[old_id]
+                    
+                src = t_item.get("templateSource")
+                if isinstance(src, dict) and src.get("type") == "media-slot":
+                    sid = src.get("slotId")
+                    if sid in slot_map:
+                        t_item["projectAssetId"] = slot_map[sid]
+                    t_item.pop("templateSource", None)
+                    
+        metadata = project.metadata or {}
+        metadata["timeline"] = new_items
+        metadata["timeline_state"] = timeline_state
+        metadata["scene_state"] = scene_state
+        
+        if "subtitleStyle" in manifest.get("timelineTemplate", {}):
+            metadata["subtitle_style"] = manifest["timelineTemplate"]["subtitleStyle"]
+        if "subtitleArea" in manifest.get("timelineTemplate", {}):
+            metadata["subtitle_area"] = manifest["timelineTemplate"]["subtitleArea"]
+            
+        storage.update_project_metadata(project.id, metadata)
+        
+        srt_job_id = None
+        for gen in manifest.get("generated", []):
+            if gen.get("kind") == "subtitle" and gen.get("source", {}).get("type") == "srt-from-audio":
+                audio_slot_id = gen.get("source", {}).get("slotId")
+                audio_project_asset_id = slot_map.get(audio_slot_id)
+                if audio_project_asset_id:
+                    audio_p_asset = storage.get_project_asset(audio_project_asset_id)
+                    if audio_p_asset and audio_p_asset.path.exists():
+                        duration_ms = _probe_video_duration_ms(audio_p_asset.path)
+                        video_id = storage.upsert_video(
+                            title=f"{project.title} slot audio",
+                            source_url=f"workspace:{project.id}:slot-audio",
+                            source="workspace:slot-audio",
+                            path=audio_p_asset.path,
+                            media_type="audio",
+                            duration_ms=duration_ms,
+                            size_bytes=audio_p_asset.path.stat().st_size,
+                            metadata={"hidden": True, "workspace_id": project.id, "timeline_audio": True},
+                        )
+                        audio_video = storage.get_video(video_id)
+                        
+                        def generate_slot_srt(prog: Callable[[str], None], p=project, v=audio_video) -> dict[str, Any]:
+                            payload = SrtGenerateRequest(source="audio")
+                            srt_path = transcriber.generate_srt(
+                                v,
+                                model_name=payload.model,
+                                device=payload.device,
+                                language=payload.language,
+                                timeline_speed=1.0,
+                                progress=prog,
+                            )
+                            srt_asset = next((asset for asset in storage.list_assets(v.id) if asset.path == srt_path), None) or storage.latest_asset(v.id, "srt")
+                            if not srt_asset:
+                                raise RuntimeError("Timeline SRT was generated but not registered.")
+                            project_asset = storage.project_asset_for_asset(p.id, srt_asset.id)
+                            if not project_asset:
+                                storage.add_project_asset(
+                                    project_id=p.id,
+                                    kind="srt",
+                                    path=srt_asset.path,
+                                    name=srt_asset.path.name,
+                                    source_asset_id=srt_asset.id,
+                                    metadata={
+                                        **(srt_asset.metadata or {}),
+                                        "source": "slot-audio",
+                                        "workspace_id": p.id,
+                                        "engine": srt_asset.engine,
+                                    },
+                                )
+                            return {"assetId": srt_asset.id}
+
+                        srt_job_id = _new_job("srt", f"Generate Slot SRT: {project.title}", -project.id)
+                        _run_job(srt_job_id, generate_slot_srt)
+
+        updated_project = storage.get_project(project.id)
+        return {"project": _workspace_project_payload(updated_project), "srtJobId": srt_job_id}
+        
+    except Exception as exc:
+        _delete_project_and_owned_files(project)
+        raise exc
+
 
 @app.delete("/api/templates/{template_id}")
 def delete_template(template_id: int) -> dict[str, bool]:
@@ -2612,9 +2773,7 @@ def generate_workspace_srt(project_id: int, payload: SrtGenerateRequest) -> dict
     return {"jobId": job_id}
 
 
-@app.post("/api/projects/{project_id}/assets")
-def upload_project_asset(project_id: int, file: UploadFile = File(...)) -> dict[str, Any]:
-    project = _project_or_404(project_id)
+def _save_project_upload(project, file: UploadFile) -> tuple[int | None, int | None]:
     filename = Path(file.filename or "asset").name
     kind = _classify_project_upload(filename)
     asset_dir = config.outputs_dir / f"project_{project.id}" / "assets" / kind
@@ -2650,7 +2809,8 @@ def upload_project_asset(project_id: int, file: UploadFile = File(...)) -> dict[
             size_bytes=destination.stat().st_size,
             metadata={"project_upload": True, "hidden": True, "original_filename": filename},
         )
-        storage.attach_video_to_project(project.id, video_id)
+        project_asset = storage.attach_video_to_project(project.id, video_id)
+        return project_asset.id if project_asset else None, video_id
     else:
         source_asset_id = None
         if project.primary_video_id:
@@ -2661,7 +2821,7 @@ def upload_project_asset(project_id: int, file: UploadFile = File(...)) -> dict[
                 engine="project-upload",
                 metadata=metadata,
             )
-        storage.add_project_asset(
+        project_asset_id = storage.add_project_asset(
             project_id=project.id,
             kind=kind,
             path=destination,
@@ -2669,8 +2829,16 @@ def upload_project_asset(project_id: int, file: UploadFile = File(...)) -> dict[
             source_asset_id=source_asset_id,
             metadata=metadata,
         )
+        return project_asset_id, None
+
+
+@app.post("/api/projects/{project_id}/assets")
+def upload_project_asset(project_id: int, file: UploadFile = File(...)) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    _save_project_upload(project, file)
     updated = storage.get_project(project.id)
     return {"project": _workspace_project_payload(updated)}
+
 
 
 @app.get("/api/videos")

@@ -132,6 +132,11 @@ export const studioApi = {
       method: 'POST',
       body: JSON.stringify({ slotMap })
     }),
+  instantiateTemplate: (templateId: number, payload: FormData) =>
+    request<{ project: WorkspaceProject; srtJobId: number | null }>(`/templates/${templateId}/instantiate`, {
+      method: 'POST',
+      body: payload
+    }),
 };
 
 export async function copyText(text: string) {
