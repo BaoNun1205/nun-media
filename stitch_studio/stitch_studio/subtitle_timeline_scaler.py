@@ -21,7 +21,7 @@ TIMELINE_TOLERANCE_SECONDS = 0.002
 VIDEO_DURATION_TOLERANCE_SECONDS = 0.08
 OVERLAP_THRESHOLD_SECONDS = 0.01
 MIN_SEGMENT_DURATION_SECONDS = 0.05
-DEFAULT_SLOT_MAX_SPEED = 1.5
+DEFAULT_SLOT_MAX_SPEED = 1.10
 
 
 class AdaptiveTimelineError(RuntimeError):
@@ -436,7 +436,7 @@ def process_srt_slot_timeline(
         "FIT": 0,
         "PADDED": 0,
         "SPEED_ADJUSTED": 0,
-        "MAX_SPEED_TRIMMED": 0,
+        "TEXT_TOO_LONG": 0,
         "LATE_START": 0,
         "LATE_START_EVENTS": 0,
         "OVERLAP": 0,
@@ -473,21 +473,24 @@ def process_srt_slot_timeline(
         if slot_samples > 0 and len(original_audio) > 0:
             required_speed = required_speed or 1.0
             if required_speed > max_speed:
-                applied_speed = max_speed
-                status = "MAX_SPEED_TRIMMED"
+                applied_speed = 1.0
+                status = "TEXT_TOO_LONG"
             elif required_speed > 1.000001:
                 applied_speed = required_speed
                 status = "SPEED_ADJUSTED"
             elif required_speed < 0.999999:
                 applied_speed = 1.0
                 status = "PADDED"
-            if abs(applied_speed - 1.0) > 0.000001:
+            if status != "TEXT_TOO_LONG" and abs(applied_speed - 1.0) > 0.000001:
                 stretched_path = path.with_name(f"{path.stem}_slot_{applied_speed:.3f}.wav")
                 _atempo_file(ffmpeg, path, stretched_path, applied_speed)
                 processed_audio, _source_rate = _read_audio_mono(stretched_path, sample_rate)
-        processed_audio = _exact_sample_length(processed_audio, slot_samples)
-        processed_path = path.with_name(f"{path.stem}_slot.wav")
-        sf.write(str(processed_path), processed_audio, sample_rate, subtype="FLOAT")
+        if status == "TEXT_TOO_LONG":
+            processed_path = path
+        else:
+            processed_audio = _exact_sample_length(processed_audio, slot_samples)
+            processed_path = path.with_name(f"{path.stem}_slot.wav")
+            sf.write(str(processed_path), processed_audio, sample_rate, subtype="FLOAT")
         audio_segments.append(processed_audio)
         current_total_samples += len(processed_audio)
         if late_start:
@@ -518,6 +521,26 @@ def process_srt_slot_timeline(
                 "max_speed": max_speed,
             }
         )
+
+    if counts.get("TEXT_TOO_LONG", 0):
+        state = {
+            "timing_mode": "srt_slot",
+            "selected_working_speed": 1.0,
+            "global_restore_speed": 1.0,
+            "original_video_duration": video_duration,
+            "final_audio_duration": current_total_samples / sample_rate,
+            "final_video_duration": None,
+            "target_samples": round(video_duration * sample_rate),
+            "actual_samples": current_total_samples,
+            "max_speed": max_speed,
+            "final_validation_status": "TEXT_TOO_LONG",
+            "counts": counts,
+        }
+        manifest = output_dir / "srt_slot_timeline.json"
+        manifest.write_text(json.dumps({"state": state, "segments": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+        if progress:
+            progress(f"SRT Slot timeline blocked by {counts['TEXT_TOO_LONG']} overlong segment(s)")
+        raise RuntimeError(f"SRT Slot Timeline blocked by TEXT_TOO_LONG segment(s). See {manifest}")
 
     final_audio_data = np.concatenate(audio_segments) if audio_segments else np.zeros(0, dtype=np.float32)
     target_samples = round(video_duration * sample_rate)

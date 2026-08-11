@@ -415,88 +415,136 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             timeline_options=timeline_options, progress=progress,
         )
 
+    def timing_manifest_path() -> Path:
+        suffix = {"capcut": "tts_capcut", "pocket": "tts_pocket"}.get(engine, "tts_vieneu")
+        return config.outputs_dir / f"video_{video.id}" / suffix / "srt_slot_timeline.json"
+
+    def load_timing_manifest(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Could not read TTS timing manifest: {exc}") from exc
+        state = payload.get("state") if isinstance(payload, dict) else {}
+        rows = payload.get("segments") if isinstance(payload, dict) else []
+        if not isinstance(state, dict) or not isinstance(rows, list):
+            raise RuntimeError("TTS timing manifest has an invalid shape")
+        return state, [row for row in rows if isinstance(row, dict)]
+
+    def current_source_map() -> dict[int, str]:
+        active_asset = storage.latest_asset(video.id, "srt")
+        source_srt_path = (active_asset.metadata or {}).get("source_srt") if active_asset and active_asset.metadata else None
+        source_path = Path(str(source_srt_path)) if source_srt_path else None
+        if source_path and source_path.exists() and source_path.resolve() != current_srt_path.resolve():
+            return {segment.index: segment.text for segment in read_srt(source_path)}
+        return {}
+
+    def target_word_count(current_text: str, available: float, generated: float) -> int:
+        words = len(re.findall(r"\S+", current_text))
+        if words <= 1:
+            return max(1, words)
+        if generated > 0 and available > 0:
+            estimated = math.floor(words * available / generated * 0.88)
+        else:
+            estimated = math.floor(max(1.0, available) * 2.2)
+        return max(1, min(words - 1, estimated))
+
     max_retries = 3
     current_srt_path = srt_path
-    final_output = None
-    
+    final_output: Path | None = None
+    still_too_long: list[dict[str, Any]] = []
+    optimized_srt_persisted = False
+
     for attempt in range(max_retries + 1):
-        output_path = do_synthesis(current_srt_path)
-        final_output = output_path
-        
-        manifest_path = output_path.parent / f"{output_path.stem}.manifest.json"
+        manifest_path = timing_manifest_path()
+        synthesis_error: Exception | None = None
+        try:
+            output_path = do_synthesis(current_srt_path)
+            final_output = output_path
+        except Exception as exc:
+            synthesis_error = exc
+            if timing_mode == "plain" or not manifest_path.exists() or "TEXT_TOO_LONG" not in str(exc):
+                raise
+
+        if timing_mode == "plain":
+            break
         if not manifest_path.exists():
+            if synthesis_error:
+                raise synthesis_error
             break
-            
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        too_long = [r for r in manifest.get("rows", []) if r.get("segment_status") == "MAX_SPEED_TRIMMED" or r.get("segment_status") == "TEXT_TOO_LONG"]
-        
-        if not too_long or attempt == max_retries:
+
+        state, rows = load_timing_manifest(manifest_path)
+        too_long_statuses = {"TEXT_TOO_LONG", "MAX_SPEED_TRIMMED"}
+        still_too_long = [row for row in rows if row.get("segment_status") in too_long_statuses]
+
+        if not still_too_long:
             break
-            
-        progress(f"Timing optimization: found {len(too_long)} overlong segments (Attempt {attempt+1}/{max_retries}). Requesting Gemini to shorten...")
-        
-        api_key_path = config.gemini_api_key_path
-        if not api_key_path.exists() or not api_key_path.read_text(encoding="utf-8").strip():
-            progress("Timing optimization skipped: Gemini API key not configured.")
+        if attempt == max_retries:
             break
-            
-        api_key = api_key_path.read_text(encoding="utf-8").strip()
-        
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key)
-        except ImportError:
-            progress("Timing optimization skipped: google-genai package missing.")
-            break
-            
-        active_asset = storage.latest_asset(video.id, "srt")
-        source_srt_path = None
-        if active_asset and active_asset.metadata:
-            source_srt_path = active_asset.metadata.get("source_srt")
-            
-        source_segments = read_srt(Path(source_srt_path)) if source_srt_path and Path(source_srt_path).exists() else []
-        source_map = {s.index: s.text for s in source_segments}
-        
+
+        progress(
+            f"Timing optimization: found {len(still_too_long)} overlong segment(s) "
+            f"(round {attempt + 1}/{max_retries})."
+        )
+
+        source_map = current_source_map()
         current_segments = read_srt(current_srt_path)
-        current_map = {s.index: s for s in current_segments}
-        
-        prompt_parts = ["You are an expert subtitle editor. Shorten the following translated subtitles so they can be spoken within the available time limit. Preserve the core meaning. Output ONLY the new shortened text, separated by '---'."]
-        
-        for row in too_long:
-            idx = row["index"]
-            source = source_map.get(idx, "[Original text not available]")
-            current = current_map.get(idx).text if idx in current_map else row.get("text", "")
-            avail = row.get("subtitle_duration", 0) / 1000.0
-            req = row.get("duration", 0) / 1000.0
-            prompt_parts.append(f"\nIndex: {idx}\nSource (Original Context): {source}\nCurrent Translation: {current}\nAvailable Time: {avail:.1f}s\nGenerated Audio Time: {req:.1f}s\nRequirement: Make the current translation much shorter.")
-            
-        prompt = "\n".join(prompt_parts)
-        
-        try:
-            resp = client.models.generate_content(model='gemini-3.5-flash-lite', contents=prompt)
-            replacements = resp.text.strip().split('---')
-            if len(replacements) == len(too_long):
-                for i, row in enumerate(too_long):
-                    idx = row["index"]
-                    if idx in current_map:
-                        current_map[idx].text = replacements[i].strip()
-                        
-                new_srt_path = config.outputs_dir / f"video_{video.id}" / f"{srt_path.stem}.optimized_{attempt}.srt"
-                write_srt(list(current_map.values()), new_srt_path)
-                current_srt_path = new_srt_path
-                progress(f"Applied shortened text to {len(too_long)} segments. Regenerating TTS for modified segments...")
-            else:
-                progress(f"Timing optimization failed: Gemini returned {len(replacements)} items, expected {len(too_long)}. Skipping further retries.")
-                break
-        except Exception as e:
-            progress(f"Timing optimization failed during API call: {e}")
-            break
-            
-    if current_srt_path != srt_path:
+        current_map = {segment.index: segment for segment in current_segments}
+        optimizer_items: list[dict[str, Any]] = []
+        for row in still_too_long:
+            idx = int(row.get("index") or 0)
+            current_segment = current_map.get(idx)
+            current_text = current_segment.text if current_segment else str(row.get("text") or "")
+            available = float(row.get("working_available_duration") or 0)
+            generated = float(row.get("original_tts_duration") or 0)
+            context_segments = [
+                current_map[item].text
+                for item in (idx - 1, idx + 1)
+                if item in current_map and current_map[item].text.strip()
+            ]
+            optimizer_items.append(
+                {
+                    "id": idx,
+                    "source": source_map.get(idx, ""),
+                    "current": current_text,
+                    "available_seconds": available,
+                    "generated_voice_seconds": generated,
+                    "current_word_count": len(re.findall(r"\S+", current_text)),
+                    "target_words": target_word_count(current_text, available, generated),
+                    "context": " / ".join(context_segments),
+                }
+            )
+
+        replacements = translator.optimize_timing_translations(optimizer_items, progress=progress)
+        changed = 0
+        for idx, replacement in replacements.items():
+            segment = current_map.get(idx)
+            if segment and replacement.strip() and segment.text != replacement.strip():
+                segment.text = replacement.strip()
+                changed += 1
+        if changed <= 0:
+            raise RuntimeError("Gemini timing optimizer returned no changed subtitle text.")
+
+        new_srt_path = config.outputs_dir / f"video_{video.id}" / f"{srt_path.stem}.optimized_{attempt + 1}.srt"
+        write_srt(current_segments, new_srt_path)
+        current_srt_path = new_srt_path
         active = storage.latest_asset(video.id, "srt")
         if active:
             _replace_srt_asset(video, active, current_srt_path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
-            
+            optimized_srt_persisted = True
+        progress(f"Applied Gemini timing corrections to {changed} subtitle(s); regenerating changed TTS only where cache differs.")
+
+    if still_too_long:
+        preview = ", ".join(f"#{int(row.get('index') or 0)}" for row in still_too_long[:12])
+        extra = f", +{len(still_too_long) - 12} more" if len(still_too_long) > 12 else ""
+        raise RuntimeError(f"TTS text is still too long after {max_retries} Gemini correction round(s): {preview}{extra}. Needs review.")
+
+    if current_srt_path != srt_path and not optimized_srt_persisted:
+        active = storage.latest_asset(video.id, "srt")
+        if active:
+            _replace_srt_asset(video, active, current_srt_path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
+
+    if not final_output:
+        raise RuntimeError("TTS did not produce an output file")
     return final_output
 
 
@@ -1136,12 +1184,14 @@ def _backup_srt_asset(video, asset, reason: str) -> None:
     )
 
 
-def _replace_srt_asset(video, asset, content: str, reason: str):
+def _replace_srt_asset(video, asset, content: str, reason: str, progress: Callable[[str], None] | None = None):
     _backup_srt_asset(video, asset, reason)
     asset.path.write_text(content, encoding="utf-8")
     metadata = dict(asset.metadata or {})
     metadata.update({"role": "primary", "last_replaced_reason": reason})
     storage.update_asset_metadata(asset.id, metadata)
+    if progress:
+        progress(f"Updated active SRT after {reason}.")
     return storage.get_asset(asset.id)
 
 
@@ -2144,8 +2194,21 @@ def list_templates() -> dict[str, list[TemplateSummary]]:
     summaries = []
     for t in templates:
         try:
-            manifest = json.loads(t.manifest_json)
-            timeline_state = manifest.get("timelineTemplate", {}).get("timelineState", {})
+            manifest = json.loads(t.manifest_json or "{}")
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest root is not an object")
+            timeline_template = manifest.get("timelineTemplate")
+            if not isinstance(timeline_template, dict):
+                timeline_template = {}
+            timeline_state = timeline_template.get("timelineState")
+            if not isinstance(timeline_state, dict):
+                timeline_state = {}
+            inputs = manifest.get("inputs")
+            if not isinstance(inputs, list):
+                inputs = []
+            generated = manifest.get("generated")
+            if not isinstance(generated, list):
+                generated = []
             summaries.append(TemplateSummary(
                 id=t.id,
                 name=t.name,
@@ -2153,9 +2216,9 @@ def list_templates() -> dict[str, list[TemplateSummary]]:
                 sourceProjectId=t.source_project_id,
                 createdAt=t.created_at,
                 updatedAt=t.updated_at,
-                inputCount=len(manifest.get("inputs", [])),
-                inputs=manifest.get("inputs", []),
-                generatedSummary=manifest.get("generated", []),
+                inputCount=len(inputs),
+                inputs=inputs,
+                generatedSummary=generated,
                 canvas=timeline_state.get("canvas"),
                 fps=timeline_state.get("fps")
             ))

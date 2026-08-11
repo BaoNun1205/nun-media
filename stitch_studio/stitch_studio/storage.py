@@ -127,8 +127,7 @@ class Storage:
             pass  # Column already exists or table was just created
         
         self.conn.commit()
-        # Project workspaces are now explicit. Downloads stay in the asset
-        # library until the user creates a project and adds them.
+        self._ensure_legacy_projects()
 
     def upsert_video(
         self,
@@ -671,6 +670,12 @@ class Storage:
                 "SELECT source_video_id FROM project_assets WHERE source_video_id IS NOT NULL"
             ).fetchall()
         }
+        existing.update(
+            int(row["primary_video_id"])
+            for row in self.conn.execute(
+                "SELECT primary_video_id FROM projects WHERE primary_video_id IS NOT NULL"
+            ).fetchall()
+        )
         grouped: dict[int, list[VideoItem]] = {}
         for video in videos:
             if video.id in existing:

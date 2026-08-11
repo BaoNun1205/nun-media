@@ -11,17 +11,39 @@ export function useStudioData() {
   const [error, setError] = useState('');
 
   const refresh = useCallback(async () => {
-    try {
-      const [nextProjects, nextWorkspaceProjects, nextJobs] = await Promise.all([studioApi.projects(), studioApi.workspaceProjects(), studioApi.jobs()]);
+    const [projectsResult, workspaceProjectsResult, jobsResult] = await Promise.allSettled([
+      studioApi.projects(),
+      studioApi.workspaceProjects(),
+      studioApi.jobs(),
+    ]);
+    const errors: string[] = [];
+
+    if (projectsResult.status === 'fulfilled') {
+      const nextProjects = projectsResult.value;
       setProjects(nextProjects);
-      setWorkspaceProjects(nextWorkspaceProjects);
-      setJobs(nextJobs);
       setSelectedId((current) =>
         current && nextProjects.some((project) => project.id === current) ? current : nextProjects[0]?.id ?? null,
       );
+    } else {
+      errors.push(projectsResult.reason instanceof Error ? projectsResult.reason.message : 'Unable to load videos');
+    }
+
+    if (workspaceProjectsResult.status === 'fulfilled') {
+      setWorkspaceProjects(workspaceProjectsResult.value);
+    } else {
+      errors.push(workspaceProjectsResult.reason instanceof Error ? workspaceProjectsResult.reason.message : 'Unable to load projects');
+    }
+
+    if (jobsResult.status === 'fulfilled') {
+      setJobs(jobsResult.value);
+    } else {
+      errors.push(jobsResult.reason instanceof Error ? jobsResult.reason.message : 'Unable to load jobs');
+    }
+
+    if (errors.length) {
+      setError(errors.join(' '));
+    } else {
       setError('');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to load Studio data');
     }
   }, []);
 

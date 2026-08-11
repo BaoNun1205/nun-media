@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_AREA, TTS_FIT, isTranslatedAsset, serializeSrt } from '../lib/studio';
+import { DEFAULT_AREA, TTS_FIT, defaultTtsLanguage, isTranslatedAsset, isTtsLanguageSupported, serializeSrt } from '../lib/studio';
 import { DEFAULT_TEXT_STYLE, textStylePresetById } from '../config/textStylePresets';
 import { sceneFromProject, timelineStateFromSceneOrProject, timelineStateToScene } from '../editor-core/adapters';
 import {
@@ -34,6 +34,18 @@ const MAX_DRAFT_HISTORY = 60;
 type DraftSnapshot = { srt: SrtDocument; edits: Record<number, string> };
 type DraftHistory = { past: DraftSnapshot[]; future: DraftSnapshot[] };
 type TimelineHistory = { past: TimelineState[]; future: TimelineState[] };
+
+function jobKindFromQueuePath(path: string): string {
+  const cleanPath = path.split('?', 1)[0];
+  if (/\/tts\/segments\/\d+$/.test(cleanPath)) return 'tts-segment';
+  if (cleanPath.endsWith('/tts/mux-video')) return 'tts-mux';
+  if (cleanPath.endsWith('/tts') || cleanPath.endsWith('/tts/segments/merge') || cleanPath.endsWith('/tts/remap-timeline')) return 'tts';
+  if (cleanPath.endsWith('/srt/generate')) return 'srt';
+  if (cleanPath.endsWith('/srt/translate')) return 'translate';
+  if (cleanPath.endsWith('/subtitle/remove')) return 'remove';
+  if (cleanPath.endsWith('/subtitle/replace')) return 'replace';
+  return 'job';
+}
 
 function cloneSrt(document: SrtDocument): SrtDocument {
   return { ...document, segments: document.segments.map((segment) => ({ ...segment })) };
@@ -121,6 +133,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const defaults = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('stitch-editor-defaults') || '{}'); } catch { return {}; }
   }, []);
+  const initialTtsEngine = defaults.ttsEngine || 'vieneu';
   const initialVoiceAsset = project.assets.filter((asset) => asset.kind === 'tts').at(-1);
   const [srt, setSrt] = useState<SrtDocument>(EMPTY_SRT);
   const [sourceSrt, setSourceSrt] = useState<SrtDocument>(EMPTY_SRT);
@@ -174,15 +187,20 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [removeMode, setRemoveMode] = useState('blur');
   const [autoSrtAssetId, setAutoSrtAssetId] = useState<number | null>(null);
   const [insertMode, setInsertMode] = useState('none');
-  const [ttsEngine, setTtsEngine] = useState(defaults.ttsEngine || 'vieneu');
-  const [ttsLanguage, setTtsLanguage] = useState('vi-VN');
+  const [ttsEngine, setTtsEngine] = useState(initialTtsEngine);
+  const [ttsLanguage, setTtsLanguage] = useState(() => defaultTtsLanguage(initialTtsEngine));
   const [ttsVoice, setTtsVoice] = useState('default');
   const [ttsRate, setTtsRate] = useState('1.0');
+  const [optimisticJobs, setOptimisticJobs] = useState<Job[]>([]);
   const autoMuxTtsJobRef = useRef<number | null>(null);
   const handledSrtJobRef = useRef<number | null>(null);
   const isEmptyWorkspace = project.id < 0 || project.mediaType === 'workspace';
 
-  const videoJobs = useMemo(() => jobs.filter((job) => job.videoId === project.id || (project.workspaceId && job.videoId === -project.workspaceId) || (job.videoId === -project.id)), [jobs, project.id, project.workspaceId]);
+  const visibleJobs = useMemo(() => {
+    const realJobIds = new Set(jobs.map((job) => job.id));
+    return [...optimisticJobs.filter((job) => !realJobIds.has(job.id)), ...jobs];
+  }, [jobs, optimisticJobs]);
+  const videoJobs = useMemo(() => visibleJobs.filter((job) => job.videoId === project.id || (project.workspaceId && job.videoId === -project.workspaceId) || (job.videoId === -project.id)), [visibleJobs, project.id, project.workspaceId]);
   const activeJobs = videoJobs.filter((job) => ['queued', 'running'].includes(job.status));
   const activeAudioJob = activeJobs.find((job) => job.kind === 'audio-separate');
   const audioSeparationReady = Boolean(project.audioSeparation?.ready);
@@ -376,6 +394,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   useEffect(() => {
     setAudioModeState(project.audioMode || 'original');
   }, [project.audioMode]);
+  useEffect(() => {
+    if (!optimisticJobs.length) return;
+    const realJobIds = new Set(jobs.map((job) => job.id));
+    setOptimisticJobs((current) => current.filter((job) => !realJobIds.has(job.id)));
+  }, [jobs, optimisticJobs.length]);
 
   useEffect(() => {
     const original = originalSrtAssets[0];
@@ -405,6 +428,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }, [dirty]);
   useEffect(() => { loadSegments(); }, [loadSegments]);
   useEffect(() => { if (project.hasTts) loadTimelineIssues(); else setTimelineIssues([]); }, [project.id, project.hasTts, loadTimelineIssues]);
+  useEffect(() => {
+    if (!isTtsLanguageSupported(ttsEngine, ttsLanguage)) setTtsLanguage(defaultTtsLanguage(ttsEngine));
+  }, [ttsEngine, ttsLanguage]);
   useEffect(() => { loadVoices(ttsEngine, ttsLanguage).catch(() => undefined); }, [ttsEngine, ttsLanguage, loadVoices]);
   useEffect(() => { if (!voices.some((voice) => voice.id === ttsVoice)) setTtsVoice(voices[0]?.id || 'default'); }, [voices, ttsVoice]);
   useEffect(() => {
@@ -444,6 +470,19 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
     try {
       const result = await request<{ jobId: number; alreadyRunning?: boolean }>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+      setOptimisticJobs((current) => [
+        {
+          id: result.jobId,
+          kind: jobKindFromQueuePath(path),
+          videoId: project.id,
+          title: label,
+          status: 'queued',
+          progress: 0,
+          detail: 'Queued',
+          createdAt: new Date().toISOString(),
+        },
+        ...current.filter((job) => job.id !== result.jobId),
+      ].slice(0, 10));
       setMessage(`${result.alreadyRunning ? 'Using active' : 'Queued'} ${label.toLowerCase()} #${result.jobId}.`);
       window.setTimeout(refresh, 500);
       return result;
@@ -1451,6 +1490,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   async function cancelJob(jobId: number) {
     try {
       await request(`/jobs/${jobId}/cancel`, { method: 'POST' });
+      setOptimisticJobs((current) => current.filter((job) => job.id !== jobId));
       setMessage(`Stopping job #${jobId}…`);
       window.setTimeout(refresh, 250);
     } catch (error) {

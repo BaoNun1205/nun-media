@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2, Trash2 } from 'lucide-react';
-import { CAPCUT_LANGUAGES, LANGUAGES, POCKET_LANGUAGES, SOURCE_LANGUAGES, formatDuration, getAssetGroup, isMediaFileAsset } from '../../lib/studio';
+import { LANGUAGES, SOURCE_LANGUAGES, defaultTtsLanguage, formatDuration, getAssetGroup, isMediaFileAsset, ttsLanguageOptions } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
@@ -220,7 +220,10 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
     audio: ['audio-separate'],
     export: ['project-export'],
   };
-  const activeJob = editor.activeJobs.find((job) => (jobKinds[editor.activeTool] || []).includes(job.kind));
+  const currentJobKinds = jobKinds[editor.activeTool] || [];
+  const toolJobs = [...editor.jobs].filter((job) => currentJobKinds.includes(job.kind)).sort((a, b) => b.id - a.id);
+  const activeJob = editor.activeJobs.find((job) => currentJobKinds.includes(job.kind));
+  const displayJob = activeJob || toolJobs.find((job) => job.status === 'error' || job.status === 'cancelled');
   const title = TOOLS.find(([key]) => key === editor.activeTool)?.[2];
   return <div className="tool-form">
     <div className="tool-form-heading"><span className="eyebrow">Tool</span><h2>{title}</h2></div>
@@ -250,8 +253,8 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
     </>}
     {editor.activeTool === 'voiceover' && <>
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-      <label>Engine<select value={editor.ttsEngine} onChange={(e) => { const next = e.target.value; editor.setTtsEngine(next); editor.setTtsLanguage(next === 'capcut' ? 'en-US' : next === 'pocket' ? 'english' : 'vi-VN'); }}><option value="vieneu">VieNeu Vietnamese</option><option value="capcut">CapCut Multi-language</option><option value="pocket">Pocket TTS</option></select></label>
-      <label>Language<select value={editor.ttsLanguage} onChange={(e) => editor.setTtsLanguage(e.target.value)}>{editor.ttsEngine === 'capcut' ? CAPCUT_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>) : editor.ttsEngine === 'pocket' ? POCKET_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>) : <option value="vi-VN">Vietnamese</option>}</select></label>
+      <label>Engine<select value={editor.ttsEngine} onChange={(e) => { const next = e.target.value; editor.setTtsEngine(next); editor.setTtsLanguage(defaultTtsLanguage(next)); }}><option value="vieneu">VieNeu Vietnamese</option><option value="capcut">CapCut Multi-language</option><option value="pocket">Pocket TTS</option></select></label>
+      <label>Language<select value={editor.ttsLanguage} onChange={(e) => editor.setTtsLanguage(e.target.value)}>{ttsLanguageOptions(editor.ttsEngine).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       <label>Voice<select value={editor.ttsVoice} onChange={(e) => editor.setTtsVoice(e.target.value)}>{editor.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label || voice.id}</option>)}</select></label>
       {editor.ttsEngine === 'vieneu' && <label>Rate<select value={editor.ttsRate} onChange={(e) => editor.setTtsRate(e.target.value)}><option>.9</option><option>1.0</option><option>1.1</option></select></label>}
       <button className="primary full" disabled={!editor.srt.asset || busy} onClick={() => editor.generateVoice()}><Volume2 size={16} /> Generate voiceover</button>
@@ -259,7 +262,7 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
     </>}
     {editor.activeTool === 'audio' && <><div className="operation-done"><Music2 size={18} /><strong>{editor.audioMode === 'remove_vocals' ? 'Removing vocals' : editor.audioMode === 'remove_music' ? 'Removing music' : 'Original audio'}</strong><p>Right-click the video on the timeline to change audio mode. Model: UVR-MDX-NET Inst HQ 3 · instrumental 95% + original audio 5%.</p></div><label>Video volume<SliderNumericField value={editor.videoVolumeDb} min={-60} max={20} step={0.1} unit="dB" onChange={editor.updateVideoVolumeDb} ariaLabel="Video volume in decibels" /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute preview</label></>}
     {editor.activeTool === 'export' && <><button className="primary full" disabled={editor.audioMode !== 'original' && !editor.audioSeparationReady} onClick={onOpenExport}><Download size={16} /> Export final video</button>{editor.srt.asset && <a className="button full" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={16} /> Export selected SRT</a>}<p className="form-help">Final video export renders the current timeline into one MP4.</p></>}
-    {activeJob && <><JobProgress job={activeJob} /><button className="danger full cancel-job" onClick={() => editor.cancelJob(activeJob.id)}>Cancel job #{activeJob.id}</button></>}
+    {displayJob && <><JobProgress job={displayJob} />{activeJob && <button className="danger full cancel-job" onClick={() => editor.cancelJob(activeJob.id)}>Cancel job #{activeJob.id}</button>}</>}
     {editor.message && <p className="tool-message">{editor.message}</p>}
   </div>;
 }

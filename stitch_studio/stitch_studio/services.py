@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from .config import AppConfig
 from .models import SubtitleSegment, VideoItem
-from .srt import read_srt, write_srt
+from .srt import read_srt, seconds_to_srt_time, write_srt
 from .storage import Storage
 from .subtitle_timeline_scaler import AdaptiveTimelineError, DEFAULT_SLOT_MAX_SPEED, process_adaptive_timeline, process_srt_slot_timeline
 
@@ -27,6 +27,96 @@ HTTP_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", re.
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 MEDIA_SUFFIXES = VIDEO_SUFFIXES | AUDIO_SUFFIXES
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+GEMINI_INITIAL_SRT_PROMPT = """Translate this SRT into natural spoken English for voiceover dubbing.
+
+Timing is the top priority.
+
+CONTEXT RULES:
+- Read the entire provided SRT before translating.
+- Understand the full story/context.
+- Translate using surrounding subtitle blocks as context.
+- Do not translate subtitle blocks independently.
+- Keep characters, pronouns, terminology, relationships, tone, and story events consistent.
+- Resolve ambiguous short lines from surrounding context.
+
+TIMING RULES:
+- Each English subtitle must be short enough to be spoken naturally within its original SRT duration.
+- Treat each original subtitle duration as a strict speech-time budget.
+- Aim for approximately 2.2 spoken English words per second or less.
+- Prefer shorter wording when timing is tight.
+- Prefer concise natural English over literal translation.
+- Compress dense source lines while preserving the essential meaning.
+- Keep short source lines very short.
+- Prefer short common spoken words.
+- Avoid long clauses.
+- Avoid unnecessary passive constructions.
+- Remove filler and redundant wording.
+- Remove unnecessary adjectives/modifiers.
+- Use natural contractions.
+- Do not add new information.
+
+STRICT RULES:
+- Preserve every subtitle ID.
+- Preserve the same number of subtitle blocks.
+- Never merge blocks.
+- Never split blocks.
+- Never omit blocks.
+- Never move content between blocks.
+- Return only the translation result.
+- No explanation.
+- No commentary.
+- No markdown.
+
+PRIORITY:
+1. Fit subtitle duration.
+2. Preserve intended meaning in context.
+3. Natural spoken American English.
+4. Literal wording only when compatible with the above.
+
+TARGET:
+- Spoken neutral American English.
+- Natural for TTS.
+- Concise storytelling language.
+"""
+
+GEMINI_TIMING_OPTIMIZER_PROMPT = """Shorten the following English subtitle translations so their generated AI voice fits within the available subtitle duration.
+
+These subtitles have already been translated correctly in story context.
+
+Do NOT freely retranslate the story.
+
+For each subtitle:
+- SOURCE = original source text
+- CURRENT = current English translation
+- AVAILABLE_SECONDS = available speech duration
+- GENERATED_VOICE_SECONDS = measured real TTS duration
+- TARGET_WORDS = recommended maximum
+
+TIMING IS THE HIGHEST PRIORITY.
+
+Rules:
+- Preserve essential meaning.
+- Preserve character identity.
+- Preserve names.
+- Preserve story context.
+- Preserve established terminology.
+- Shorten aggressively when necessary.
+- Respect TARGET_WORDS whenever possible.
+- Prefer short natural American English.
+- Use contractions naturally.
+- Remove redundancy.
+- Remove unnecessary modifiers.
+- Do not add information.
+- Do not merge IDs.
+- Do not split IDs.
+- Return exactly one replacement for every supplied ID.
+- Return no unsupplied IDs.
+
+Return strict machine-readable JSON only:
+[{"id": 1, "text": "replacement English text"}]
+"""
 
 
 def extract_video_url(text: str) -> str:
@@ -1789,66 +1879,191 @@ class TranslationService:
         target_language: str,
         progress: Optional[Progress] = None,
     ) -> list[str]:
+        client = self._gemini_client()
+
+        def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
+            srt_content = self._segments_to_srt_text(chunk_segments)
+            prompt = f"{GEMINI_INITIAL_SRT_PROMPT}\nTarget language code: {target_language}\n\nSRT:\n{srt_content}"
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                )
+            except Exception as exc:
+                raise RuntimeError(self._friendly_gemini_error(exc)) from exc
+            translated_map = self._parse_gemini_srt_response(response.text or "")
+            self._validate_gemini_translation_map(chunk_segments, translated_map, label=label)
+            return translated_map
+
+        _emit(progress, f"Sending FULL-SRT to Gemini 3.5 Flash-Lite...")
+        try:
+            translated_map = translate_chunk(segments, label="full SRT")
+            return [translated_map[segment.index] for segment in segments]
+        except RuntimeError as exc:
+            message = str(exc)
+            if message.startswith("Gemini ") or message.startswith("google-genai"):
+                raise
+            _emit(progress, f"Gemini full-SRT translation failed validation: {exc}. Falling back to chunks...")
+
+        translated_map: dict[int, str] = {}
+        chunk_size = 50
+        for offset in range(0, len(segments), chunk_size):
+            chunk = segments[offset:offset + chunk_size]
+            _emit(progress, f"Translating fallback chunk {offset // chunk_size + 1}...")
+            chunk_map = translate_chunk(chunk, label=f"chunk {offset // chunk_size + 1}")
+            overlap = set(translated_map).intersection(chunk_map)
+            if overlap:
+                raise RuntimeError(f"Gemini returned duplicate IDs across fallback chunks: {sorted(overlap)[:5]}")
+            translated_map.update(chunk_map)
+
+        self._validate_gemini_translation_map(segments, translated_map, label="fallback chunks")
+        return [translated_map[segment.index] for segment in segments]
+
+    def optimize_timing_translations(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        progress: Optional[Progress] = None,
+    ) -> dict[int, str]:
+        if not items:
+            return {}
+        client = self._gemini_client()
+        compact_items = [
+            {
+                "id": int(item["id"]),
+                "source": str(item.get("source") or ""),
+                "current": str(item.get("current") or ""),
+                "available_seconds": round(float(item.get("available_seconds") or 0), 3),
+                "generated_voice_seconds": round(float(item.get("generated_voice_seconds") or 0), 3),
+                "current_word_count": int(item.get("current_word_count") or 0),
+                "target_words": int(item.get("target_words") or 1),
+                "context": str(item.get("context") or ""),
+            }
+            for item in items
+        ]
+        prompt = f"{GEMINI_TIMING_OPTIMIZER_PROMPT}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
+        _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        except Exception as exc:
+            raise RuntimeError(self._friendly_gemini_error(exc)) from exc
+        replacements = self._parse_gemini_replacement_json(response.text or "")
+        expected = [int(item["id"]) for item in items]
+        actual = list(replacements)
+        missing = [item_id for item_id in expected if item_id not in replacements]
+        unexpected = [item_id for item_id in actual if item_id not in expected]
+        empty = [item_id for item_id, text in replacements.items() if not text.strip()]
+        if missing or unexpected or empty or len(replacements) != len(expected):
+            raise RuntimeError(
+                "Invalid Gemini timing response "
+                f"(missing={missing[:8]}, unexpected={unexpected[:8]}, empty={empty[:8]})"
+            )
+        return replacements
+
+    def _gemini_client(self):
         api_key_path = self.config.gemini_api_key_path
         if not api_key_path.exists():
             raise RuntimeError("Gemini API key not found. Please set it in Settings.")
         api_key = api_key_path.read_text(encoding="utf-8").strip()
         if not api_key:
             raise RuntimeError("Gemini API key is empty. Please set it in Settings.")
-        
         try:
             from google import genai
-        except ImportError:
-            raise RuntimeError("google-genai package is missing.")
-            
-        client = genai.Client(api_key=api_key)
+        except ImportError as exc:
+            raise RuntimeError("google-genai package is missing.") from exc
+        return genai.Client(api_key=api_key)
 
-        def translate_chunk(chunk_segments: list[SubtitleSegment]) -> dict[int, str]:
-            srt_content = "".join([f"{seg.index}\n{seg.start_label} --> {seg.end_label}\n{seg.text}\n\n" for seg in chunk_segments])
-            prompt = f"Translate the following SRT subtitles to {target_language}. Maintain the exact SRT format, including index numbers and timestamps. Only translate the text.\n\n{srt_content}"
-            response = client.models.generate_content(
-                model='gemini-3.5-flash-lite',
-                contents=prompt,
+    @staticmethod
+    def _segments_to_srt_text(segments: list[SubtitleSegment]) -> str:
+        blocks = []
+        for segment in segments:
+            blocks.append(
+                "\n".join(
+                    [
+                        str(segment.index),
+                        f"{seconds_to_srt_time(segment.start)} --> {seconds_to_srt_time(segment.end)}",
+                        segment.text.strip(),
+                    ]
+                )
             )
-            translated_map = {}
-            blocks = (response.text or "").strip().split('\n\n')
-            for block in blocks:
-                lines = block.strip().split('\n')
-                if len(lines) >= 3:
-                    try:
-                        idx = int(lines[0].strip().replace('\ufeff', ''))
-                        text = "\n".join(lines[2:]).strip()
-                        translated_map[idx] = text
-                    except ValueError:
-                        continue
-            return translated_map
+        return "\n\n".join(blocks)
 
-        _emit(progress, f"Sending FULL-SRT to Gemini 3.5 Flash-Lite...")
-        try:
-            translated_map = translate_chunk(segments)
-        except Exception as e:
-            _emit(progress, f"Gemini API request failed: {e}. Falling back to chunking...")
-            translated_map = {}
-
-        missing = [seg for seg in segments if seg.index not in translated_map]
-        
-        if missing and len(missing) < len(segments):
-            _emit(progress, f"Gemini output was truncated or incomplete. Translating {len(missing)} missing segments in chunks...")
-            
-        chunk_size = 50
-        for i in range(0, len(missing), chunk_size):
-            chunk = missing[i:i+chunk_size]
-            _emit(progress, f"Translating chunk {i//chunk_size + 1}...")
+    @staticmethod
+    def _parse_gemini_srt_response(raw: str) -> dict[int, str]:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        translated: dict[int, str] = {}
+        blocks = re.split(r"\n\s*\n", text)
+        for block in blocks:
+            lines = [line.strip("\ufeff") for line in block.splitlines() if line.strip()]
+            if len(lines) < 3:
+                continue
             try:
-                chunk_map = translate_chunk(chunk)
-                translated_map.update(chunk_map)
-            except Exception as e:
-                _emit(progress, f"Chunk translation failed: {e}")
+                index = int(lines[0].strip())
+            except ValueError:
+                continue
+            if index in translated:
+                raise RuntimeError(f"Gemini returned duplicate subtitle ID {index}")
+            if "-->" not in lines[1]:
+                raise RuntimeError(f"Gemini response for subtitle ID {index} is missing a timestamp line")
+            translated[index] = " ".join(lines[2:]).strip()
+        if not translated:
+            raise RuntimeError("Gemini returned no parseable SRT blocks")
+        return translated
 
-        results = []
-        for seg in segments:
-            results.append(translated_map.get(seg.index, seg.text))
-        return results
+    @staticmethod
+    def _validate_gemini_translation_map(segments: list[SubtitleSegment], translated_map: dict[int, str], *, label: str) -> None:
+        expected = [segment.index for segment in segments]
+        expected_set = set(expected)
+        actual_set = set(translated_map)
+        missing = [item for item in expected if item not in actual_set]
+        unexpected = [item for item in translated_map if item not in expected_set]
+        empty = [item for item in expected if not str(translated_map.get(item) or "").strip()]
+        if missing or unexpected or empty or len(translated_map) != len(expected):
+            raise RuntimeError(
+                f"Invalid Gemini {label} output "
+                f"(missing={missing[:8]}, unexpected={unexpected[:8]}, empty={empty[:8]})"
+            )
+
+    @staticmethod
+    def _parse_gemini_replacement_json(raw: str) -> dict[int, str]:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        if not text.startswith("["):
+            match = re.search(r"\[[\s\S]*\]", text)
+            if match:
+                text = match.group(0)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Gemini timing response was not valid JSON") from exc
+        if not isinstance(payload, list):
+            raise RuntimeError("Gemini timing response must be a JSON array")
+        replacements: dict[int, str] = {}
+        for item in payload:
+            if not isinstance(item, dict) or "id" not in item or "text" not in item:
+                raise RuntimeError("Gemini timing response items must contain id and text")
+            item_id = int(item["id"])
+            if item_id in replacements:
+                raise RuntimeError(f"Gemini timing response duplicated ID {item_id}")
+            replacements[item_id] = str(item["text"]).strip()
+        return replacements
+
+    @staticmethod
+    def _friendly_gemini_error(exc: Exception) -> str:
+        text = str(exc)
+        low = text.lower()
+        if "429" in text or "quota" in low or "rate limit" in low:
+            return "Gemini quota or rate limit was reached. Try again later or use MADLAD."
+        if "401" in text or "403" in text or "api key" in low or "permission" in low or "unauthorized" in low:
+            return "Gemini API key was rejected. Check the key in Settings."
+        if "timeout" in low or "connection" in low or "network" in low:
+            return f"Gemini network request failed: {text[-500:]}"
+        return f"Gemini API request failed: {text[-500:]}"
 
 class VieneuTtsService:
     def __init__(self, config: AppConfig, storage: Storage):
