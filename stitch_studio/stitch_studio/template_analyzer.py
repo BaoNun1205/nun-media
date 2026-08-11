@@ -2,6 +2,8 @@ import json
 from typing import Any, Dict, List, Optional
 import uuid
 
+from .template_timing import infer_timing_policy
+
 def _sanitize_media_identity(obj: Any):
     """Recursively removes asset identity references to prevent stale bindings."""
     if isinstance(obj, dict):
@@ -104,6 +106,7 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
                 
         template_timeline.append(t_item)
 
+    # Build generated rules FIRST (needed for timing inference)
     generated: List[Dict[str, Any]] = []
     if has_srt:
         srt_source_slot = None
@@ -119,8 +122,26 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
             }
         })
 
+    # Infer timing policy (pass generated rules for driver detection)
+    project_duration = max([float(item.get("start", 0)) + float(item.get("duration", 0)) for item in template_timeline] + [0])
+    timing_info = infer_timing_policy(template_timeline, project_duration, inputs, generated)
+    
+    for item in template_timeline:
+        item_id = item.get("id")
+        if item_id and item_id in timing_info["timingMap"]:
+            item["templateTiming"] = timing_info["timingMap"][item_id]
+
     subtitle_style = metadata.get("subtitle_style")
     subtitle_area = metadata.get("subtitle_area")
+    
+    # Fallback to primary video metadata if the user set styles before creating the workspace project
+    if (subtitle_style is None or subtitle_area is None) and getattr(project, "primary_video_id", None):
+        video = storage.get_video(project.primary_video_id)
+        if video and video.metadata:
+            if subtitle_style is None:
+                subtitle_style = video.metadata.get("subtitle_style")
+            if subtitle_area is None:
+                subtitle_area = video.metadata.get("subtitle_area")
 
     if "items" in timeline_state:
         timeline_state["items"] = template_timeline
@@ -131,11 +152,12 @@ def analyze_template_from_project(project: Any, storage: Any) -> Dict[str, Any]:
     _sanitize_media_identity(scene_state)
 
     manifest = {
-        "version": 1,
+        "version": 2, # Bump version for new timing semantics
         "name": project.title + " Template",
         "sourceProjectId": project.id,
         "inputs": inputs,
         "generated": generated,
+        "durationPolicy": timing_info["durationPolicy"],
         "timelineTemplate": {
             "items": template_timeline,
             "timelineState": timeline_state,

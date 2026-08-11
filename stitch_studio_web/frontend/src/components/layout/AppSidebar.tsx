@@ -4,10 +4,11 @@ import type { ViewKey } from '../../types/studio';
 interface Props {
   view: ViewKey;
   onNavigate: (view: ViewKey) => void;
-  activeJobs: number;
+  activeProjectJobs: number;
+  activeDownloadJobs: number;
 }
 
-export function AppSidebar({ view, onNavigate, activeJobs }: Props) {
+export function AppSidebar({ view, onNavigate, activeProjectJobs, activeDownloadJobs }: Props) {
   const items = [
     ['projects', FolderKanban, 'Projects'],
     ['templates', LayoutTemplate, 'Templates'],
@@ -31,7 +32,7 @@ export function AppSidebar({ view, onNavigate, activeJobs }: Props) {
             aria-current={view === key ? 'page' : undefined}
           >
             <Icon size={18} /><span>{label}</span>
-            {key === 'downloads' && activeJobs > 0 && <em>{activeJobs}</em>}
+            {key === 'downloads' && activeDownloadJobs > 0 && <em>{activeDownloadJobs}</em>}
           </button>
         ))}
       </nav>

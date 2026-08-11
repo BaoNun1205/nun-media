@@ -281,6 +281,8 @@ export interface VoiceOption {
 export interface StudioSettings {
   hasDouyinCookie: boolean;
   douyinCookieLength: number;
+  hasGeminiApiKey?: boolean;
+  geminiApiKeyLength?: number;
   backendPath?: string;
   frontendPath?: string;
 }

@@ -35,6 +35,7 @@ from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTt
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
 from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
+from stitch_studio.template_timing import resolve_template_timing  # noqa: E402
 
 
 app = FastAPI(title="Nun Studio API")
@@ -139,6 +140,7 @@ class SrtTranslateRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     douyinCookie: str | None = None
+    geminiApiKey: str | None = None
 
 
 class YoutubeChannelUpdateRequest(BaseModel):
@@ -393,38 +395,109 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
     timeline_playback_speed = 1.0
     voice = "" if payload.voice == "default" else payload.voice
     timeline_options = _timeline_options(payload)
-    if engine == "capcut":
-        return capcut_tts.synthesize_srt(
-            video,
-            srt_path,
-            voice=voice,
-            language=payload.language,
-            rate=payload.rate,
-            timing_mode=timing_mode,
+    
+    def do_synthesis(current_srt: Path) -> Path:
+        if engine == "capcut":
+            return capcut_tts.synthesize_srt(
+                video, current_srt, voice=voice, language=payload.language, rate=payload.rate,
+                timing_mode=timing_mode, timeline_playback_speed=timeline_playback_speed,
+                timeline_options=timeline_options, progress=progress,
+            )
+        if engine == "pocket":
+            return pocket_tts.synthesize_srt(
+                video, current_srt, voice=voice, language=payload.language,
+                timing_mode=timing_mode, timeline_playback_speed=timeline_playback_speed,
+                timeline_options=timeline_options, progress=progress,
+            )
+        return tts.synthesize_srt(
+            video, current_srt, voice=voice, timing_mode=timing_mode,
             timeline_playback_speed=timeline_playback_speed,
-            timeline_options=timeline_options,
-            progress=progress,
+            timeline_options=timeline_options, progress=progress,
         )
-    if engine == "pocket":
-        return pocket_tts.synthesize_srt(
-            video,
-            srt_path,
-            voice=voice,
-            language=payload.language,
-            timing_mode=timing_mode,
-            timeline_playback_speed=timeline_playback_speed,
-            timeline_options=timeline_options,
-            progress=progress,
-        )
-    return tts.synthesize_srt(
-        video,
-        srt_path,
-        voice=voice,
-        timing_mode=timing_mode,
-        timeline_playback_speed=timeline_playback_speed,
-        timeline_options=timeline_options,
-        progress=progress,
-    )
+
+    max_retries = 3
+    current_srt_path = srt_path
+    final_output = None
+    
+    for attempt in range(max_retries + 1):
+        output_path = do_synthesis(current_srt_path)
+        final_output = output_path
+        
+        manifest_path = output_path.parent / f"{output_path.stem}.manifest.json"
+        if not manifest_path.exists():
+            break
+            
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        too_long = [r for r in manifest.get("rows", []) if r.get("segment_status") == "MAX_SPEED_TRIMMED" or r.get("segment_status") == "TEXT_TOO_LONG"]
+        
+        if not too_long or attempt == max_retries:
+            break
+            
+        progress(f"Timing optimization: found {len(too_long)} overlong segments (Attempt {attempt+1}/{max_retries}). Requesting Gemini to shorten...")
+        
+        api_key_path = config.gemini_api_key_path
+        if not api_key_path.exists() or not api_key_path.read_text(encoding="utf-8").strip():
+            progress("Timing optimization skipped: Gemini API key not configured.")
+            break
+            
+        api_key = api_key_path.read_text(encoding="utf-8").strip()
+        
+        try:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+        except ImportError:
+            progress("Timing optimization skipped: google-genai package missing.")
+            break
+            
+        active_asset = storage.latest_asset(video.id, "srt")
+        source_srt_path = None
+        if active_asset and active_asset.metadata:
+            source_srt_path = active_asset.metadata.get("source_srt")
+            
+        source_segments = read_srt(Path(source_srt_path)) if source_srt_path and Path(source_srt_path).exists() else []
+        source_map = {s.index: s.text for s in source_segments}
+        
+        current_segments = read_srt(current_srt_path)
+        current_map = {s.index: s for s in current_segments}
+        
+        prompt_parts = ["You are an expert subtitle editor. Shorten the following translated subtitles so they can be spoken within the available time limit. Preserve the core meaning. Output ONLY the new shortened text, separated by '---'."]
+        
+        for row in too_long:
+            idx = row["index"]
+            source = source_map.get(idx, "[Original text not available]")
+            current = current_map.get(idx).text if idx in current_map else row.get("text", "")
+            avail = row.get("subtitle_duration", 0) / 1000.0
+            req = row.get("duration", 0) / 1000.0
+            prompt_parts.append(f"\nIndex: {idx}\nSource (Original Context): {source}\nCurrent Translation: {current}\nAvailable Time: {avail:.1f}s\nGenerated Audio Time: {req:.1f}s\nRequirement: Make the current translation much shorter.")
+            
+        prompt = "\n".join(prompt_parts)
+        
+        try:
+            resp = client.models.generate_content(model='gemini-3.5-flash-lite', contents=prompt)
+            replacements = resp.text.strip().split('---')
+            if len(replacements) == len(too_long):
+                for i, row in enumerate(too_long):
+                    idx = row["index"]
+                    if idx in current_map:
+                        current_map[idx].text = replacements[i].strip()
+                        
+                new_srt_path = config.outputs_dir / f"video_{video.id}" / f"{srt_path.stem}.optimized_{attempt}.srt"
+                write_srt(list(current_map.values()), new_srt_path)
+                current_srt_path = new_srt_path
+                progress(f"Applied shortened text to {len(too_long)} segments. Regenerating TTS for modified segments...")
+            else:
+                progress(f"Timing optimization failed: Gemini returned {len(replacements)} items, expected {len(too_long)}. Skipping further retries.")
+                break
+        except Exception as e:
+            progress(f"Timing optimization failed during API call: {e}")
+            break
+            
+    if current_srt_path != srt_path:
+        active = storage.latest_asset(video.id, "srt")
+        if active:
+            _replace_srt_asset(video, active, current_srt_path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
+            
+    return final_output
 
 
 def _hardsub_progress(message: str, low: str) -> tuple[float, str] | None:
@@ -1632,9 +1705,12 @@ def api_delete_youtube_prompt(prompt_id: int):
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     cookie = config.douyin_cookie_path.read_text(encoding="utf-8").strip() if config.douyin_cookie_path.exists() else ""
+    gemini_key = config.gemini_api_key_path.read_text(encoding="utf-8").strip() if config.gemini_api_key_path.exists() else ""
     return {
         "hasDouyinCookie": bool(cookie),
         "douyinCookieLength": len(cookie),
+        "hasGeminiApiKey": bool(gemini_key),
+        "geminiApiKeyLength": len(gemini_key),
     }
 
 
@@ -1647,6 +1723,15 @@ def save_settings(payload: SettingsRequest) -> dict[str, Any]:
             config.douyin_cookie_path.write_text(cookie, encoding="utf-8")
         elif config.douyin_cookie_path.exists():
             config.douyin_cookie_path.unlink()
+            
+    if payload.geminiApiKey is not None:
+        gemini_key = payload.geminiApiKey.strip()
+        if gemini_key:
+            config.gemini_api_key_path.parent.mkdir(parents=True, exist_ok=True)
+            config.gemini_api_key_path.write_text(gemini_key, encoding="utf-8")
+        elif config.gemini_api_key_path.exists():
+            config.gemini_api_key_path.unlink()
+            
     return get_settings()
 
 
@@ -2199,6 +2284,7 @@ def instantiate_template(
     
     try:
         slot_map = {}
+        slot_metadata = {}
         for slot_id, file in zip(parsed_slot_ids, files):
             input_def = next((i for i in manifest.get("inputs", []) if i.get("slotId") == slot_id), None)
             if input_def:
@@ -2210,17 +2296,43 @@ def instantiate_template(
             project_asset_id, video_id = _save_project_upload(project, file)
             slot_map[slot_id] = project_asset_id
 
+            # Collect actual media duration for timing resolution.
+            # _save_project_upload only returns video_id for kind=="video".
+            # For audio (and other media), we need to probe from the project_asset.
+            dur_seconds = 0.0
+            if video_id:
+                video_item = storage.get_video(video_id)
+                if video_item and video_item.duration_ms:
+                    dur_seconds = video_item.duration_ms / 1000.0
+            if dur_seconds <= 0 and project_asset_id:
+                p_asset = storage.get_project_asset(project_asset_id)
+                if p_asset and p_asset.path.exists():
+                    probe_ms = _probe_video_duration_ms(p_asset.path)
+                    if probe_ms and probe_ms > 0:
+                        dur_seconds = probe_ms / 1000.0
+            if dur_seconds > 0:
+                slot_metadata[slot_id] = {"duration": dur_seconds}
+
         import uuid
         id_map = {}
         
+        # Calculate original project duration from template items
         items = manifest.get("timelineTemplate", {}).get("items", [])
+        original_project_duration = max([float(item.get("start", 0)) + float(item.get("duration", 0)) for item in items] + [0])
+        
+        # Resolve new timing based on policies
+        timing_resolution = resolve_template_timing(manifest, slot_metadata, original_project_duration)
+        resolved_items_base = timing_resolution["resolvedItems"]
+        new_master_duration = timing_resolution["masterDuration"]
+        
         new_items = []
         
-        for item in items:
+        for item in resolved_items_base:
             new_item = dict(item)
             old_id = new_item.get("id")
             new_id = str(uuid.uuid4())
-            id_map[old_id] = new_id
+            if old_id:
+                id_map[old_id] = new_id
             new_item["id"] = new_id
             
             src = new_item.get("templateSource")
@@ -2229,6 +2341,9 @@ def instantiate_template(
                 if sid in slot_map:
                     new_item["projectAssetId"] = slot_map[sid]
                 new_item.pop("templateSource", None)
+            
+            # Clean up template-internal metadata from stored project items
+            new_item.pop("templateTiming", None)
                 
             new_items.append(new_item)
             
@@ -2236,17 +2351,13 @@ def instantiate_template(
         scene_state = manifest.get("timelineTemplate", {}).get("sceneState", {})
         
         if "items" in timeline_state:
-            for t_item in timeline_state["items"]:
-                old_id = t_item.get("id")
-                if old_id in id_map:
-                    t_item["id"] = id_map[old_id]
-                    
-                src = t_item.get("templateSource")
-                if isinstance(src, dict) and src.get("type") == "media-slot":
-                    sid = src.get("slotId")
-                    if sid in slot_map:
-                        t_item["projectAssetId"] = slot_map[sid]
-                    t_item.pop("templateSource", None)
+            # timeline_state['items'] should match the newly resolved items in structure and duration
+            # But the backend doesn't re-resolve it separately. We can just copy from new_items
+            # if they match, or update IDs. To be safe, let's update IDs and durations from new_items.
+            timeline_state["items"] = []
+            for n_item in new_items:
+                ts_item = dict(n_item)
+                timeline_state["items"].append(ts_item)
                     
         metadata = project.metadata or {}
         metadata["timeline"] = new_items
@@ -2316,10 +2427,21 @@ def instantiate_template(
                                 meta = current_project.metadata or {}
                                 updated = False
                                 
+                                srt_dur = 0
+                                try:
+                                    from stitch_studio.srt import read_srt
+                                    segments = read_srt(project_asset.path)
+                                    if segments:
+                                        srt_dur = segments[-1].end
+                                except Exception:
+                                    pass
+                                
                                 for t_item in meta.get("timeline", []):
                                     src = t_item.get("templateSource")
                                     if isinstance(src, dict) and src.get("type") == "generated-srt":
                                         t_item["projectAssetId"] = project_asset.id
+                                        if srt_dur > 0:
+                                            t_item["duration"] = max(0, srt_dur - float(t_item.get("start", 0)))
                                         t_item.pop("templateSource", None)
                                         updated = True
                                         
@@ -2328,6 +2450,8 @@ def instantiate_template(
                                         src = ts_item.get("templateSource")
                                         if isinstance(src, dict) and src.get("type") == "generated-srt":
                                             ts_item["projectAssetId"] = project_asset.id
+                                            if srt_dur > 0:
+                                                ts_item["duration"] = max(0, srt_dur - float(ts_item.get("start", 0)))
                                             ts_item.pop("templateSource", None)
                                             updated = True
                                             

@@ -236,7 +236,7 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label>Source language<select value={editor.translationSourceLanguage} onChange={(event) => editor.setTranslationSourceLanguage(event.target.value)}>{SOURCE_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       <label>Target language<select value={editor.targetLanguage} onChange={(e) => editor.setTargetLanguage(e.target.value)}>{LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-      <label>Engine<select><option>MADLAD-400 local</option></select></label>
+      <label>Engine<select value={editor.translationEngine} onChange={(e) => editor.setTranslationEngine(e.target.value)}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Context-aware)</option><option value="madlad400-ct2">MADLAD-400 local</option></select></label>
       <label>Compute<select value={editor.translationDevice} onChange={(event) => editor.setTranslationDevice(event.target.value)}><option value="cpu">CPU</option><option value="cuda">CUDA</option></select></label>
       <button className="primary full" disabled={!editor.srt.asset || busy} onClick={editor.translate}><Languages size={16} /> Translate & replace active SRT</button>
     </>}

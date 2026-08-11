@@ -1662,7 +1662,7 @@ class TranslationService:
         register_asset: bool = True,
     ) -> Path:
         del source_language
-        if engine not in {"madlad400-ct2", "madlad400-q4"}:
+        if engine not in {"madlad400-ct2", "madlad400-q4", "gemini-3.5-flash-lite"}:
             raise RuntimeError(f"Unsupported translation engine: {engine}")
         if not target_language or target_language == "auto":
             raise RuntimeError("Choose a target language before translating.")
@@ -1671,20 +1671,23 @@ class TranslationService:
         if not segments:
             raise RuntimeError(f"No subtitle segments found in {srt_path}")
 
-        with self._lock:
-            tokenizer, translator = self._get_madlad_ct2(device=device)
-            _emit(progress, f"Translating {len(segments)} subtitle segment(s) to {target_language}...")
-            texts = [segment.text.strip() for segment in segments]
-            translated = self._translate_texts(
-                texts,
-                tokenizer=tokenizer,
-                translator=translator,
-                target_language=target_language,
-                progress=progress,
-            )
+        if engine == "gemini-3.5-flash-lite":
+            translated = self._translate_with_gemini(segments, target_language, progress)
+        else:
+            with self._lock:
+                tokenizer, translator = self._get_madlad_ct2(device=device)
+                _emit(progress, f"Translating {len(segments)} subtitle segment(s) to {target_language}...")
+                texts = [segment.text.strip() for segment in segments]
+                translated = self._translate_texts(
+                    texts,
+                    tokenizer=tokenizer,
+                    translator=translator,
+                    target_language=target_language,
+                    progress=progress,
+                )
 
         output_dir = self.config.outputs_dir / f"video_{video.id}"
-        output_path = output_dir / f"{srt_path.stem}.madlad400-{target_language}.srt"
+        output_path = output_dir / f"{srt_path.stem}.{engine}-{target_language}.srt"
         translated_segments = [
             SubtitleSegment(index=segment.index, start=segment.start, end=segment.end, text=text)
             for segment, text in zip(segments, translated)
@@ -1779,6 +1782,73 @@ class TranslationService:
             translated.append(translated_map.get(index, texts[index]))
         return translated
 
+
+    def _translate_with_gemini(
+        self,
+        segments: list[SubtitleSegment],
+        target_language: str,
+        progress: Optional[Progress] = None,
+    ) -> list[str]:
+        api_key_path = self.config.gemini_api_key_path
+        if not api_key_path.exists():
+            raise RuntimeError("Gemini API key not found. Please set it in Settings.")
+        api_key = api_key_path.read_text(encoding="utf-8").strip()
+        if not api_key:
+            raise RuntimeError("Gemini API key is empty. Please set it in Settings.")
+        
+        try:
+            from google import genai
+        except ImportError:
+            raise RuntimeError("google-genai package is missing.")
+            
+        client = genai.Client(api_key=api_key)
+
+        def translate_chunk(chunk_segments: list[SubtitleSegment]) -> dict[int, str]:
+            srt_content = "".join([f"{seg.index}\n{seg.start_label} --> {seg.end_label}\n{seg.text}\n\n" for seg in chunk_segments])
+            prompt = f"Translate the following SRT subtitles to {target_language}. Maintain the exact SRT format, including index numbers and timestamps. Only translate the text.\n\n{srt_content}"
+            response = client.models.generate_content(
+                model='gemini-3.5-flash-lite',
+                contents=prompt,
+            )
+            translated_map = {}
+            blocks = (response.text or "").strip().split('\n\n')
+            for block in blocks:
+                lines = block.strip().split('\n')
+                if len(lines) >= 3:
+                    try:
+                        idx = int(lines[0].strip().replace('\ufeff', ''))
+                        text = "\n".join(lines[2:]).strip()
+                        translated_map[idx] = text
+                    except ValueError:
+                        continue
+            return translated_map
+
+        _emit(progress, f"Sending FULL-SRT to Gemini 3.5 Flash-Lite...")
+        try:
+            translated_map = translate_chunk(segments)
+        except Exception as e:
+            _emit(progress, f"Gemini API request failed: {e}. Falling back to chunking...")
+            translated_map = {}
+
+        missing = [seg for seg in segments if seg.index not in translated_map]
+        
+        if missing and len(missing) < len(segments):
+            _emit(progress, f"Gemini output was truncated or incomplete. Translating {len(missing)} missing segments in chunks...")
+            
+        chunk_size = 50
+        for i in range(0, len(missing), chunk_size):
+            chunk = missing[i:i+chunk_size]
+            _emit(progress, f"Translating chunk {i//chunk_size + 1}...")
+            try:
+                chunk_map = translate_chunk(chunk)
+                translated_map.update(chunk_map)
+            except Exception as e:
+                _emit(progress, f"Chunk translation failed: {e}")
+
+        results = []
+        for seg in segments:
+            results.append(translated_map.get(seg.index, seg.text))
+        return results
 
 class VieneuTtsService:
     def __init__(self, config: AppConfig, storage: Storage):

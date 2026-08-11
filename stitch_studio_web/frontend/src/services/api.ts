@@ -59,8 +59,8 @@ export const studioApi = {
   projects: () => request<Project[]>('/videos'),
   jobs: () => request<Job[]>('/jobs'),
   settings: () => request<StudioSettings>('/settings'),
-  saveSettings: (douyinCookie: string) =>
-    request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify({ douyinCookie }) }),
+  saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string }) =>
+    request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   renameProject: (id: number, title: string) =>
     request<Project>(`/videos/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   deleteProject: (id: number) => request<{ deletedFiles: number }>(`/videos/${id}`, { method: 'DELETE' }),

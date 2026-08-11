@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronRight, X, FileAudio, FileVideo, Image as ImageIcon } from 'lucide-react';
 import { studioApi } from '../../services/api';
-import type { TemplateSummary } from '../../types/studio';
+import type { TemplateSummary, WorkspaceProject } from '../../types/studio';
 
 interface Props {
   template: TemplateSummary;
   onClose: () => void;
-  onCreated: (projectId: number) => void;
+  onCreated: (project: WorkspaceProject) => void;
 }
 
 export function UseTemplateModal({ template, onClose, onCreated }: Props) {
@@ -43,7 +43,7 @@ export function UseTemplateModal({ template, onClose, onCreated }: Props) {
         formData.append('projectName', projectName);
       }
       const res = await studioApi.instantiateTemplate(template.id, formData);
-      onCreated(res.project.id);
+      onCreated(res.project);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to instantiate template');
       setCreating(false);

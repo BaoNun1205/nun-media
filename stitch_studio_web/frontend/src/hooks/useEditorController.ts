@@ -1330,9 +1330,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage(error instanceof Error ? error.message : 'Unable to import SRT');
     }
   }
+  const [translationEngine, setTranslationEngine] = useState('madlad400-ct2');
+
   async function translate() {
     await saveSrt();
-    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: srt.asset?.id, sourceLanguage: translationSourceLanguage, targetLanguage, engine: 'madlad400-ct2', device: translationDevice }, 'Translation job');
+    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: srt.asset?.id, sourceLanguage: translationSourceLanguage, targetLanguage, engine: translationEngine, device: translationDevice }, 'Translation job');
   }
   async function remove() {
     setBlurEffectHidden(false);
@@ -1539,7 +1541,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
-    translationDevice, setTranslationDevice, removeMethod, setRemoveMethod, removeMode, setRemoveMode,
+    translationDevice, setTranslationDevice, translationEngine, setTranslationEngine, removeMethod, setRemoveMethod, removeMode, setRemoveMode,
     autoSrtAssetId, setAutoSrtAssetId,
     insertMode, setInsertMode, ttsEngine, setTtsEngine, ttsLanguage, setTtsLanguage,
     ttsVoice, setTtsVoice, ttsRate, setTtsRate, voices,

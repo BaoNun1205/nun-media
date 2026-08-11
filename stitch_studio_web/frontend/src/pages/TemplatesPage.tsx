@@ -28,7 +28,6 @@ export function TemplatesPage({ onOpenWorkspace }: { onOpenWorkspace?: (project:
   }, []);
 
   async function removeTemplate(template: TemplateSummary) {
-    if (!window.confirm(`Delete template "${template.name}"?\n\nThis removes the reusable template only. The original project will not be affected.`)) return;
     try {
       await studioApi.deleteTemplate(template.id);
       setMessage(`Deleted template "${template.name}".`);
@@ -122,14 +121,10 @@ export function TemplatesPage({ onOpenWorkspace }: { onOpenWorkspace?: (project:
         <UseTemplateModal
           template={activeTemplate}
           onClose={() => setActiveTemplate(null)}
-          onCreated={(projectId) => {
+          onCreated={(project) => {
             setActiveTemplate(null);
             if (onOpenWorkspace) {
-              studioApi.workspace(projectId)
-                .then(res => onOpenWorkspace(res.project))
-                .catch(() => window.location.hash = `#projects/${projectId}`);
-            } else {
-              window.location.hash = `#projects/${projectId}`;
+              onOpenWorkspace(project);
             }
           }}
         />

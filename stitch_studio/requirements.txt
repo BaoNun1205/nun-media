@@ -9,6 +9,7 @@ sentencepiece
 huggingface_hub
 requests
 soundfile
+google-genai>=0.1.0
 
 # Audio separation is intentionally isolated from the TTS/Whisper PyTorch
 # environment. Install it with:

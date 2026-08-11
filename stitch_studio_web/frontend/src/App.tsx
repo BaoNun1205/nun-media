@@ -50,7 +50,9 @@ export default function App() {
     return requested && ['projects', 'templates', 'downloads', 'tts', 'youtube', 'settings', 'editor'].includes(requested) ? requested : 'projects';
   });
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
-  const activeJobs = studio.jobs.filter((job) => ['queued', 'running'].includes(job.status)).length;
+  const runningJobs = studio.jobs.filter((job) => ['queued', 'running'].includes(job.status));
+  const activeProjectJobs = runningJobs.filter((job) => job.videoId != null && job.videoId < 0).length;
+  const activeDownloadJobs = runningJobs.filter((job) => job.videoId == null || job.videoId >= 0).length;
   const selectedWorkspace = useMemo(
     () => selectedWorkspaceId ? studio.workspaceProjects.find((project) => project.id === selectedWorkspaceId) ?? null : null,
     [selectedWorkspaceId, studio.workspaceProjects],
@@ -65,8 +67,8 @@ export default function App() {
           workspaceTimeline: selectedWorkspace.timeline || [],
           timelineState: selectedWorkspace.timelineState,
           sceneState: selectedWorkspace.sceneState,
-          subtitleStyle: (selectedWorkspace.metadata?.subtitle_style as any) ?? (studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo)?.metadata?.subtitle_style,
-          subtitleArea: (selectedWorkspace.metadata?.subtitle_area as any) ?? (studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo)?.metadata?.subtitle_area,
+          subtitleStyle: (selectedWorkspace.metadata?.subtitle_style as any) ?? ((studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo) as any)?.metadata?.subtitle_style,
+          subtitleArea: (selectedWorkspace.metadata?.subtitle_area as any) ?? ((studio.projects.find((project) => project.id === selectedWorkspace.primaryVideoId) ?? selectedWorkspace.primaryVideo) as any)?.metadata?.subtitle_area,
         }
       : {
           ...emptyWorkspaceProject(selectedWorkspace),
@@ -101,7 +103,7 @@ export default function App() {
   }
 
   return <div className="app-shell">
-    <AppSidebar view={view} onNavigate={setView} activeJobs={activeJobs} />
+    <AppSidebar view={view} onNavigate={setView} activeProjectJobs={activeProjectJobs} activeDownloadJobs={activeDownloadJobs} />
     <main className="app-content">
       {studio.error && <div className="connection-banner">{studio.error}</div>}
       {view === 'projects' && <ProjectsPage projects={studio.workspaceProjects} onOpen={openWorkspaceEditor} onRefresh={studio.refresh} />}
