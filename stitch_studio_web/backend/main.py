@@ -276,6 +276,17 @@ def _timeline_options(payload: TtsRequest | TimelineRemapRequest) -> dict[str, f
     }
 
 
+def _timing_retry_target_words(current_text: str, available: float, voice_duration: float) -> int:
+    words = len(re.findall(r"\S+", current_text))
+    if words <= 1:
+        return max(1, words)
+    if voice_duration > 0 and available > 0:
+        estimated = math.floor(words * (available * 1.20 / voice_duration) * 0.85)
+    else:
+        estimated = math.floor(max(1.0, available) * 2.2)
+    return max(1, min(words - 1, estimated))
+
+
 def _srt_timeline_speed(video, payload: SrtGenerateRequest) -> float:
     stored = ((video.metadata or {}).get("clip_settings") or {}).get("videoSpeed")
     requested = payload.timelineSpeed if payload.timelineSpeed is not None else stored
@@ -436,17 +447,16 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         source_path = Path(str(source_srt_path)) if source_srt_path else None
         if source_path and source_path.exists() and source_path.resolve() != current_srt_path.resolve():
             return {segment.index: segment.text for segment in read_srt(source_path)}
+        for backup_asset in storage.list_assets(video.id):
+            metadata = backup_asset.metadata or {}
+            if (
+                backup_asset.kind == "srt_backup"
+                and backup_asset.path.exists()
+                and int(metadata.get("source_asset_id") or 0) == int(active_asset.id if active_asset else 0)
+                and metadata.get("reason") == "before-translation"
+            ):
+                return {segment.index: segment.text for segment in read_srt(backup_asset.path)}
         return {}
-
-    def target_word_count(current_text: str, available: float, voice_duration: float) -> int:
-        words = len(re.findall(r"\S+", current_text))
-        if words <= 1:
-            return max(1, words)
-        if voice_duration > 0 and available > 0:
-            estimated = math.floor(words * (available * 1.20 / voice_duration) * 0.85)
-        else:
-            estimated = math.floor(max(1.0, available) * 2.2)
-        return max(1, min(words - 1, estimated))
 
     def mark_needs_review(manifest_path: Path, rows: list[dict[str, Any]]) -> None:
         try:
@@ -515,15 +525,16 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
             optimizer_items.append(
                 {
-                    "id": idx,
-                    "source": source_map.get(idx, ""),
-                    "current": current_text,
-                    "available_seconds": available,
-                    "voice_seconds": voice_duration,
-                    "required_speed": required_speed,
-                    "target_words": target_word_count(current_text, available, voice_duration),
-                    "previous_context": previous_context,
-                    "next_context": next_context,
+                    "ID": idx,
+                    "SOURCE": source_map.get(idx, ""),
+                    "CURRENT": current_text,
+                    "AVAILABLE_SECONDS": available,
+                    "VOICE_SECONDS": voice_duration,
+                    "REQUIRED_SPEED": required_speed,
+                    "TARGET_WORDS": _timing_retry_target_words(current_text, available, voice_duration),
+                    "PREVIOUS_CONTEXT": previous_context,
+                    "NEXT_CONTEXT": next_context,
+                    "CORRECTION_ROUND": attempt + 1,
                 }
             )
 

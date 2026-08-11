@@ -14,10 +14,10 @@ from .srt import write_srt
 
 MIN_WORKING_SPEED = 0.7
 MAX_WORKING_SPEED = 1.0
-PREFERRED_MAX_LOCAL_SPEED = 1.15
+PREFERRED_MAX_LOCAL_SPEED = 1.20
 HARD_MAX_LOCAL_SPEED = 1.20
 SAFETY_GAP_SECONDS = 0.12
-TIMELINE_TOLERANCE_SECONDS = 0.002
+TIMELINE_TOLERANCE_SECONDS = 0.03
 VIDEO_DURATION_TOLERANCE_SECONDS = 0.08
 OVERLAP_THRESHOLD_SECONDS = 0.01
 MIN_SEGMENT_DURATION_SECONDS = 0.05
@@ -79,6 +79,8 @@ def select_adaptive_working_speed(
     preferred_max_local_speed: float = PREFERRED_MAX_LOCAL_SPEED,
     hard_max_local_speed: float = HARD_MAX_LOCAL_SPEED,
 ) -> tuple[float, dict]:
+    preferred_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(preferred_max_local_speed)))
+    hard_max_local_speed = HARD_MAX_LOCAL_SPEED
     if len(durations) != len(original_starts) or not durations:
         raise ValueError("Adaptive analysis requires matching non-empty duration/start arrays")
     limits_preferred: list[float] = []
@@ -135,6 +137,8 @@ def process_adaptive_timeline(
     safety_gap: float = SAFETY_GAP_SECONDS,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
+    preferred_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(preferred_max_local_speed)))
+    hard_max_local_speed = HARD_MAX_LOCAL_SPEED
     if not rendered:
         raise RuntimeError("Adaptive Timeline Fit received no TTS segments")
     ffmpeg = shutil.which("ffmpeg")
@@ -429,7 +433,7 @@ def process_srt_slot_timeline(
     rows: list[dict] = []
     audio_segments: list[np.ndarray] = []
     current_total_samples = 0
-    max_speed = min(1.20, max(1.0, float(max_speed or DEFAULT_SLOT_MAX_SPEED)))
+    max_speed = HARD_MAX_LOCAL_SPEED
     safety_gap = max(0.0, float(safety_gap or 0.0))
     counts = {
         "FIT": 0,
@@ -451,9 +455,9 @@ def process_srt_slot_timeline(
             counts["OVERLAP"] += 1
             had_overlap = True
 
-        current_head = max(segment.start, current_total_samples / sample_rate)
         slot_duration_seconds = max(MIN_SEGMENT_DURATION_SECONDS, segment.end - segment.start - safety_gap)
         slot_samples = round(slot_duration_seconds * sample_rate)
+        current_head = segment.start
         late_start = False
         if current_total_samples > start_sample + round(OVERLAP_THRESHOLD_SECONDS * sample_rate):
             late_start = True
@@ -478,8 +482,14 @@ def process_srt_slot_timeline(
                 stretched_path = path.with_name(f"{path.stem}_slot_{applied_speed:.3f}.wav")
                 _atempo_file(ffmpeg, path, stretched_path, applied_speed)
                 processed_audio, _source_rate = _read_audio_mono(stretched_path, sample_rate)
+                processed_duration = len(processed_audio) / sample_rate
+                if processed_duration > slot_duration + TIMELINE_TOLERANCE_SECONDS:
+                    status = "TEXT_TOO_LONG"
+                    applied_speed = 1.0
+                    processed_audio = original_audio
         if status == "TEXT_TOO_LONG":
             processed_path = path
+            processed_audio = np.zeros(slot_samples, dtype=np.float32)
         else:
             processed_audio = _pad_audio_to_length(processed_audio, slot_samples)
             processed_path = path.with_name(f"{path.stem}_slot.wav")
@@ -625,7 +635,9 @@ def _exact_sample_length(audio, target_samples: int):
     audio = np.asarray(audio, dtype=np.float32)
     if len(audio) < target_samples:
         return np.pad(audio, (0, target_samples - len(audio)), mode="constant").astype(np.float32)
-    return audio[:target_samples].astype(np.float32)
+    if len(audio) > target_samples:
+        raise RuntimeError("Refusing to trim active speech to force an exact sample length")
+    return audio.astype(np.float32)
 
 
 def _pad_audio_to_length(audio, target_samples: int):

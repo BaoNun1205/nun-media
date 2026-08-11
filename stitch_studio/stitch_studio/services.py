@@ -83,52 +83,71 @@ TARGET:
 
 GEMINI_TIMING_RETRY_PROMPT = """You are optimizing already-translated English subtitles for AI voiceover timing.
 
-These subtitles have already been translated correctly using the full story context.
+These subtitle lines have already been translated using the full story context.
+Their meanings are already correct.
 
-Every subtitle provided below has been measured using the actual generated AI voice and is TOO LONG even with the application's maximum allowed playback speed of 1.20x.
+Your task is NOT to freely retranslate the story.
 
-Your task is to rewrite each CURRENT English subtitle substantially shorter so that the next generated voice has a strong safety margin and is very likely to fit at or below 1.20x speed.
+Your task is to SHORTEN each CURRENT English subtitle so its generated AI voice can fit within the available subtitle time.
+
+The application allows a maximum playback speed of 1.20x.
+
+Every subtitle included below has already been measured and currently requires more than 1.20x speed, so it is too long.
 
 TIMING IS THE HIGHEST PRIORITY.
 
-Do not make only minor wording changes. Compress aggressively when necessary.
+For each item you will receive:
 
-Preserve:
-- essential story meaning
-- important facts/actions
-- character identity
-- names/relationships
-- story continuity
+- ID: subtitle ID
+- SOURCE: original source-language subtitle
+- CURRENT: current English translation
+- AVAILABLE_SECONDS: available subtitle speech duration
+- VOICE_SECONDS: measured duration of the current generated AI voice
+- REQUIRED_SPEED: speed currently required to fit
+- TARGET_WORDS: recommended maximum word count
+- PREVIOUS_CONTEXT: nearby previous subtitle text when available
+- NEXT_CONTEXT: nearby following subtitle text when available
 
-You receive:
-ID
-SOURCE
-CURRENT
-AVAILABLE_SECONDS
-VOICE_SECONDS
-REQUIRED_SPEED
-TARGET_WORDS
-PREVIOUS_CONTEXT
-NEXT_CONTEXT
-CORRECTION_ROUND
+RULES:
 
-Rules:
-- TARGET_WORDS is a hard target whenever reasonably possible.
-- Prefer the shortest natural spoken American English.
-- Use short common words and contractions.
-- Remove filler, repetition, redundant wording, unnecessary modifiers, and verbose clauses.
-- Do not add information.
-- Do not change the core event/factual meaning.
-- Do not merge/split IDs.
-- Return exactly one result per supplied ID.
-- If CORRECTION_ROUND > 1, compress further than CURRENT.
+1. Preserve the essential meaning of SOURCE.
+2. Preserve the established story context.
+3. Preserve character identity, names, pronouns, relationships, and terminology.
+4. Shorten CURRENT enough that the new AI voice has a strong chance of fitting at or below 1.20x playback speed.
+5. Respect TARGET_WORDS as a strong maximum target.
+6. Prefer concise, natural spoken American English.
+7. Prefer short and common spoken words.
+8. Use contractions naturally.
+9. Remove redundant wording.
+10. Remove unnecessary adjectives, modifiers, explanations, and filler.
+11. Simplify long clauses.
+12. Do not add new information.
+13. Do not change the meaning merely to make the line shorter.
+14. Do not merge subtitle IDs.
+15. Do not split subtitle IDs.
+16. Return exactly one replacement for every supplied ID.
+17. Do not return any ID that was not supplied.
+18. Do not include explanations, notes, markdown, or commentary.
+
+IMPORTANT:
+The target is NOT perfect literal translation.
+The target is the shortest natural English wording that preserves the essential intended meaning and works for spoken AI voiceover.
+
+If CORRECTION_ROUND is greater than 1:
+- the subtitle has already failed a previous timing correction
+- CURRENT is already the shortened version from the previous round
+- shorten it further
+- do not return only a minor rewording
+- stay at or below TARGET_WORDS whenever reasonably possible
+
+OUTPUT FORMAT:
 
 Return only valid JSON:
 
 [
   {
     "id": 123,
-    "text": "Short natural English."
+    "text": "Shortened English subtitle."
   }
 ]
 """
@@ -1946,16 +1965,16 @@ class TranslationService:
         client = self._gemini_client()
         compact_items = [
             {
-                "ID": int(item["id"]),
-                "SOURCE": str(item.get("source") or ""),
-                "CURRENT": str(item.get("current") or ""),
-                "AVAILABLE_SECONDS": round(float(item.get("available_seconds") or 0), 3),
-                "VOICE_SECONDS": round(float(item.get("voice_seconds") or 0), 3),
-                "REQUIRED_SPEED": round(float(item.get("required_speed") or 0), 3),
-                "TARGET_WORDS": int(item.get("target_words") or 1),
-                "PREVIOUS_CONTEXT": str(item.get("previous_context") or ""),
-                "NEXT_CONTEXT": str(item.get("next_context") or ""),
-                "CORRECTION_ROUND": int(correction_round),
+                "ID": int(item.get("ID", item.get("id"))),
+                "SOURCE": str(item.get("SOURCE", item.get("source", "")) or ""),
+                "CURRENT": str(item.get("CURRENT", item.get("current", "")) or ""),
+                "AVAILABLE_SECONDS": round(float(item.get("AVAILABLE_SECONDS", item.get("available_seconds", 0)) or 0), 3),
+                "VOICE_SECONDS": round(float(item.get("VOICE_SECONDS", item.get("voice_seconds", 0)) or 0), 3),
+                "REQUIRED_SPEED": round(float(item.get("REQUIRED_SPEED", item.get("required_speed", 0)) or 0), 3),
+                "TARGET_WORDS": int(item.get("TARGET_WORDS", item.get("target_words", 1)) or 1),
+                "PREVIOUS_CONTEXT": str(item.get("PREVIOUS_CONTEXT", item.get("previous_context", "")) or ""),
+                "NEXT_CONTEXT": str(item.get("NEXT_CONTEXT", item.get("next_context", "")) or ""),
+                "CORRECTION_ROUND": int(item.get("CORRECTION_ROUND", correction_round) or correction_round),
             }
             for item in items
         ]
@@ -1966,7 +1985,7 @@ class TranslationService:
         except Exception as exc:
             raise RuntimeError(self._friendly_gemini_error(exc)) from exc
         replacements = self._parse_gemini_replacement_json(response.text or "")
-        expected = [int(item["id"]) for item in items]
+        expected = [int(item.get("ID", item.get("id"))) for item in items]
         actual = list(replacements)
         missing = [item_id for item_id in expected if item_id not in replacements]
         unexpected = [item_id for item_id in actual if item_id not in expected]
@@ -2842,8 +2861,8 @@ def process_and_register_adaptive_timeline(
             sample_rate=sample_rate,
             manual_working_speed=manual_working_speed,
             min_working_speed=timeline_options.get("min_working_speed", 0.7),
-            preferred_max_local_speed=timeline_options.get("preferred_max_local_speed", 1.15),
-            hard_max_local_speed=timeline_options.get("hard_max_local_speed", 1.30),
+            preferred_max_local_speed=timeline_options.get("preferred_max_local_speed", DEFAULT_SLOT_MAX_SPEED),
+            hard_max_local_speed=timeline_options.get("hard_max_local_speed", DEFAULT_SLOT_MAX_SPEED),
             safety_gap=timeline_options.get("safety_gap", 0.12),
             progress=progress,
         )
