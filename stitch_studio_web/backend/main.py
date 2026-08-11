@@ -94,8 +94,8 @@ class TtsRequest(BaseModel):
     rate: str = "1.0"
     timingMode: str = "srt_slot"
     minWorkingSpeed: float = 0.7
-    preferredMaxLocalSpeed: float = 1.15
-    hardMaxLocalSpeed: float = 1.50
+    preferredMaxLocalSpeed: float = 1.20
+    hardMaxLocalSpeed: float = 1.20
     safetyGap: float = 0.12
 
 
@@ -108,8 +108,8 @@ class StandaloneTtsRequest(TtsRequest):
 class TimelineRemapRequest(BaseModel):
     srtAssetId: int | None = None
     minWorkingSpeed: float = 0.7
-    preferredMaxLocalSpeed: float = 1.15
-    hardMaxLocalSpeed: float = 1.30
+    preferredMaxLocalSpeed: float = 1.20
+    hardMaxLocalSpeed: float = 1.20
     safetyGap: float = 0.12
 
 
@@ -264,8 +264,8 @@ def _job_cancelled(job_id: int) -> bool:
 
 def _timeline_options(payload: TtsRequest | TimelineRemapRequest) -> dict[str, float]:
     min_speed = max(0.5, min(float(payload.minWorkingSpeed), 1.0))
-    preferred_speed = max(1.0, min(float(payload.preferredMaxLocalSpeed), 1.6))
-    hard_speed = max(preferred_speed, min(float(payload.hardMaxLocalSpeed), 2.0))
+    preferred_speed = max(1.0, min(float(payload.preferredMaxLocalSpeed), 1.20))
+    hard_speed = 1.20
     safety_gap = max(0.02, min(float(payload.safetyGap), 0.3))
     return {
         "min_working_speed": min_speed,
@@ -438,15 +438,30 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             return {segment.index: segment.text for segment in read_srt(source_path)}
         return {}
 
-    def target_word_count(current_text: str, available: float, generated: float) -> int:
+    def target_word_count(current_text: str, available: float, voice_duration: float) -> int:
         words = len(re.findall(r"\S+", current_text))
         if words <= 1:
             return max(1, words)
-        if generated > 0 and available > 0:
-            estimated = math.floor(words * available / generated * 0.88)
+        if voice_duration > 0 and available > 0:
+            estimated = math.floor(words * (available * 1.20 / voice_duration) * 0.85)
         else:
             estimated = math.floor(max(1.0, available) * 2.2)
         return max(1, min(words - 1, estimated))
+
+    def mark_needs_review(manifest_path: Path, rows: list[dict[str, Any]]) -> None:
+        try:
+            state, latest_rows = load_timing_manifest(manifest_path)
+        except RuntimeError:
+            return
+        failed_ids = {int(row.get("index") or 0) for row in rows}
+        for row in latest_rows:
+            if int(row.get("index") or 0) in failed_ids:
+                row["segment_status"] = "TEXT_TOO_LONG"
+                row["needs_review"] = True
+        state["final_validation_status"] = "NEEDS_REVIEW"
+        state["needs_review"] = True
+        state["correction_rounds"] = max_retries
+        manifest_path.write_text(json.dumps({"state": state, "segments": latest_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     max_retries = 3
     current_srt_path = srt_path
@@ -473,8 +488,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             break
 
         state, rows = load_timing_manifest(manifest_path)
-        too_long_statuses = {"TEXT_TOO_LONG", "MAX_SPEED_TRIMMED"}
-        still_too_long = [row for row in rows if row.get("segment_status") in too_long_statuses]
+        still_too_long = [row for row in rows if row.get("segment_status") == "TEXT_TOO_LONG"]
 
         if not still_too_long:
             break
@@ -495,26 +509,25 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             current_segment = current_map.get(idx)
             current_text = current_segment.text if current_segment else str(row.get("text") or "")
             available = float(row.get("working_available_duration") or 0)
-            generated = float(row.get("original_tts_duration") or 0)
-            context_segments = [
-                current_map[item].text
-                for item in (idx - 1, idx + 1)
-                if item in current_map and current_map[item].text.strip()
-            ]
+            voice_duration = float(row.get("original_tts_duration") or 0)
+            required_speed = float(row.get("required_local_speed") or (voice_duration / available if available > 0 else 0))
+            previous_context = current_map[idx - 1].text if idx - 1 in current_map else ""
+            next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
             optimizer_items.append(
                 {
                     "id": idx,
                     "source": source_map.get(idx, ""),
                     "current": current_text,
                     "available_seconds": available,
-                    "generated_voice_seconds": generated,
-                    "current_word_count": len(re.findall(r"\S+", current_text)),
-                    "target_words": target_word_count(current_text, available, generated),
-                    "context": " / ".join(context_segments),
+                    "voice_seconds": voice_duration,
+                    "required_speed": required_speed,
+                    "target_words": target_word_count(current_text, available, voice_duration),
+                    "previous_context": previous_context,
+                    "next_context": next_context,
                 }
             )
 
-        replacements = translator.optimize_timing_translations(optimizer_items, progress=progress)
+        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=attempt + 1, progress=progress)
         changed = 0
         for idx, replacement in replacements.items():
             segment = current_map.get(idx)
@@ -534,9 +547,12 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         progress(f"Applied Gemini timing corrections to {changed} subtitle(s); regenerating changed TTS only where cache differs.")
 
     if still_too_long:
+        manifest_path = timing_manifest_path()
+        if manifest_path.exists():
+            mark_needs_review(manifest_path, still_too_long)
         preview = ", ".join(f"#{int(row.get('index') or 0)}" for row in still_too_long[:12])
         extra = f", +{len(still_too_long) - 12} more" if len(still_too_long) > 12 else ""
-        raise RuntimeError(f"TTS text is still too long after {max_retries} Gemini correction round(s): {preview}{extra}. Needs review.")
+        raise RuntimeError(f"TTS text is still TEXT_TOO_LONG / NEEDS_REVIEW after {max_retries} Gemini correction round(s): {preview}{extra}.")
 
     if current_srt_path != srt_path and not optimized_srt_persisted:
         active = storage.latest_asset(video.id, "srt")
@@ -1167,7 +1183,7 @@ def _primary_srt_asset(video):
     )
 
 
-def _backup_srt_asset(video, asset, reason: str) -> None:
+def _backup_srt_asset(video, asset, reason: str) -> Path:
     if not asset or not asset.path.exists():
         return
     backup_dir = config.outputs_dir / f"video_{video.id}" / "subtitles" / "history"
@@ -1182,12 +1198,14 @@ def _backup_srt_asset(video, asset, reason: str) -> None:
         engine=f"history:{reason}",
         metadata={"source_asset_id": asset.id, "reason": reason, "source_srt": str(asset.path)},
     )
+    return backup_path
 
 
 def _replace_srt_asset(video, asset, content: str, reason: str, progress: Callable[[str], None] | None = None):
-    _backup_srt_asset(video, asset, reason)
+    backup_path = _backup_srt_asset(video, asset, reason)
     asset.path.write_text(content, encoding="utf-8")
     metadata = dict(asset.metadata or {})
+    metadata.setdefault("source_srt", str(backup_path))
     metadata.update({"role": "primary", "last_replaced_reason": reason})
     storage.update_asset_metadata(asset.id, metadata)
     if progress:

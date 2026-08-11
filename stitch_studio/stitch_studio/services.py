@@ -81,41 +81,56 @@ TARGET:
 - Concise storytelling language.
 """
 
-GEMINI_TIMING_OPTIMIZER_PROMPT = """Shorten the following English subtitle translations so their generated AI voice fits within the available subtitle duration.
+GEMINI_TIMING_RETRY_PROMPT = """You are optimizing already-translated English subtitles for AI voiceover timing.
 
-These subtitles have already been translated correctly in story context.
+These subtitles have already been translated correctly using the full story context.
 
-Do NOT freely retranslate the story.
+Every subtitle provided below has been measured using the actual generated AI voice and is TOO LONG even with the application's maximum allowed playback speed of 1.20x.
 
-For each subtitle:
-- SOURCE = original source text
-- CURRENT = current English translation
-- AVAILABLE_SECONDS = available speech duration
-- GENERATED_VOICE_SECONDS = measured real TTS duration
-- TARGET_WORDS = recommended maximum
+Your task is to rewrite each CURRENT English subtitle substantially shorter so that the next generated voice has a strong safety margin and is very likely to fit at or below 1.20x speed.
 
 TIMING IS THE HIGHEST PRIORITY.
 
-Rules:
-- Preserve essential meaning.
-- Preserve character identity.
-- Preserve names.
-- Preserve story context.
-- Preserve established terminology.
-- Shorten aggressively when necessary.
-- Respect TARGET_WORDS whenever possible.
-- Prefer short natural American English.
-- Use contractions naturally.
-- Remove redundancy.
-- Remove unnecessary modifiers.
-- Do not add information.
-- Do not merge IDs.
-- Do not split IDs.
-- Return exactly one replacement for every supplied ID.
-- Return no unsupplied IDs.
+Do not make only minor wording changes. Compress aggressively when necessary.
 
-Return strict machine-readable JSON only:
-[{"id": 1, "text": "replacement English text"}]
+Preserve:
+- essential story meaning
+- important facts/actions
+- character identity
+- names/relationships
+- story continuity
+
+You receive:
+ID
+SOURCE
+CURRENT
+AVAILABLE_SECONDS
+VOICE_SECONDS
+REQUIRED_SPEED
+TARGET_WORDS
+PREVIOUS_CONTEXT
+NEXT_CONTEXT
+CORRECTION_ROUND
+
+Rules:
+- TARGET_WORDS is a hard target whenever reasonably possible.
+- Prefer the shortest natural spoken American English.
+- Use short common words and contractions.
+- Remove filler, repetition, redundant wording, unnecessary modifiers, and verbose clauses.
+- Do not add information.
+- Do not change the core event/factual meaning.
+- Do not merge/split IDs.
+- Return exactly one result per supplied ID.
+- If CORRECTION_ROUND > 1, compress further than CURRENT.
+
+Return only valid JSON:
+
+[
+  {
+    "id": 123,
+    "text": "Short natural English."
+  }
+]
 """
 
 
@@ -1923,6 +1938,7 @@ class TranslationService:
         self,
         items: list[dict[str, Any]],
         *,
+        correction_round: int = 1,
         progress: Optional[Progress] = None,
     ) -> dict[int, str]:
         if not items:
@@ -1930,18 +1946,20 @@ class TranslationService:
         client = self._gemini_client()
         compact_items = [
             {
-                "id": int(item["id"]),
-                "source": str(item.get("source") or ""),
-                "current": str(item.get("current") or ""),
-                "available_seconds": round(float(item.get("available_seconds") or 0), 3),
-                "generated_voice_seconds": round(float(item.get("generated_voice_seconds") or 0), 3),
-                "current_word_count": int(item.get("current_word_count") or 0),
-                "target_words": int(item.get("target_words") or 1),
-                "context": str(item.get("context") or ""),
+                "ID": int(item["id"]),
+                "SOURCE": str(item.get("source") or ""),
+                "CURRENT": str(item.get("current") or ""),
+                "AVAILABLE_SECONDS": round(float(item.get("available_seconds") or 0), 3),
+                "VOICE_SECONDS": round(float(item.get("voice_seconds") or 0), 3),
+                "REQUIRED_SPEED": round(float(item.get("required_speed") or 0), 3),
+                "TARGET_WORDS": int(item.get("target_words") or 1),
+                "PREVIOUS_CONTEXT": str(item.get("previous_context") or ""),
+                "NEXT_CONTEXT": str(item.get("next_context") or ""),
+                "CORRECTION_ROUND": int(correction_round),
             }
             for item in items
         ]
-        prompt = f"{GEMINI_TIMING_OPTIMIZER_PROMPT}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
+        prompt = f"{GEMINI_TIMING_RETRY_PROMPT}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
         _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
@@ -2995,12 +3013,14 @@ def process_and_register_srt_slot_timeline(
 ) -> dict[str, Any]:
     timeline_options = timeline_options or {}
     max_speed = float(timeline_options.get("max_speed") or timeline_options.get("hard_max_local_speed") or DEFAULT_SLOT_MAX_SPEED)
+    safety_gap = float(timeline_options.get("safety_gap") or 0.12)
     result = process_srt_slot_timeline(
         video,
         rendered,
         output_dir,
         sample_rate=sample_rate,
         max_speed=max_speed,
+        safety_gap=safety_gap,
         progress=progress,
     )
     register_srt_slot_timeline_result(storage, video, result, engine=engine, source_srt=source_srt)

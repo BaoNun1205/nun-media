@@ -6,12 +6,13 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import numpy as np
 import soundfile as sf
 
 from stitch_studio.models import SubtitleSegment, VideoItem
-from stitch_studio.services import _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
+from stitch_studio.services import GEMINI_TIMING_RETRY_PROMPT, TranslationService, _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
 from stitch_studio.srt import write_srt
 from stitch_studio.storage import Storage
 from stitch_studio.subtitle_timeline_scaler import (
@@ -144,7 +145,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             self.assertAlmostEqual(state["final_audio_duration"], 4.0)
             self.assertAlmostEqual(state["final_video_duration"], 4.0, delta=0.08)
 
-    def test_local_speed_adjusted_and_warning_statuses(self) -> None:
+    def test_local_speed_adjusted_status_up_to_hard_max(self) -> None:
         with TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
             video_path = self._video_file(root, 22.0)
@@ -154,7 +155,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             rendered = self._rendered(root, specs)
             result = process_adaptive_timeline(self._video(video_path, 22_000), rendered, root / "out", sample_rate=8_000)
             statuses = [row["segment_status"] for row in result["segments"]]
-            self.assertEqual(statuses[9], "SPEED_ADJUSTED_WARNING")
+            self.assertEqual(statuses[9], "SPEED_ADJUSTED")
             self.assertNotIn("OVERLAP", statuses)
 
     def test_text_too_long_blocks_export_without_cutting_original(self) -> None:
@@ -168,17 +169,30 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             self.assertEqual(sf.info(rendered[0][1]).frames, original_frames)
             self.assertFalse((root / "out" / "voiceover.wav").exists())
 
-    def test_srt_slot_timeline_exports_without_text_too_long_block(self) -> None:
+    def test_srt_slot_timeline_blocks_above_one_point_two_after_full_pass(self) -> None:
         with TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
             video_path = self._video_file(root, 3.0)
             rendered = self._rendered(root, [(1, 0.0, 0.5, 5.0), (2, 1.0, 1.5, 0.5)])
-            result = process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5)
-            self.assertTrue(Path(result["voiceover_path"]).exists())
-            self.assertTrue(Path(result["final_video_path"]).exists())
-            self.assertEqual(result["state"]["timing_mode"], "srt_slot")
-            self.assertEqual(result["state"]["final_validation_status"], "VALID")
-            self.assertEqual(result["state"]["target_samples"], 24_000)
+            with self.assertRaisesRegex(RuntimeError, "TEXT_TOO_LONG"):
+                process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5)
+            manifest = json.loads((root / "out" / "srt_slot_timeline.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["state"]["max_speed"], 1.2)
+            self.assertEqual(len(manifest["segments"]), 2)
+            self.assertEqual(manifest["segments"][0]["segment_status"], "TEXT_TOO_LONG")
+            self.assertFalse((root / "out" / "voiceover.wav").exists())
+
+    def test_srt_slot_timeline_uses_exact_required_speed_up_to_one_point_two(self) -> None:
+        with TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            video_path = self._video_file(root, 2.0)
+            rendered = self._rendered(root, [(1, 0.0, 1.0, 1.0)])
+            result = process_srt_slot_timeline(self._video(video_path, 2_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.12)
+            row = result["segments"][0]
+            self.assertEqual(row["segment_status"], "SPEED_ADJUSTED")
+            self.assertAlmostEqual(row["required_local_speed"], 1.0 / 0.88, places=6)
+            self.assertAlmostEqual(row["applied_local_speed"], row["required_local_speed"], places=6)
+            self.assertLessEqual(row["applied_local_speed"], 1.2)
 
     def test_srt_slot_timeline_pads_short_audio_without_slowing_it(self) -> None:
         with TemporaryDirectory() as raw_dir:
@@ -190,10 +204,34 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             row = result["segments"][0]
             processed_audio, _ = sf.read(row["processed_tts_path"], dtype="float32")
 
-            self.assertEqual(row["segment_status"], "PADDED")
+            self.assertEqual(row["segment_status"], "FIT")
             self.assertEqual(row["applied_local_speed"], 1.0)
             np.testing.assert_allclose(processed_audio[: len(original_audio)], original_audio, atol=1e-6)
             self.assertLess(float(np.max(np.abs(processed_audio[len(original_audio) :]))), 1e-6)
+
+    def test_gemini_timing_retry_uses_central_prompt_and_batches_ids(self) -> None:
+        calls: list[str] = []
+
+        class FakeModels:
+            def generate_content(self, *, model: str, contents: str):
+                del model
+                calls.append(contents)
+                return SimpleNamespace(text='[{"id": 1, "text": "Short one."}, {"id": 2, "text": "Short two."}]')
+
+        service = TranslationService.__new__(TranslationService)
+        service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
+        replacements = service.optimize_timing_translations(
+            [
+                {"id": 1, "source": "src 1", "current": "current one", "available_seconds": 1.0, "voice_seconds": 2.0, "required_speed": 2.0, "target_words": 3, "previous_context": "", "next_context": "next"},
+                {"id": 2, "source": "src 2", "current": "current two", "available_seconds": 1.5, "voice_seconds": 2.5, "required_speed": 1.667, "target_words": 4, "previous_context": "prev", "next_context": ""},
+            ],
+            correction_round=2,
+        )
+        self.assertEqual(replacements, {1: "Short one.", 2: "Short two."})
+        self.assertEqual(len(calls), 1)
+        self.assertIn(GEMINI_TIMING_RETRY_PROMPT, calls[0])
+        self.assertIn('"CORRECTION_ROUND": 2', calls[0])
+        self.assertIn('"VOICE_SECONDS": 2.0', calls[0])
 
     def test_zero_duration_subtitle_is_rejected(self) -> None:
         self._assert_bad_timeline([SubtitleSegment(1, 1.0, 1.0, "bad")])
