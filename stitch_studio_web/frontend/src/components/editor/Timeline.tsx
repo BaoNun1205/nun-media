@@ -892,12 +892,23 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
 }
 
 function ScriptEditor({ editor }: { editor: EditorController }) {
+  const issueByIndex = new Map(editor.timelineIssues.map((issue) => [issue.index, issue]));
   return <section className="timeline-panel script-panel">
     <header className="timeline-header"><div><button className="view-label" onClick={() => editor.setBottomView('timeline')}>Timeline</button><button className="view-label active">Script</button><span className="timeline-history"><button aria-label="Undo subtitle edit" title="Undo (Ctrl/Cmd+Z)" disabled={!editor.canUndo} onClick={editor.undoDraft}><Undo2 size={14} /></button><button aria-label="Redo subtitle edit" title="Redo (Ctrl/Cmd+Shift+Z)" disabled={!editor.canRedo} onClick={editor.redoDraft}><Redo2 size={14} /></button></span></div><div><span>{editor.srt.segments.length} subtitle lines</span><button className="view-label" onClick={editor.copySrt}>Copy SRT</button><button className="view-label" onClick={editor.pasteSrt}>Paste SRT</button><button className="primary view-label" onClick={editor.saveSrt} disabled={!editor.dirty}>Save script</button></div></header>
     <div className="script-table"><div className="script-head"><span>Timecode</span><span>Current text</span><span>Active subtitle text</span><span>Voice</span><span>Issue</span></div>{editor.srt.segments.map((segment, index) => {
       const source = editor.sourceSrt.segments[index];
       const voice = editor.voiceByIndex[segment.index];
-      return <button className={`script-row ${editor.selection.type === 'subtitle' && editor.selection.index === segment.index ? 'active' : ''}`} key={segment.index} onClick={() => { editor.setSelection({ type: 'subtitle', index: segment.index }); editor.setPlayhead(segment.start); }}><span><strong>#{segment.index}</strong><small>{segment.startLabel}<br />{segment.endLabel}</small></span><span>{source?.text || segment.text}</span><textarea value={editor.edits[segment.index] ?? segment.text} onClick={(event) => event.stopPropagation()} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} /><span className={`voice-dot ${voice?.status || ''}`}>{voice?.audioUrl ? 'Ready' : 'Not rendered'}</span><span>{voice?.requiredLocalSpeed && voice.requiredLocalSpeed > 1.5 ? 'Timing' : '-'}</span></button>;
+      const currentText = editor.edits[segment.index] ?? segment.text;
+      const issue = issueByIndex.get(segment.index);
+      const activeIssue = issue && currentText.trim() === issue.text.trim() ? issue : undefined;
+      const timingDetail = activeIssue
+        ? [
+            activeIssue.ttsDuration ? `Voice: ${activeIssue.ttsDuration.toFixed(2)}s` : '',
+            activeIssue.availableDuration ? `Available: ${activeIssue.availableDuration.toFixed(2)}s` : '',
+            activeIssue.requiredLocalSpeed ? `Required: ${activeIssue.requiredLocalSpeed.toFixed(2)}x` : '',
+          ].filter(Boolean).join(' · ')
+        : '';
+      return <button className={`script-row ${activeIssue ? 'needs-review' : ''} ${editor.selection.type === 'subtitle' && editor.selection.index === segment.index ? 'active' : ''}`} key={segment.index} onClick={() => { editor.setSelection({ type: 'subtitle', index: segment.index }); editor.setPlayhead(segment.start); }}><span><strong>#{segment.index}</strong><small>{segment.startLabel}<br />{segment.endLabel}</small></span><span>{source?.text || segment.text}</span><textarea value={currentText} onClick={(event) => event.stopPropagation()} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} /><span className={`voice-dot ${voice?.status || ''}`}>{voice?.audioUrl ? 'Ready' : 'Not rendered'}</span><span className={activeIssue ? 'script-issue error' : 'script-issue'}>{activeIssue ? <><strong>{activeIssue.needsReview ? 'Needs Review' : 'Too long for 1.20x'}</strong>{timingDetail && <small>{timingDetail}</small>}</> : '-'}</span></button>;
     })}{!editor.srt.segments.length && <div className="empty-row">Generate or select an SRT to open Script View.</div>}</div>
   </section>;
 }

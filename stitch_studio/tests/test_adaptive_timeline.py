@@ -296,6 +296,11 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"CORRECTION_ROUND": 2', calls[0])
         self.assertIn('"VOICE_SECONDS": 2.0', calls[0])
 
+    def test_translation_service_rejects_non_gemini_engine(self) -> None:
+        service = TranslationService.__new__(TranslationService)
+        with self.assertRaisesRegex(RuntimeError, "Unsupported translation engine"):
+            service.translate_srt(self._video(Path("unused.mp4"), 1_000), Path("unused.srt"), engine="local-engine")
+
     def test_zero_duration_subtitle_is_rejected(self) -> None:
         self._assert_bad_timeline([SubtitleSegment(1, 1.0, 1.0, "bad")])
 

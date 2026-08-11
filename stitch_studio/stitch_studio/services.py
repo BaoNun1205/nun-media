@@ -1767,11 +1767,6 @@ class TranslationService:
     def __init__(self, config: AppConfig, storage: Storage):
         self.config = config
         self.storage = storage
-        self._lock = threading.Lock()
-        self._translator = None
-        self._tokenizer = None
-        self._model_path: Path | None = None
-        self._device = ""
 
     def translate_srt(
         self,
@@ -1780,13 +1775,12 @@ class TranslationService:
         *,
         source_language: str = "auto",
         target_language: str = "vi",
-        engine: str = "madlad400-ct2",
-        device: str = "cpu",
+        engine: str = GEMINI_MODEL,
         progress: Optional[Progress] = None,
         register_asset: bool = True,
     ) -> Path:
         del source_language
-        if engine not in {"madlad400-ct2", "madlad400-q4", "gemini-3.5-flash-lite"}:
+        if engine != GEMINI_MODEL:
             raise RuntimeError(f"Unsupported translation engine: {engine}")
         if not target_language or target_language == "auto":
             raise RuntimeError("Choose a target language before translating.")
@@ -1795,20 +1789,7 @@ class TranslationService:
         if not segments:
             raise RuntimeError(f"No subtitle segments found in {srt_path}")
 
-        if engine == "gemini-3.5-flash-lite":
-            translated = self._translate_with_gemini(segments, target_language, progress)
-        else:
-            with self._lock:
-                tokenizer, translator = self._get_madlad_ct2(device=device)
-                _emit(progress, f"Translating {len(segments)} subtitle segment(s) to {target_language}...")
-                texts = [segment.text.strip() for segment in segments]
-                translated = self._translate_texts(
-                    texts,
-                    tokenizer=tokenizer,
-                    translator=translator,
-                    target_language=target_language,
-                    progress=progress,
-                )
+        translated = self._translate_with_gemini(segments, target_language, progress)
 
         output_dir = self.config.outputs_dir / f"video_{video.id}"
         output_path = output_dir / f"{srt_path.stem}.{engine}-{target_language}.srt"
@@ -1831,81 +1812,6 @@ class TranslationService:
             )
         _emit(progress, f"Translated SRT exported: {output_path}")
         return output_path
-
-    def _get_madlad_ct2(self, *, device: str):
-        try:
-            import ctranslate2
-            from huggingface_hub import snapshot_download
-            from sentencepiece import SentencePieceProcessor
-        except ImportError as exc:
-            raise RuntimeError(
-                "Missing translation dependencies. Install ctranslate2, sentencepiece, and huggingface_hub."
-            ) from exc
-
-        local_model_dir = self.config.models_dir / "madlad400-3b-ct2"
-        model_ref = os.environ.get(
-            "MADLAD_CT2_MODEL",
-            str(local_model_dir) if (local_model_dir / "model.bin").exists() else "santhosh/madlad400-3b-ct2",
-        )
-        resolved = Path(model_ref)
-        if not resolved.exists():
-            resolved = Path(snapshot_download(model_ref, cache_dir=str(self.config.models_dir)))
-        normalized_device = "cuda" if device == "cuda" else "cpu"
-        if (
-            self._translator is not None
-            and self._tokenizer is not None
-            and self._model_path == resolved
-            and self._device == normalized_device
-        ):
-            return self._tokenizer, self._translator
-
-        tokenizer = SentencePieceProcessor()
-        tokenizer_path = resolved / "sentencepiece.model"
-        if not tokenizer_path.exists():
-            raise RuntimeError(f"MADLAD sentencepiece model not found: {tokenizer_path}")
-        tokenizer.load(str(tokenizer_path))
-        compute_type = "int8_float16" if normalized_device == "cuda" else "int8"
-        translator = ctranslate2.Translator(str(resolved), device=normalized_device, compute_type=compute_type)
-        self._model_path = resolved
-        self._device = normalized_device
-        self._tokenizer = tokenizer
-        self._translator = translator
-        return tokenizer, translator
-
-    @staticmethod
-    def _translate_texts(
-        texts: list[str],
-        *,
-        tokenizer,
-        translator,
-        target_language: str,
-        progress: Optional[Progress] = None,
-    ) -> list[str]:
-        translated: list[str] = []
-        batch_tokens: list[list[str]] = []
-        batch_positions: list[int] = []
-        translated_map: dict[int, str] = {}
-
-        for index, text in enumerate(texts):
-            if not text:
-                translated_map[index] = ""
-                continue
-            batch_tokens.append(tokenizer.encode(f"<2{target_language}> {text}", out_type=str))
-            batch_positions.append(index)
-            if len(batch_tokens) >= 16:
-                _decode_batch(batch_tokens, batch_positions, translated_map, tokenizer, translator)
-                _emit(progress, f"Translation progress: {len(translated_map)}/{len(texts)}")
-                batch_tokens = []
-                batch_positions = []
-
-        if batch_tokens:
-            _decode_batch(batch_tokens, batch_positions, translated_map, tokenizer, translator)
-            _emit(progress, f"Translation progress: {len(translated_map)}/{len(texts)}")
-
-        for index in range(len(texts)):
-            translated.append(translated_map.get(index, texts[index]))
-        return translated
-
 
     def _translate_with_gemini(
         self,
@@ -2095,7 +2001,7 @@ class TranslationService:
         text = str(exc)
         low = text.lower()
         if "429" in text or "quota" in low or "rate limit" in low:
-            return "Gemini quota or rate limit was reached. Try again later or use MADLAD."
+            return "Gemini quota or rate limit was reached. Try again later."
         if "401" in text or "403" in text or "api key" in low or "permission" in low or "unauthorized" in low:
             return "Gemini API key was rejected. Check the key in Settings."
         if "timeout" in low or "connection" in low or "network" in low:
@@ -3699,20 +3605,6 @@ def _publish_srt_file(source: Path, destination: Path) -> None:
     os.replace(tmp_path, destination)
     if not destination.exists() or destination.stat().st_size == 0:
         raise RuntimeError(f"Hard-sub OCR published an empty SRT file: {destination}")
-
-
-def _decode_batch(batch_tokens, batch_positions, translated_map, tokenizer, translator) -> None:
-    results = translator.translate_batch(
-        batch_tokens,
-        batch_type="tokens",
-        max_batch_size=1024,
-        beam_size=1,
-        no_repeat_ngram_size=1,
-        repetition_penalty=2,
-    )
-    for position, result in zip(batch_positions, results):
-        text = tokenizer.decode(result.hypotheses[0]).strip()
-        translated_map[position] = text
 
 
 def _probe_video_size(path: Path) -> tuple[int, int]:

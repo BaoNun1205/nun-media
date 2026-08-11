@@ -607,11 +607,14 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .media-asset-clip.selected, .subtitle-asset-clip.selected { outline: 1px solid #b8aaff; outline-offset: -2px; }
 .script-panel { background: #0f1115; }
 .script-table { min-height: 0; overflow: auto; }
-.script-head, .script-row { display: grid; grid-template-columns: 130px 1fr 1fr 90px 70px; align-items: center; gap: 8px; padding: 0 10px; }
+.script-head, .script-row { display: grid; grid-template-columns: 130px 1fr 1fr 90px 130px; align-items: center; gap: 8px; padding: 0 10px; }
 .script-head { position: sticky; z-index: 2; top: 0; height: 27px; color: #606875; background: #111318; font-size: 8px; text-transform: uppercase; }
 .script-row { width: 100%; min-height: 57px; border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; background: transparent; text-align: left; }
 .script-row:hover, .script-row.active { background: #191c22; }
 .script-row.active { box-shadow: inset 2px 0 var(--accent); }
+.script-row.needs-review { border-top-color: #6d3037; background: #231316; box-shadow: inset 2px 0 #ef535f; }
+.script-row.needs-review:hover, .script-row.needs-review.active { background: #2a171b; }
+.script-row.needs-review textarea { border-color: #8a3a43; background: #190f12; }
 .script-row > span { overflow: hidden; color: #aeb5c0; font-size: 9px; line-height: 1.35; text-overflow: ellipsis; }
 .script-row > span:first-child strong, .script-row > span:first-child small { display: block; }
 .script-row > span:first-child strong { color: var(--accent-2); }
@@ -619,6 +622,10 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .script-row textarea { min-height: 39px; resize: none; font-size: 9px; }
 .voice-dot { color: #717987 !important; }
 .voice-dot.ready { color: var(--green) !important; }
+.script-issue.error { color: #ff9aa2 !important; }
+.script-issue.error strong, .script-issue.error small { display: block; }
+.script-issue.error strong { font-size: 9px; }
+.script-issue.error small { margin-top: 3px; color: #d2767e; font-size: 8px; white-space: normal; }
 
 @media (max-width: 1350px) {
   .editor-topbar { grid-template-columns: minmax(420px, 1fr) auto minmax(300px, 1fr); }

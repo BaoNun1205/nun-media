@@ -182,7 +182,6 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [language, setLanguage] = useState('auto');
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const [translationSourceLanguage, setTranslationSourceLanguage] = useState('auto');
-  const [translationDevice, setTranslationDevice] = useState(defaults.device === 'cuda' ? 'cuda' : 'cpu');
   const [removeMethod, setRemoveMethod] = useState<'auto' | 'manual'>('auto');
   const [removeMode, setRemoveMode] = useState('blur');
   const [autoSrtAssetId, setAutoSrtAssetId] = useState<number | null>(null);
@@ -220,10 +219,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       createdAt: asset.createdAt,
       metadata: asset.metadata || {},
     }));
-  const srtAssets = [...project.assets, ...workspaceSrtAssets]
-    .filter((asset, index, assets) => asset.kind === 'srt' && !isTranslatedAsset(asset.engine) && assets.findIndex((candidate) => candidate.id === asset.id) === index);
-  const originalSrtAssets = srtAssets;
-  const translatedSrtAssets = srtAssets.filter((asset) => isTranslatedAsset(asset.engine));
+  const allSrtAssets = [...project.assets, ...workspaceSrtAssets]
+    .filter((asset, index, assets) => asset.kind === 'srt' && assets.findIndex((candidate) => candidate.id === asset.id) === index);
+  const originalSrtAssets = allSrtAssets.filter((asset) => !isTranslatedAsset(asset));
+  const translatedSrtAssets = allSrtAssets.filter((asset) => isTranslatedAsset(asset));
+  const srtAssets = originalSrtAssets;
   const srtAssetIdForTimelineItem = useCallback((item: TimelineItem) => {
     if (item.kind !== 'srt') return undefined;
     if (item.sourceAssetId) return item.sourceAssetId;
@@ -1024,7 +1024,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   async function saveSrt() {
     if (!srt.asset?.id) return;
     await studioApi.saveSrtAsset(srt.asset.id, serializeSrt(srt.segments, edits));
-    await loadSrt(srt.asset.id); setMessage('Subtitle changes saved.');
+    await loadSrt(srt.asset.id);
+    await loadTimelineIssues();
+    setMessage('Subtitle changes saved.');
   }
   async function copySrt() {
     if (!srt.segments.length) {
@@ -1369,11 +1371,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage(error instanceof Error ? error.message : 'Unable to import SRT');
     }
   }
-  const [translationEngine, setTranslationEngine] = useState('madlad400-ct2');
-
   async function translate() {
     await saveSrt();
-    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: srt.asset?.id, sourceLanguage: translationSourceLanguage, targetLanguage, engine: translationEngine, device: translationDevice }, 'Translation job');
+    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: srt.asset?.id, sourceLanguage: translationSourceLanguage, targetLanguage }, 'Translation job');
   }
   async function remove() {
     setBlurEffectHidden(false);
@@ -1581,7 +1581,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
-    translationDevice, setTranslationDevice, translationEngine, setTranslationEngine, removeMethod, setRemoveMethod, removeMode, setRemoveMode,
+    removeMethod, setRemoveMethod, removeMode, setRemoveMode,
     autoSrtAssetId, setAutoSrtAssetId,
     insertMode, setInsertMode, ttsEngine, setTtsEngine, ttsLanguage, setTtsLanguage,
     ttsVoice, setTtsVoice, ttsRate, setTtsRate, voices,

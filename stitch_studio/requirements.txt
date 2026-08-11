@@ -4,9 +4,6 @@ PySide6>=6.11.1
 # faster-whisper
 # vieneu
 pocket-tts
-ctranslate2
-sentencepiece
-huggingface_hub
 requests
 soundfile
 google-genai>=0.1.0

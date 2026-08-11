@@ -62,6 +62,7 @@ audio_separator = AudioSeparationService(config, storage)
 jobs: dict[int, dict[str, Any]] = {}
 next_job_id = 1
 jobs_lock = threading.Lock()
+TIMING_CORRECTION_MAX_RETRIES = 5
 
 
 class JobCancelled(RuntimeError):
@@ -134,8 +135,7 @@ class SrtTranslateRequest(BaseModel):
     srtAssetId: int | None = None
     sourceLanguage: str = "auto"
     targetLanguage: str = "vi"
-    engine: str = "madlad400-ct2"
-    device: str = "cpu"
+    engine: str = "gemini-3.5-flash-lite"
 
 
 class SettingsRequest(BaseModel):
@@ -470,10 +470,10 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                 row["needs_review"] = True
         state["final_validation_status"] = "NEEDS_REVIEW"
         state["needs_review"] = True
-        state["correction_rounds"] = max_retries
+        state["correction_rounds"] = TIMING_CORRECTION_MAX_RETRIES
         manifest_path.write_text(json.dumps({"state": state, "segments": latest_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    max_retries = 3
+    max_retries = TIMING_CORRECTION_MAX_RETRIES
     current_srt_path = srt_path
     final_output: Path | None = None
     still_too_long: list[dict[str, Any]] = []
@@ -1184,7 +1184,8 @@ def _delete_project_and_owned_files(project) -> dict[str, Any]:
 
 def _is_translation_srt(asset) -> bool:
     metadata = asset.metadata or {}
-    return "madlad400" in (asset.engine or "").lower() or metadata.get("role") == "translation"
+    engine = (asset.engine or "").lower()
+    return metadata.get("role") == "translation" or engine.startswith("gemini-3.5-flash-lite:")
 
 
 def _primary_srt_asset(video):
@@ -1301,7 +1302,7 @@ def _video_payload(video, include_workspace_assets: bool = True) -> dict[str, An
             state.setdefault("subtitle_hidden", True)
         state.setdefault("last_operation", "insert")
     has_srt = any(asset.kind == "srt" for asset in assets)
-    has_translation = any(asset.kind == "srt" and "madlad400" in asset.engine.lower() for asset in assets)
+    has_translation = any(asset.kind == "srt" and _is_translation_srt(asset) for asset in assets)
     has_tts = any(asset.kind == "tts" for asset in assets)
     audio_stems = audio_separator.cached_stems(video)
     audio_mode = str(metadata.get("audio_mode") or AUDIO_MODE_ORIGINAL)
@@ -1410,7 +1411,18 @@ def _timeline_issue_payload(row: dict[str, Any], state: dict[str, Any]) -> dict[
         "availableDuration": row.get("working_available_duration"),
         "requiredLocalSpeed": required_speed,
         "hardMaxLocalSpeed": row.get("hard_max_local_speed") or row.get("max_speed") or state.get("hard_max_local_speed") or state.get("max_speed"),
+        "needsReview": bool(row.get("needs_review") or state.get("needs_review")),
     }
+
+
+def _active_srt_text_map(video) -> dict[int, str]:
+    asset = _primary_srt_asset(video)
+    if not asset or not asset.path.exists():
+        return {}
+    try:
+        return {segment.index: segment.text for segment in read_srt(asset.path)}
+    except Exception:
+        return {}
 
 
 def _segment_engine(engine: str) -> str:
@@ -4115,7 +4127,6 @@ def translate_srt(video_id: int, payload: SrtTranslateRequest) -> dict[str, Any]
             source_language=payload.sourceLanguage,
             target_language=payload.targetLanguage,
             engine=payload.engine,
-            device=payload.device,
             progress=progress,
             register_asset=False,
         )
@@ -4370,11 +4381,13 @@ def tts_timeline_issues(video_id: int) -> dict[str, Any]:
         raise HTTPException(409, f"Cannot read adaptive timeline manifest: {exc}") from exc
     state = payload.get("state") or {}
     rows = payload.get("segments") or []
-    blocking = {"TEXT_TOO_LONG", "OVERLAP", "FINAL_OVERLAP", "FINAL_VOICE_OVERFLOW"}
+    active_text = _active_srt_text_map(video)
+    blocking = {"TEXT_TOO_LONG", "NEEDS_REVIEW", "OVERLAP", "FINAL_OVERLAP", "FINAL_VOICE_OVERFLOW"}
     issues = [
         _timeline_issue_payload(row, state)
         for row in rows
         if str(row.get("segment_status") or row.get("status") or "") in blocking
+        and active_text.get(int(row.get("index") or 0), row.get("text") or "") == (row.get("text") or "")
     ]
     issues.sort(key=lambda item: int(item.get("index") or 0))
     return {

@@ -256,8 +256,11 @@ export interface TimelineIssue {
   text: string;
   startLabel?: string;
   endLabel?: string;
+  ttsDuration?: number;
+  availableDuration?: number;
   requiredLocalSpeed?: number;
   hardMaxLocalSpeed?: number;
+  needsReview?: boolean;
   detail?: string;
 }
 
