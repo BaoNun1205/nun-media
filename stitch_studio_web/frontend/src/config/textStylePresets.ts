@@ -3,7 +3,7 @@ import { DEFAULT_FONT_FAMILY } from './fontRegistry';
 
 export const DEFAULT_TEXT_STYLE: TextStyle = {
   fontFamily: DEFAULT_FONT_FAMILY,
-  fontSize: 24,
+  fontSize: 50,
   fontColor: '#ffffff',
   color: '#ffffff',
   fontWeight: 800,

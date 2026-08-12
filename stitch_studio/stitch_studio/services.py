@@ -29,7 +29,7 @@ AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 MEDIA_SUFFIXES = VIDEO_SUFFIXES | AUDIO_SUFFIXES
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
-GEMINI_INITIAL_SRT_PROMPT = """Translate this SRT into natural spoken English for voiceover dubbing.
+GEMINI_INITIAL_SRT_PROMPT = """Translate this SRT into the requested target language for voiceover dubbing.
 
 Timing is the top priority.
 
@@ -42,16 +42,15 @@ CONTEXT RULES:
 - Resolve ambiguous short lines from surrounding context.
 
 TIMING RULES:
-- Each English subtitle must be short enough to be spoken naturally within its original SRT duration.
+- Each translated subtitle must be short enough to be spoken naturally within its original SRT duration.
 - Treat each original subtitle duration as a strict speech-time budget.
-- Aim for approximately 2.2 spoken English words per second or less.
+- Aim for a natural spoken pace in the requested target language.
 - Prefer shorter wording when timing is tight.
-- Prefer concise natural English over literal translation.
+- Prefer concise natural speech over literal translation.
 - Compress dense source lines while preserving the essential meaning.
 - Keep short source lines very short.
-- Prefer short common spoken words.
+- Prefer short common spoken words in the requested target language.
 - Avoid long clauses.
-- Avoid unnecessary passive constructions.
 - Remove filler and redundant wording.
 - Remove unnecessary adjectives/modifiers.
 - Use natural contractions.
@@ -72,23 +71,23 @@ STRICT RULES:
 PRIORITY:
 1. Fit subtitle duration.
 2. Preserve intended meaning in context.
-3. Natural spoken American English.
+3. Natural spoken target-language wording.
 4. Literal wording only when compatible with the above.
 
 TARGET:
-- Spoken neutral American English.
+- Spoken target language.
 - Natural for TTS.
 - Concise storytelling language.
 """
 
-GEMINI_TIMING_RETRY_PROMPT = """You are optimizing already-translated English subtitles for AI voiceover timing.
+GEMINI_TIMING_RETRY_PROMPT = """You are optimizing already-translated subtitles for AI voiceover timing.
 
 These subtitle lines have already been translated using the full story context.
 Their meanings are already correct.
 
 Your task is NOT to freely retranslate the story.
 
-Your task is to SHORTEN each CURRENT English subtitle so its generated AI voice can fit within the available subtitle time.
+Your task is to SHORTEN each CURRENT subtitle so its generated AI voice can fit within the available subtitle time.
 
 The application allows a maximum playback speed of 1.20x.
 
@@ -100,7 +99,8 @@ For each item you will receive:
 
 - ID: subtitle ID
 - SOURCE: original source-language subtitle
-- CURRENT: current English translation
+- CURRENT: current translated subtitle
+- OUTPUT_LANGUAGE: target language code, or "same as CURRENT"
 - AVAILABLE_SECONDS: available subtitle speech duration
 - VOICE_SECONDS: measured duration of the current generated AI voice
 - REQUIRED_SPEED: speed currently required to fit
@@ -113,25 +113,26 @@ RULES:
 1. Preserve the essential meaning of SOURCE.
 2. Preserve the established story context.
 3. Preserve character identity, names, pronouns, relationships, and terminology.
-4. Shorten CURRENT enough that the new AI voice has a strong chance of fitting at or below 1.20x playback speed.
-5. Respect TARGET_WORDS as a strong maximum target.
-6. Prefer concise, natural spoken American English.
-7. Prefer short and common spoken words.
-8. Use contractions naturally.
-9. Remove redundant wording.
-10. Remove unnecessary adjectives, modifiers, explanations, and filler.
-11. Simplify long clauses.
-12. Do not add new information.
-13. Do not change the meaning merely to make the line shorter.
-14. Do not merge subtitle IDs.
-15. Do not split subtitle IDs.
-16. Return exactly one replacement for every supplied ID.
-17. Do not return any ID that was not supplied.
-18. Do not include explanations, notes, markdown, or commentary.
+4. Keep the output in OUTPUT_LANGUAGE. If OUTPUT_LANGUAGE is "same as CURRENT", keep the same language as CURRENT.
+5. Never switch languages. Do not translate Vietnamese to English, English to Vietnamese, or any other language pair during timing optimization.
+6. Shorten CURRENT enough that the new AI voice has a strong chance of fitting at or below 1.20x playback speed.
+7. Respect TARGET_WORDS as a strong maximum target.
+8. Prefer concise, natural spoken wording in OUTPUT_LANGUAGE.
+9. Prefer short and common spoken words in OUTPUT_LANGUAGE.
+10. Remove redundant wording.
+11. Remove unnecessary adjectives, modifiers, explanations, and filler.
+12. Simplify long clauses.
+13. Do not add new information.
+14. Do not change the meaning merely to make the line shorter.
+15. Do not merge subtitle IDs.
+16. Do not split subtitle IDs.
+17. Return exactly one replacement for every supplied ID.
+18. Do not return any ID that was not supplied.
+19. Do not include explanations, notes, markdown, or commentary.
 
 IMPORTANT:
 The target is NOT perfect literal translation.
-The target is the shortest natural English wording that preserves the essential intended meaning and works for spoken AI voiceover.
+The target is the shortest natural wording in OUTPUT_LANGUAGE that preserves the essential intended meaning and works for spoken AI voiceover.
 
 If CORRECTION_ROUND is greater than 1:
 - the subtitle has already failed a previous timing correction
@@ -147,7 +148,7 @@ Return only valid JSON:
 [
   {
     "id": 123,
-    "text": "Shortened English subtitle."
+    "text": "Shortened subtitle in OUTPUT_LANGUAGE."
   }
 ]
 """
@@ -641,14 +642,22 @@ class TranscriptionService:
         segments: list[SubtitleSegment] = []
         last_percent = -1
         for index, segment in enumerate(segments_iter, start=1):
-            segments.append(
-                SubtitleSegment(index=index, start=float(segment.start) * time_scale, end=float(segment.end) * time_scale, text=segment.text.strip())
-            )
+            text = segment.text.strip()
+            if text:
+                segments.append(
+                    SubtitleSegment(index=len(segments) + 1, start=float(segment.start) * time_scale, end=float(segment.end) * time_scale, text=text)
+                )
             if duration_seconds > 0:
                 percent = min(99, int((float(segment.end) / duration_seconds) * 100))
                 if percent > last_percent:
                     _emit(progress, f"Transcribing progress: {percent}%")
                     last_percent = percent
+        if not segments:
+            srt_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Whisper did not detect any speech for subtitles. "
+                "Check that the clip has vocals/speech audio, or use Hard subtitle - OCR for burned-in subtitles."
+            )
         write_srt(segments, srt_path)
         self.storage.add_asset(
             video_id=video.id,
@@ -660,6 +669,7 @@ class TranscriptionService:
                 "duration": getattr(info, "duration", None),
                 "timeline_speed": timeline_speed,
                 "timeline_time_scale": time_scale,
+                "segment_count": len(segments),
             },
         )
         _emit(progress, f"SRT exported: {srt_path}")
@@ -1874,6 +1884,7 @@ class TranslationService:
                 "ID": int(item.get("ID", item.get("id"))),
                 "SOURCE": str(item.get("SOURCE", item.get("source", "")) or ""),
                 "CURRENT": str(item.get("CURRENT", item.get("current", "")) or ""),
+                "OUTPUT_LANGUAGE": str(item.get("OUTPUT_LANGUAGE", item.get("output_language", "same as CURRENT")) or "same as CURRENT"),
                 "AVAILABLE_SECONDS": round(float(item.get("AVAILABLE_SECONDS", item.get("available_seconds", 0)) or 0), 3),
                 "VOICE_SECONDS": round(float(item.get("VOICE_SECONDS", item.get("voice_seconds", 0)) or 0), 3),
                 "REQUIRED_SPEED": round(float(item.get("REQUIRED_SPEED", item.get("required_speed", 0)) or 0), 3),
@@ -1896,11 +1907,14 @@ class TranslationService:
         missing = [item_id for item_id in expected if item_id not in replacements]
         unexpected = [item_id for item_id in actual if item_id not in expected]
         empty = [item_id for item_id, text in replacements.items() if not text.strip()]
-        if missing or unexpected or empty or len(replacements) != len(expected):
+        if missing or unexpected:
             raise RuntimeError(
                 "Invalid Gemini timing response "
                 f"(missing={missing[:8]}, unexpected={unexpected[:8]}, empty={empty[:8]})"
             )
+        if empty:
+            _emit(progress, f"Gemini timing response left {len(empty)} subtitle(s) empty; keeping their current text.")
+            replacements = {item_id: text for item_id, text in replacements.items() if item_id not in set(empty)}
         return replacements
 
     def _gemini_client(self):
@@ -2226,6 +2240,9 @@ class CapcutTtsService:
         manifest: list[dict] = []
         rendered: list[tuple[SubtitleSegment, Path]] = []
 
+        def persist_manifest() -> None:
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
         for segment in segments:
             cleaned_text = _clean_capcut_tts_text(segment.text)
             if not cleaned_text:
@@ -2269,8 +2286,9 @@ class CapcutTtsService:
                     "generation_signature": generation_signature,
                 }
             )
+            persist_manifest()
 
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        persist_manifest()
         if _is_plain_tts_request(video, timing_mode):
             timeline_result = process_and_register_plain_tts(
                 self.storage,
@@ -2327,6 +2345,23 @@ class CapcutTtsService:
         raise RuntimeError(f"No CapCut voice found for language {language}.")
 
     def _request_segment_mp3(self, text: str, output_path: Path, *, voice_type: str, resource_id: str, rate: str) -> None:
+        last_error: RuntimeError | None = None
+        for attempt in range(3):
+            try:
+                self._request_segment_mp3_once(text, output_path, voice_type=voice_type, resource_id=resource_id, rate=rate)
+                return
+            except RuntimeError as exc:
+                last_error = exc
+                message = str(exc)
+                if "CapCut rejected this text as invalid" in message:
+                    break
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+        if last_error:
+            raise RuntimeError(f"{last_error} (after 3 attempts)") from last_error
+        raise RuntimeError("CapCut TTS request failed.")
+
+    def _request_segment_mp3_once(self, text: str, output_path: Path, *, voice_type: str, resource_id: str, rate: str) -> None:
         try:
             import requests
         except ImportError as exc:
@@ -3056,8 +3091,6 @@ def _clean_capcut_tts_text(text: str) -> str:
     for line in value.splitlines():
         clean_line = line.strip()
         if not clean_line:
-            continue
-        if re.fullmatch(r"[A-Za-z0-9\s.,:/\\|*#_+\-]{1,12}", clean_line):
             continue
         lines.append(clean_line)
     value = " ".join(lines)

@@ -690,6 +690,7 @@ input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-o
 .align-toolbar button:disabled { opacity: .36; cursor: not-allowed; }
 .align-toolbar > i { width: 1px; height: 17px; background: #343b47; }
 .slider-numeric-field { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: center; gap: var(--inspector-control-gap); }
+.slider-numeric-field.size-slider-field { grid-template-columns: minmax(0, 1fr) 52px; }
 .slider-numeric-field > input[type="range"] { width: 100%; accent-color: var(--inspector-control-focus); }
 .numeric-field { min-width: 0; height: var(--inspector-control-height); display: flex; align-items: center; gap: 4px; padding: 0 0 0 7px; border: 1px solid var(--inspector-control-border); border-radius: var(--inspector-control-radius); color: #f1f4f8; background: var(--inspector-control-bg); transition: border-color .14s ease, background .14s ease, box-shadow .14s ease; overflow: hidden; }
 .numeric-field:hover { border-color: #3a4350; background: var(--inspector-control-hover); }

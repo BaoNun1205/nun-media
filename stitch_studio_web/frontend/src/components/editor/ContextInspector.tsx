@@ -281,7 +281,7 @@ function TextStyleControls({
       <div className="style-controls-panel">
         <StyleGroup title="Font">
           <FontPicker value={style.fontFamily} onChange={(fontFamily) => onUpdate({ fontFamily })} />
-          <NumericSliderField label="Size" value={style.fontSize || 24} min={8} max={100} step={1} suffix="px" onChange={(fontSize) => onUpdate({ fontSize })} />
+          <NumericSliderField label="Size" className="size-slider-field" value={(style.fontSize ?? 50) / 10} min={1} max={10} step={1} suffix="" onChange={(fontSize) => onUpdate({ fontSize: fontSize * 10 })} />
         </StyleGroup>
 
         <StyleGroup title="Style">
@@ -484,11 +484,11 @@ function DistributeVerticalIcon() {
   return <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10M3 13h10M5 6v4M8 5v6M11 6v4" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" /></svg>;
 }
 
-function NumericSliderField({ label, value, min, max, step, suffix, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; onChange: (value: number) => void }) {
+function NumericSliderField({ label, value, min, max, step, suffix, className, onChange }: { label: string; value: number; min: number; max: number; step: number; suffix: string; className?: string; onChange: (value: number) => void }) {
   const normalized = clampNumber(value, min, max);
   return (
     <FieldRow label={label}>
-      <SliderNumericField className="style-range-field" value={normalized} min={min} max={max} step={step} unit={suffix} onChange={onChange} ariaLabel={`${label} value`} />
+      <SliderNumericField className={`style-range-field ${className || ''}`.trim()} value={normalized} min={min} max={max} step={step} unit={suffix} onChange={onChange} ariaLabel={`${label} value`} />
     </FieldRow>
   );
 }

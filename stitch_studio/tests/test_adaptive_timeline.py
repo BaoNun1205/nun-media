@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 
 from stitch_studio.models import SubtitleSegment, VideoItem
-from stitch_studio.services import GEMINI_TIMING_RETRY_PROMPT, TranslationService, _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
+from stitch_studio.services import GEMINI_TIMING_RETRY_PROMPT, TranslationService, _clean_capcut_tts_text, _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
 from stitch_studio.srt import write_srt
 from stitch_studio.storage import Storage
 from stitch_studio.subtitle_timeline_scaler import (
@@ -26,6 +26,11 @@ from stitch_studio.subtitle_timeline_scaler import (
 
 
 class AdaptiveAnalysisTests(unittest.TestCase):
+    def test_capcut_cleaner_keeps_short_spoken_lines(self) -> None:
+        self.assertEqual(_clean_capcut_tts_text("OK."), "OK.")
+        self.assertEqual(_clean_capcut_tts_text("No."), "No.")
+        self.assertEqual(_clean_capcut_tts_text("Go now"), "Go now")
+
     def test_all_voice_fits_at_one(self) -> None:
         speed, analysis = select_adaptive_working_speed([1.0, 1.0], [0.0, 2.0], video_duration=4.0)
         self.assertEqual(speed, 1.0)
@@ -270,6 +275,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
                     "ID": item_id,
                     "SOURCE": f"src {item_id}",
                     "CURRENT": f"current {item_id}",
+                    "OUTPUT_LANGUAGE": "vi",
                     "AVAILABLE_SECONDS": 1.0,
                     "VOICE_SECONDS": 2.0,
                     "REQUIRED_SPEED": 2.0,
@@ -288,6 +294,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn(GEMINI_TIMING_RETRY_PROMPT, calls[0])
         self.assertIn('"SOURCE": "src 1"', calls[0])
         self.assertIn('"CURRENT": "current 1"', calls[0])
+        self.assertIn('"OUTPUT_LANGUAGE": "vi"', calls[0])
         self.assertIn('"AVAILABLE_SECONDS": 1.0', calls[0])
         self.assertIn('"REQUIRED_SPEED": 2.0', calls[0])
         self.assertIn('"TARGET_WORDS": 3', calls[0])
@@ -295,6 +302,27 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"NEXT_CONTEXT": "next"', calls[0])
         self.assertIn('"CORRECTION_ROUND": 2', calls[0])
         self.assertIn('"VOICE_SECONDS": 2.0', calls[0])
+        self.assertIn("Never switch languages", calls[0])
+
+    def test_gemini_timing_retry_ignores_empty_replacements(self) -> None:
+        class FakeModels:
+            def generate_content(self, *, model: str, contents: str):
+                del model, contents
+                return SimpleNamespace(text=json.dumps([
+                    {"id": 1, "text": "Short enough."},
+                    {"id": 2, "text": ""},
+                ]))
+
+        service = TranslationService.__new__(TranslationService)
+        service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
+        replacements = service.optimize_timing_translations(
+            [
+                {"ID": 1, "CURRENT": "This is too long.", "AVAILABLE_SECONDS": 1, "VOICE_SECONDS": 2},
+                {"ID": 2, "CURRENT": "Still too long.", "AVAILABLE_SECONDS": 1, "VOICE_SECONDS": 2},
+            ],
+        )
+
+        self.assertEqual(replacements, {1: "Short enough."})
 
     def test_translation_service_rejects_non_gemini_engine(self) -> None:
         service = TranslationService.__new__(TranslationService)

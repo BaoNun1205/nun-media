@@ -45,6 +45,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const imageDragRef = useRef<ImageDragState | null>(null);
   useEffect(() => { imageDragRef.current = imageDrag; }, [imageDrag]);
   const [playing, setPlaying] = useState(false);
+  const [forceTimelineClock, setForceTimelineClock] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [frameFormat, setFrameFormat] = useState<FrameFormat>('original');
@@ -127,7 +128,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     : editor.previewSource.startsWith('tts:')
       ? activeVideoId ? `${API_BASE}/videos/${activeVideoId}/preview?audioMode=${editor.effectivePreviewAudioMode}` : ''
       : activeVideoId ? `${API_BASE}/videos/${activeVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}` : '';
-  const timelineClockPlayback = Boolean(activeImageUrl || !sourceUrl);
+  const timelineClockPlayback = Boolean(forceTimelineClock || activeImageUrl || !sourceUrl);
 
   function applyGainValue(media: HTMLMediaElement | null, gainValue: number, muted = false) {
     if (!media) return;
@@ -234,7 +235,15 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     if (video.paused) {
       video.play().catch((e) => {
         console.error('Video play failed:', e);
-        setPlaying(false);
+        if (hasWorkspaceTimeline) {
+          setForceTimelineClock(true);
+          setPlaying(true);
+          audioContextRef.current?.resume().catch(() => undefined);
+          syncVoiceAt(editor.playhead, true);
+          syncSourceAudioAt(editor.playhead, true);
+        } else {
+          setPlaying(false);
+        }
       });
     } else {
       video.pause();
@@ -331,6 +340,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   }, [editor.area]);
   useEffect(() => {
     setError('');
+    setForceTimelineClock(false);
     if (activeImageUrl) {
       const image = imageRef.current;
       setLoading(!(image?.complete && image.naturalWidth));
@@ -630,7 +640,11 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
             onCanPlay={() => { setLoading(false); setError(''); }}
             onError={() => {
               if (editor.previewSource === 'preview') editor.setPreviewSource('media');
-              else { setLoading(false); setError('This media cannot be played in the browser. Try the proxy or reveal the source file.'); }
+              else {
+                setForceTimelineClock(hasWorkspaceTimeline);
+                setLoading(false);
+                setError(hasWorkspaceTimeline ? '' : 'This media cannot be played in the browser. Try the proxy or reveal the source file.');
+              }
             }}
           /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
           {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}

@@ -62,7 +62,6 @@ audio_separator = AudioSeparationService(config, storage)
 jobs: dict[int, dict[str, Any]] = {}
 next_job_id = 1
 jobs_lock = threading.Lock()
-TIMING_CORRECTION_MAX_RETRIES = 5
 
 
 class JobCancelled(RuntimeError):
@@ -393,7 +392,7 @@ def _standalone_tts_video(payload: StandaloneTtsRequest, output_dir: Path, srt_p
     return video
 
 
-def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progress: Callable[[str], None]) -> Path:
+def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progress: Callable[[str], None], srt_asset: Any | None = None) -> Path:
     engine = payload.engine or "vieneu"
     if engine not in {"vieneu", "capcut", "pocket"}:
         raise HTTPException(400, f"Unsupported TTS engine: {engine}")
@@ -442,7 +441,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         return state, [row for row in rows if isinstance(row, dict)]
 
     def current_source_map() -> dict[int, str]:
-        active_asset = storage.latest_asset(video.id, "srt")
+        active_asset = storage.get_asset(active_srt_asset.id) if active_srt_asset else storage.latest_asset(video.id, "srt")
         source_srt_path = (active_asset.metadata or {}).get("source_srt") if active_asset and active_asset.metadata else None
         source_path = Path(str(source_srt_path)) if source_srt_path else None
         if source_path and source_path.exists() and source_path.resolve() != current_srt_path.resolve():
@@ -458,7 +457,19 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                 return {segment.index: segment.text for segment in read_srt(backup_asset.path)}
         return {}
 
-    def mark_needs_review(manifest_path: Path, rows: list[dict[str, Any]]) -> None:
+    def timing_output_language() -> str:
+        active_asset = storage.get_asset(active_srt_asset.id) if active_srt_asset else storage.latest_asset(video.id, "srt")
+        metadata = active_asset.metadata or {} if active_asset else {}
+        for key in ("target_language", "translation_target_language", "output_language"):
+            value = str(metadata.get(key) or "").strip()
+            if value and value.lower() != "auto":
+                return value
+        fallback = str(payload.language or "").strip()
+        if fallback and fallback.lower() not in {"auto", "default"}:
+            return fallback
+        return "same as CURRENT"
+
+    def mark_needs_review(manifest_path: Path, rows: list[dict[str, Any]], correction_rounds: int) -> None:
         try:
             state, latest_rows = load_timing_manifest(manifest_path)
         except RuntimeError:
@@ -470,16 +481,35 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                 row["needs_review"] = True
         state["final_validation_status"] = "NEEDS_REVIEW"
         state["needs_review"] = True
-        state["correction_rounds"] = TIMING_CORRECTION_MAX_RETRIES
+        state["correction_rounds"] = correction_rounds
         manifest_path.write_text(json.dumps({"state": state, "segments": latest_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+        metadata = dict(video.metadata or {})
+        metadata["tts_timeline"] = state
+        storage.update_video_metadata(video.id, metadata)
+        storage.add_asset(
+            video_id=video.id,
+            kind="tts_timeline_manifest",
+            path=manifest_path,
+            engine=f"srt-slot-timeline:{engine}:needs-review",
+            metadata={"source_srt": str(current_srt_path), "timeline": state},
+        )
 
-    max_retries = TIMING_CORRECTION_MAX_RETRIES
     current_srt_path = srt_path
+    active_srt_asset = srt_asset
     final_output: Path | None = None
     still_too_long: list[dict[str, Any]] = []
     optimized_srt_persisted = False
+    correction_round = 0
 
-    for attempt in range(max_retries + 1):
+    def persist_timing_srt(path: Path) -> None:
+        nonlocal active_srt_asset, optimized_srt_persisted
+        active = storage.get_asset(active_srt_asset.id) if active_srt_asset else _primary_srt_asset(video)
+        if not active or active.kind != "srt" or not active.path.exists():
+            raise RuntimeError("Gemini timing correction changed subtitle text, but the active SRT could not be updated.")
+        active_srt_asset = _replace_srt_asset(video, active, path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
+        optimized_srt_persisted = True
+
+    while True:
         manifest_path = timing_manifest_path()
         synthesis_error: Exception | None = None
         try:
@@ -502,15 +532,15 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
 
         if not still_too_long:
             break
-        if attempt == max_retries:
-            break
+        correction_round += 1
 
         progress(
             f"Timing optimization: found {len(still_too_long)} overlong segment(s) "
-            f"(round {attempt + 1}/{max_retries})."
+            f"(round {correction_round})."
         )
 
         source_map = current_source_map()
+        output_language = timing_output_language()
         current_segments = read_srt(current_srt_path)
         current_map = {segment.index: segment for segment in current_segments}
         optimizer_items: list[dict[str, Any]] = []
@@ -528,17 +558,18 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                     "ID": idx,
                     "SOURCE": source_map.get(idx, ""),
                     "CURRENT": current_text,
+                    "OUTPUT_LANGUAGE": output_language,
                     "AVAILABLE_SECONDS": available,
                     "VOICE_SECONDS": voice_duration,
                     "REQUIRED_SPEED": required_speed,
                     "TARGET_WORDS": _timing_retry_target_words(current_text, available, voice_duration),
                     "PREVIOUS_CONTEXT": previous_context,
                     "NEXT_CONTEXT": next_context,
-                    "CORRECTION_ROUND": attempt + 1,
+                    "CORRECTION_ROUND": correction_round,
                 }
             )
 
-        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=attempt + 1, progress=progress)
+        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
         changed = 0
         for idx, replacement in replacements.items():
             segment = current_map.get(idx)
@@ -546,29 +577,28 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                 segment.text = replacement.strip()
                 changed += 1
         if changed <= 0:
-            raise RuntimeError("Gemini timing optimizer returned no changed subtitle text.")
+            progress(
+                "Gemini timing optimizer returned no changed subtitle text; "
+                "keeping subtitles unresolved for the next correction round."
+            )
+            continue
 
-        new_srt_path = config.outputs_dir / f"video_{video.id}" / f"{srt_path.stem}.optimized_{attempt + 1}.srt"
+        new_srt_path = config.outputs_dir / f"video_{video.id}" / f"{srt_path.stem}.optimized_{correction_round}.srt"
         write_srt(current_segments, new_srt_path)
         current_srt_path = new_srt_path
-        active = storage.latest_asset(video.id, "srt")
-        if active:
-            _replace_srt_asset(video, active, current_srt_path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
-            optimized_srt_persisted = True
+        persist_timing_srt(current_srt_path)
         progress(f"Applied Gemini timing corrections to {changed} subtitle(s); regenerating changed TTS only where cache differs.")
 
     if still_too_long:
         manifest_path = timing_manifest_path()
         if manifest_path.exists():
-            mark_needs_review(manifest_path, still_too_long)
+            mark_needs_review(manifest_path, still_too_long, correction_round)
         preview = ", ".join(f"#{int(row.get('index') or 0)}" for row in still_too_long[:12])
         extra = f", +{len(still_too_long) - 12} more" if len(still_too_long) > 12 else ""
-        raise RuntimeError(f"TTS text is still TEXT_TOO_LONG / NEEDS_REVIEW after {max_retries} Gemini correction round(s): {preview}{extra}.")
+        raise RuntimeError(f"TTS text is still TEXT_TOO_LONG / NEEDS_REVIEW after {correction_round} Gemini correction round(s): {preview}{extra}.")
 
     if current_srt_path != srt_path and not optimized_srt_persisted:
-        active = storage.latest_asset(video.id, "srt")
-        if active:
-            _replace_srt_asset(video, active, current_srt_path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
+        persist_timing_srt(current_srt_path)
 
     if not final_output:
         raise RuntimeError("TTS did not produce an output file")
@@ -839,8 +869,23 @@ def _asset_belongs_to_video(asset, video) -> bool:
     return False
 
 
+def _srt_segment_count(path: Path) -> int:
+    if not path.exists() or path.stat().st_size <= 0:
+        return 0
+    try:
+        return len([segment for segment in read_srt(path) if segment.text.strip()])
+    except Exception:
+        return 0
+
+
+def _has_srt_segments(asset) -> bool:
+    return bool(asset and asset.kind == "srt" and _srt_segment_count(asset.path) > 0)
+
+
 def _asset_payload(asset) -> dict[str, Any]:
     metadata = _metadata_with_media_duration(asset.metadata or {}, asset.path)
+    if asset.kind == "srt":
+        metadata["segment_count"] = _srt_segment_count(asset.path)
     if metadata != (asset.metadata or {}):
         storage.update_asset_metadata(asset.id, metadata)
     return {
@@ -858,6 +903,8 @@ def _asset_payload(asset) -> dict[str, Any]:
 
 def _project_asset_payload(asset, include_linked: bool = True) -> dict[str, Any]:
     metadata = _metadata_with_media_duration(asset.metadata or {}, asset.path)
+    if asset.kind == "srt":
+        metadata["segment_count"] = _srt_segment_count(asset.path)
     if asset.source_video_id:
         video = storage.get_video(asset.source_video_id)
         if video and video.duration_ms and _metadata_duration_ms(metadata) <= 0:
@@ -1190,7 +1237,7 @@ def _is_translation_srt(asset) -> bool:
 
 def _primary_srt_asset(video):
     return next(
-        (asset for asset in storage.list_assets(video.id) if asset.kind == "srt" and asset.path.exists() and not _is_translation_srt(asset)),
+        (asset for asset in storage.list_assets(video.id) if _has_srt_segments(asset) and not _is_translation_srt(asset)),
         None,
     )
 
@@ -1301,8 +1348,8 @@ def _video_payload(video, include_workspace_assets: bool = True) -> dict[str, An
         if metadata.get("mode") in {"blur", "cover"}:
             state.setdefault("subtitle_hidden", True)
         state.setdefault("last_operation", "insert")
-    has_srt = any(asset.kind == "srt" for asset in assets)
-    has_translation = any(asset.kind == "srt" and _is_translation_srt(asset) for asset in assets)
+    has_srt = any(_has_srt_segments(asset) for asset in assets)
+    has_translation = any(_has_srt_segments(asset) and _is_translation_srt(asset) for asset in assets)
     has_tts = any(asset.kind == "tts" for asset in assets)
     audio_stems = audio_separator.cached_stems(video)
     audio_mode = str(metadata.get("audio_mode") or AUDIO_MODE_ORIGINAL)
@@ -2907,9 +2954,7 @@ def _timeline_audio_sources(project) -> list[dict[str, Any]]:
         elif kind == "video" and not item.get("sourceAudioMuted") and item.get("sourceVideoId") is not None:
             video = storage.get_video(int(item["sourceVideoId"]))
             if video:
-                mode = str((video.metadata or {}).get("audio_mode") or AUDIO_MODE_ORIGINAL)
-                stem = _stem_for_audio_mode(video, mode)
-                path = stem or video.path
+                path = video.path
                 label = video.path.name
         if path and _path_has_audio_stream(path):
             sources.append({
@@ -2991,9 +3036,91 @@ def _render_workspace_timeline_audio(project, progress: Callable[[str], None] | 
     return output_path, max(1, duration_ms)
 
 
+def _workspace_hardsub_source_video(project) -> VideoItem | None:
+    metadata = project.metadata or {}
+    timeline_state = metadata.get("timeline_state") if isinstance(metadata.get("timeline_state"), dict) else {}
+    timeline = timeline_state.get("items") or metadata.get("timeline") or []
+    candidates: list[tuple[float, VideoItem]] = []
+    for item in timeline:
+        if not isinstance(item, dict) or str(item.get("kind") or "").lower() != "video":
+            continue
+        if item.get("hidden") or item.get("muted") or item.get("sourceVideoId") is None:
+            continue
+        video = storage.get_video(int(item["sourceVideoId"]))
+        if video and video.media_type == "video" and video.path.exists():
+            candidates.append((_timeline_float(item, "start"), video))
+    if candidates:
+        return sorted(candidates, key=lambda item: item[0])[0][1]
+    if project.primary_video_id:
+        primary = storage.get_video(project.primary_video_id)
+        if primary and primary.media_type == "video" and primary.path.exists():
+            return primary
+    for asset in storage.list_project_assets(project.id):
+        if asset.kind != "video" or not asset.source_video_id:
+            continue
+        video = storage.get_video(asset.source_video_id)
+        if video and video.media_type == "video" and video.path.exists():
+            return video
+    return None
+
+
+def _register_workspace_srt_asset(project, source_video: VideoItem, srt_path: Path, source: str, extra_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    segment_count = _srt_segment_count(srt_path)
+    if segment_count <= 0:
+        srt_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Subtitle generation finished without any readable subtitle lines. "
+            "Check that the selected source contains speech, or use Hard subtitle - OCR for burned-in subtitles."
+        )
+    srt_asset = next((asset for asset in storage.list_assets(source_video.id) if asset.path == srt_path), None) or storage.latest_asset(source_video.id, "srt")
+    if not srt_asset:
+        raise RuntimeError("Timeline SRT was generated but not registered.")
+    project_asset = storage.project_asset_for_asset(project.id, srt_asset.id)
+    if not project_asset:
+        storage.add_project_asset(
+            project_id=project.id,
+            kind="srt",
+            path=srt_asset.path,
+            name=srt_asset.path.name,
+            source_asset_id=srt_asset.id,
+            metadata={
+                **(srt_asset.metadata or {}),
+                **(extra_metadata or {}),
+                "source": source,
+                "workspace_id": project.id,
+                "engine": srt_asset.engine,
+                "segment_count": segment_count,
+            },
+        )
+        project_asset = storage.project_asset_for_asset(project.id, srt_asset.id)
+    return {"assetId": srt_asset.id, "sourceAssetId": srt_asset.id, "projectAssetId": project_asset.id if project_asset else None}
+
+
 def _generate_workspace_timeline_srt(project, payload: SrtGenerateRequest, progress: Callable[[str], None]) -> dict[str, Any]:
+    if payload.source == "hardsub":
+        source_video = _workspace_hardsub_source_video(project)
+        if not source_video:
+            raise RuntimeError("Workspace does not contain a readable video for hard-sub OCR.")
+        ocr_area = _normalize_area_ratio(payload.ocrArea) if payload.ocrArea is not None else None
+        if payload.ocrArea is not None and not ocr_area:
+            raise RuntimeError("OCR area must contain valid xmin, xmax, ymin and ymax ratios")
+        srt_path = transcriber.generate_hardsub_srt(
+            source_video,
+            language="vi" if payload.language == "auto" else payload.language,
+            mode=payload.hardsubMode,
+            area=ocr_area,
+            timeline_speed=_srt_timeline_speed(source_video, payload),
+            progress=progress,
+        )
+        return _register_workspace_srt_asset(
+            project,
+            source_video,
+            srt_path,
+            "hard-sub-ocr",
+            {"source_video_id": source_video.id},
+        )
     if payload.source != "audio":
-        raise RuntimeError("Workspace subtitle generation currently uses timeline audio. OCR needs a rendered video first.")
+        raise RuntimeError(f"Unsupported workspace subtitle source: {payload.source}")
     audio_path, duration_ms = _render_workspace_timeline_audio(project, progress)
     video_id = storage.upsert_video(
         title=f"{project.title} timeline audio",
@@ -3016,26 +3143,7 @@ def _generate_workspace_timeline_srt(project, payload: SrtGenerateRequest, progr
         timeline_speed=1.0,
         progress=progress,
     )
-    srt_asset = next((asset for asset in storage.list_assets(audio_video.id) if asset.path == srt_path), None) or storage.latest_asset(audio_video.id, "srt")
-    if not srt_asset:
-        raise RuntimeError("Timeline SRT was generated but not registered.")
-    project_asset = storage.project_asset_for_asset(project.id, srt_asset.id)
-    if not project_asset:
-        storage.add_project_asset(
-            project_id=project.id,
-            kind="srt",
-            path=srt_asset.path,
-            name=srt_asset.path.name,
-            source_asset_id=srt_asset.id,
-            metadata={
-                **(srt_asset.metadata or {}),
-                "source": "timeline-audio",
-                "workspace_id": project.id,
-                "engine": srt_asset.engine,
-            },
-        )
-        project_asset = storage.project_asset_for_asset(project.id, srt_asset.id)
-    return {"assetId": srt_asset.id, "sourceAssetId": srt_asset.id, "projectAssetId": project_asset.id if project_asset else None}
+    return _register_workspace_srt_asset(project, audio_video, srt_path, "timeline-audio")
 
 
 @app.post("/api/projects/{project_id}/srt/generate")
@@ -4131,6 +4239,16 @@ def translate_srt(video_id: int, payload: SrtTranslateRequest) -> dict[str, Any]
             register_asset=False,
         )
         replaced = _replace_srt_asset(video, asset, translated_path.read_text(encoding="utf-8-sig"), "before-translation")
+        metadata = dict(replaced.metadata or {})
+        metadata.update(
+            {
+                "target_language": payload.targetLanguage,
+                "translation_engine": payload.engine,
+                "source_language": payload.sourceLanguage,
+            }
+        )
+        storage.update_asset_metadata(replaced.id, metadata)
+        replaced = storage.get_asset(replaced.id) or replaced
         translated_path.unlink(missing_ok=True)
         progress(f"Translated SRT replaced the active subtitle track: {replaced.path}")
         return {"assetId": replaced.id, "outputPath": str(replaced.path)}
@@ -4152,7 +4270,7 @@ def synthesize_tts(video_id: int, payload: TtsRequest) -> dict[str, Any]:
         return {"jobId": active["id"], "alreadyRunning": True}
     engine = payload.engine or "vieneu"
     job_id = _new_job("tts", f"{engine.title()} TTS: {video.title}", video.id)
-    _run_job(job_id, lambda progress: _synthesize_tts_for_video(video, asset.path, payload, progress))
+    _run_job(job_id, lambda progress: _synthesize_tts_for_video(video, asset.path, payload, progress, asset))
     return {"jobId": job_id}
 
 
@@ -4383,12 +4501,20 @@ def tts_timeline_issues(video_id: int) -> dict[str, Any]:
     rows = payload.get("segments") or []
     active_text = _active_srt_text_map(video)
     blocking = {"TEXT_TOO_LONG", "NEEDS_REVIEW", "OVERLAP", "FINAL_OVERLAP", "FINAL_VOICE_OVERFLOW"}
-    issues = [
-        _timeline_issue_payload(row, state)
-        for row in rows
-        if str(row.get("segment_status") or row.get("status") or "") in blocking
-        and active_text.get(int(row.get("index") or 0), row.get("text") or "") == (row.get("text") or "")
-    ]
+    needs_review_state = bool(state.get("needs_review") or state.get("final_validation_status") == "NEEDS_REVIEW")
+    issues = []
+    for row in rows:
+        status = str(row.get("segment_status") or row.get("status") or "")
+        if status not in blocking:
+            continue
+        index = int(row.get("index") or 0)
+        row_text = row.get("text") or ""
+        current_text = active_text.get(index)
+        if current_text is not None and current_text != row_text:
+            if not needs_review_state:
+                continue
+            row = {**row, "text": current_text, "manifest_text": row_text}
+        issues.append(_timeline_issue_payload(row, state))
     issues.sort(key=lambda item: int(item.get("index") or 0))
     return {
         "state": state,

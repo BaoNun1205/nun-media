@@ -172,10 +172,12 @@ class Storage:
             ),
         )
         self.conn.commit()
+        row = self.conn.execute("SELECT id FROM videos WHERE path = ?", (str(path),)).fetchone()
+        if row:
+            return int(row["id"])
         if cur.lastrowid:
             return int(cur.lastrowid)
-        row = self.conn.execute("SELECT id FROM videos WHERE path = ?", (str(path),)).fetchone()
-        return int(row["id"])
+        raise RuntimeError(f"Could not register media file: {path}")
 
     def list_videos(self) -> list[VideoItem]:
         rows = self.conn.execute(

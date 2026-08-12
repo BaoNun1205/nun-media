@@ -205,6 +205,7 @@ export interface Project {
   ttsTimeline?: {
     counts?: Record<string, number>;
     final_validation_status?: string;
+    needs_review?: boolean;
   };
 }
 

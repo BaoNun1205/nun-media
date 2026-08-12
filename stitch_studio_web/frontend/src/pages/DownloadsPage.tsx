@@ -121,9 +121,9 @@ export function DownloadsPage({ jobs, projects, workspaceProjects, onRefresh, on
       const title = window.prompt('Project name', jobTitle) || jobTitle;
       try { await request(`/videos/${videoId}/subtitle/effect`, { method: 'DELETE' }); } catch (e) { /* ignore */ }
       const result = await studioApi.createWorkspaceProject(title, []);
-      await studioApi.attachWorkspaceVideos(result.project.id, [videoId]);
+      const attached = await studioApi.attachWorkspaceVideos(result.project.id, [videoId]);
       await onRefresh();
-      onOpenWorkspace(result.project);
+      onOpenWorkspace(attached.project);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to create project');
     } finally {

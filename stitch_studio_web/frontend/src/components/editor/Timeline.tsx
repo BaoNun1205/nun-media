@@ -589,7 +589,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
           <small>{formatClock(editor.duration)}</small>
           {editor.activeAudioJob && <span className="audio-separation-progress"><i style={{ width: `${Math.max(2, audioProgress)}%` }} /><em>{audioProgress}%</em></span>}
         </button>}
-        {mediaItems.map((item) => <TimelineMediaClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} onSelect={(event) => {
+        {mediaItems.map((item) => <TimelineMediaClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} audioMode={item.kind === 'video' && item.sourceVideoId ? audioModeForVideo(item.sourceVideoId) : undefined} audioJob={item.kind === 'video' ? editor.audioJobForVideo(item.sourceVideoId) : undefined} onSelect={(event) => {
           selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id });
         }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onTrimStart={(event) => beginClipTrim(event, item, 'start')} onTrimEnd={(event) => beginClipTrim(event, item, 'end')} onContextMenu={item.kind === 'video' && item.sourceVideoId ? (event) => openVideoContextMenu(event, item.sourceVideoId!, item.id) : undefined} />)}
       </div>;
@@ -746,10 +746,12 @@ export function Timeline({ editor }: { editor: EditorController }) {
   </>;
 }
 
-function TimelineMediaClip({ item, duration, selected, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd, onContextMenu }: {
+function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd, onContextMenu }: {
   item: TimelineItem;
   duration: number;
   selected: boolean;
+  audioMode?: string;
+  audioJob?: { progress?: number; detail?: string };
   onSelect: (event: React.MouseEvent) => void;
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onPointerMove?: (event: React.PointerEvent<HTMLElement>) => void;
@@ -762,6 +764,9 @@ function TimelineMediaClip({ item, duration, selected, onSelect, onPointerDown, 
   const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
   const isVideo = item.kind === 'video' && item.sourceVideoId;
   const imageUrl = item.kind === 'image' && item.projectAssetId ? `/api/project-assets/${item.projectAssetId}/download?preview=1` : '';
+  const audioProgressRaw = Number(audioJob?.progress || 0);
+  const audioProgress = Math.round(Math.max(0, Math.min(100, audioProgressRaw <= 1 ? audioProgressRaw * 100 : audioProgressRaw)));
+  const audioModeLabel = audioMode === 'remove_vocals' ? 'No vocals' : audioMode === 'remove_music' ? 'No music' : 'Original';
   return <button
     data-timeline-item={item.id}
     className={`${item.kind === 'image' ? 'media-asset-clip' : 'video-clip'} ${selected ? 'selected' : ''}`}
@@ -779,8 +784,9 @@ function TimelineMediaClip({ item, duration, selected, onSelect, onPointerDown, 
     <span className="timeline-trim-handle start" title="Trim start" onPointerDown={onTrimStart} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />
     <span className="timeline-trim-handle end" title="Trim end" onPointerDown={onTrimEnd} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />
     <strong>{item.name}</strong>
-    {item.sourceAudioMuted && <span className="video-audio-mode muted">Muted</span>}
+    {item.sourceAudioMuted ? <span className="video-audio-mode muted">Muted</span> : isVideo && audioMode && audioMode !== 'original' ? <span className={`video-audio-mode ${audioMode}`}>{audioModeLabel}</span> : null}
     <small>{formatClock(item.duration)}</small>
+    {audioJob && <span className="audio-separation-progress"><i style={{ width: `${Math.max(2, audioProgress)}%` }} /><em>{audioProgress}%</em></span>}
   </button>;
 }
 

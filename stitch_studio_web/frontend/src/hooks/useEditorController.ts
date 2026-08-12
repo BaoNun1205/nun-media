@@ -70,6 +70,12 @@ function endOfTimeline(items: TimelineItem[]) {
   return itemsToMeasure.reduce((end, item) => Math.max(end, item.start + item.duration), 0);
 }
 
+function hasReadableSrtAsset(asset: { kind: string; metadata?: Record<string, unknown> }) {
+  if (asset.kind !== 'srt') return false;
+  const segmentCount = asset.metadata?.segment_count;
+  return segmentCount === undefined || Number(segmentCount) > 0;
+}
+
 function endOfTrack(items: TimelineItem[], track: TimelineItem['track']) {
   return endOfTimeline(items.filter((item) => item.track === track));
 }
@@ -186,8 +192,8 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [removeMode, setRemoveMode] = useState('blur');
   const [autoSrtAssetId, setAutoSrtAssetId] = useState<number | null>(null);
   const [insertMode, setInsertMode] = useState('none');
-  const [ttsEngine, setTtsEngine] = useState(initialTtsEngine);
-  const [ttsLanguage, setTtsLanguage] = useState(() => defaultTtsLanguage(initialTtsEngine));
+  const [ttsEngine, setTtsEngine] = useState<string>(initialTtsEngine);
+  const [ttsLanguage, setTtsLanguage] = useState<string>(() => defaultTtsLanguage(initialTtsEngine));
   const [ttsVoice, setTtsVoice] = useState('default');
   const [ttsRate, setTtsRate] = useState('1.0');
   const [optimisticJobs, setOptimisticJobs] = useState<Job[]>([]);
@@ -199,9 +205,23 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const realJobIds = new Set(jobs.map((job) => job.id));
     return [...optimisticJobs.filter((job) => !realJobIds.has(job.id)), ...jobs];
   }, [jobs, optimisticJobs]);
-  const videoJobs = useMemo(() => visibleJobs.filter((job) => job.videoId === project.id || (project.workspaceId && job.videoId === -project.workspaceId) || (job.videoId === -project.id)), [visibleJobs, project.id, project.workspaceId]);
+  const timelineSourceVideoIds = useMemo(
+    () => new Set(timelineItems.map((item) => item.sourceVideoId).filter((id): id is number => typeof id === 'number')),
+    [timelineItems],
+  );
+  const videoJobs = useMemo(() => visibleJobs.filter((job) =>
+    job.videoId === project.id
+    || (project.workspaceId && job.videoId === -project.workspaceId)
+    || (job.videoId === -project.id)
+    || (typeof job.videoId === 'number' && timelineSourceVideoIds.has(job.videoId))
+  ), [visibleJobs, project.id, project.workspaceId, timelineSourceVideoIds]);
   const activeJobs = videoJobs.filter((job) => ['queued', 'running'].includes(job.status));
   const activeAudioJob = activeJobs.find((job) => job.kind === 'audio-separate');
+  const audioJobForVideo = useCallback((videoId?: number) =>
+    typeof videoId === 'number'
+      ? activeJobs.find((job) => job.kind === 'audio-separate' && job.videoId === videoId)
+      : undefined,
+  [activeJobs]);
   const audioSeparationReady = Boolean(project.audioSeparation?.ready);
   const effectiveAudioMode: AudioMode = audioMode !== 'original' && !audioSeparationReady ? 'original' : audioMode;
   const latestVoiceAsset = project.assets.filter((asset) => asset.kind === 'tts' && !removedVoiceAssetIds.includes(asset.id)).at(-1);
@@ -220,7 +240,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       metadata: asset.metadata || {},
     }));
   const allSrtAssets = [...project.assets, ...workspaceSrtAssets]
-    .filter((asset, index, assets) => asset.kind === 'srt' && assets.findIndex((candidate) => candidate.id === asset.id) === index);
+    .filter((asset, index, assets) => hasReadableSrtAsset(asset) && assets.findIndex((candidate) => candidate.id === asset.id) === index);
   const originalSrtAssets = allSrtAssets.filter((asset) => !isTranslatedAsset(asset));
   const translatedSrtAssets = allSrtAssets.filter((asset) => isTranslatedAsset(asset));
   const srtAssets = originalSrtAssets;
@@ -427,7 +447,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     return () => window.removeEventListener('beforeunload', warnBeforeLeave);
   }, [dirty]);
   useEffect(() => { loadSegments(); }, [loadSegments]);
-  useEffect(() => { if (project.hasTts) loadTimelineIssues(); else setTimelineIssues([]); }, [project.id, project.hasTts, loadTimelineIssues]);
+  useEffect(() => {
+    const hasTimingIssues = Boolean(project.ttsTimeline?.needs_review || project.ttsTimeline?.final_validation_status === 'NEEDS_REVIEW');
+    if (project.hasTts || hasTimingIssues) loadTimelineIssues();
+    else setTimelineIssues([]);
+  }, [project.id, project.hasTts, project.ttsTimeline?.needs_review, project.ttsTimeline?.final_validation_status, loadTimelineIssues]);
   useEffect(() => {
     if (!isTtsLanguageSupported(ttsEngine, ttsLanguage)) setTtsLanguage(defaultTtsLanguage(ttsEngine));
   }, [ttsEngine, ttsLanguage]);
@@ -450,6 +474,16 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     if (latestJob.kind === 'audio-separate' && audioMode !== 'original') setMessage('Audio separation is ready. You can switch modes instantly.');
     refresh().catch(() => undefined);
   }, [latestJob?.id, latestJob?.status]);
+  useEffect(() => {
+    if (!latestJob || latestJob.kind !== 'tts' || latestJob.status !== 'error') return;
+    loadSrt().then(() => {
+      loadSegments();
+      loadTimelineIssues();
+    }).catch(() => {
+      loadTimelineIssues();
+    });
+    refresh().catch(() => undefined);
+  }, [latestJob?.id, latestJob?.status]);
 
   useEffect(() => {
     if (latestJob?.kind === 'tts-mux' && latestJob.status === 'completed' && latestVoiceAsset) {
@@ -470,17 +504,18 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
     try {
       const result = await request<{ jobId: number; alreadyRunning?: boolean }>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) });
+      const optimisticJob: Job = {
+        id: result.jobId,
+        kind: jobKindFromQueuePath(path),
+        videoId: project.id,
+        title: label,
+        status: 'queued',
+        progress: 0,
+        detail: 'Queued',
+        createdAt: new Date().toISOString(),
+      };
       setOptimisticJobs((current) => [
-        {
-          id: result.jobId,
-          kind: jobKindFromQueuePath(path),
-          videoId: project.id,
-          title: label,
-          status: 'queued',
-          progress: 0,
-          detail: 'Queued',
-          createdAt: new Date().toISOString(),
-        },
+        optimisticJob,
         ...current.filter((job) => job.id !== result.jobId),
       ].slice(0, 10));
       setMessage(`${result.alreadyRunning ? 'Using active' : 'Queued'} ${label.toLowerCase()} #${result.jobId}.`);
@@ -531,6 +566,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     if (!project.workspaceId || !assetId) return;
 
     const loadedData = await loadSrt(assetId);
+    if (!loadedData?.segments?.length) {
+      setMessage('Subtitle generation finished without readable lines. Use original speech audio or OCR for burned-in subtitles.');
+      await refresh();
+      return;
+    }
     const currentTimeline = timelineStateRef.current;
     
     const nextItems = currentTimeline.items.filter((item) => !(item.track === 'S1' && item.kind === 'srt'));
@@ -645,10 +685,12 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       return;
     }
     const source = projects.find((item) => item.id === videoId);
-    const projectAsset = (project.projectAssets || []).find((item) => item.sourceVideoId === videoId);
+    const existingProjectAsset = (project.projectAssets || []).find((item) => item.sourceVideoId === videoId);
     try {
-      await studioApi.attachWorkspaceVideos(project.workspaceId, [videoId]);
-      const durationMs = source?.durationMs || Number(projectAsset?.metadata?.duration_ms || 0);
+      const attached = await studioApi.attachWorkspaceVideos(project.workspaceId, [videoId]);
+      const attachedProjectAsset = attached.project.assets.find((item) => item.sourceVideoId === videoId);
+      const projectAsset = attachedProjectAsset || existingProjectAsset;
+      const durationMs = source?.durationMs || projectAsset?.video?.durationMs || Number(projectAsset?.metadata?.duration_ms || 0);
       const clipDuration = Math.max(0.5, (durationMs / 1000) || 5);
       const previous = cloneTimelineState(timelineState);
       const placement = resolvePlacement({
@@ -668,6 +710,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
         sourceStart: 0,
         sourceDuration: clipDuration,
         sourceVideoId: videoId,
+        projectAssetId: projectAsset?.id,
       };
       const nextState = normalizeTimelineState({
         ...timelineState,
@@ -1335,7 +1378,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
   async function generateSrt() {
     const body = {
-      source: project.workspaceId ? 'audio' : subtitleSource,
+      source: subtitleSource,
       model,
       device,
       language,
@@ -1577,7 +1620,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     bottomView, setBottomView, playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
     previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
-    audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob,
+    audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob, audioJobForVideo,
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
