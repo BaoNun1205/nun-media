@@ -29,6 +29,123 @@ AUDIO_SUFFIXES = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"}
 MEDIA_SUFFIXES = VIDEO_SUFFIXES | AUDIO_SUFFIXES
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+LANGUAGE_NAMES = {
+    "auto": "same language as the current subtitle",
+    "vi": "Vietnamese",
+    "vi-vn": "Vietnamese",
+    "en": "English",
+    "en-us": "English",
+    "english": "English",
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "ja": "Japanese",
+    "ja-jp": "Japanese",
+    "ko": "Korean",
+    "ko-kr": "Korean",
+    "th": "Thai",
+    "th-th": "Thai",
+    "id": "Indonesian",
+    "id-id": "Indonesian",
+    "ms": "Malay",
+    "tl": "Tagalog",
+    "fr": "French",
+    "fr-fr": "French",
+    "french_24l": "French",
+    "de": "German",
+    "de-de": "German",
+    "german": "German",
+    "es": "Spanish",
+    "es-es": "Spanish",
+    "spanish": "Spanish",
+    "pt": "Portuguese",
+    "pt-br": "Portuguese",
+    "portuguese": "Portuguese",
+    "it": "Italian",
+    "italian": "Italian",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "hi": "Hindi",
+}
+
+LANGUAGE_COMPRESSION_RULES = {
+    "vi": [
+        "Write natural spoken Vietnamese, not word-for-word translated English.",
+        "Prefer short Vietnamese clauses and familiar everyday wording.",
+        "Remove filler particles, repeated subjects, and explanatory words when the meaning remains clear.",
+        "Do not add English words unless they are names, brands, or already part of the source.",
+        "Keep Vietnamese diacritics and punctuation natural for TTS.",
+    ],
+    "en": [
+        "Write natural spoken English.",
+        "Use contractions when they make the line shorter and still natural.",
+        "Prefer short common words over formal phrasing.",
+    ],
+    "zh": [
+        "Write concise natural spoken Chinese.",
+        "Prefer compact phrasing; omit redundant subjects or connectors when context is clear.",
+        "TARGET_WORDS is only approximate for Chinese; prioritize short readable text.",
+    ],
+    "ja": [
+        "Write concise natural spoken Japanese.",
+        "Prefer compact phrasing and omit redundant subjects when context is clear.",
+        "TARGET_WORDS is only approximate for Japanese; prioritize short readable text.",
+    ],
+    "ko": [
+        "Write concise natural spoken Korean.",
+        "Prefer compact phrasing and omit redundant subjects when context is clear.",
+        "TARGET_WORDS is only approximate for Korean; prioritize short readable text.",
+    ],
+    "th": [
+        "Write concise natural spoken Thai.",
+        "Prefer short everyday phrasing and remove redundant explanatory words.",
+        "TARGET_WORDS is only approximate for Thai; prioritize short readable text.",
+    ],
+    "id": [
+        "Write concise natural spoken Indonesian.",
+        "Prefer short everyday phrasing and remove redundant explanatory words.",
+    ],
+    "ms": [
+        "Write concise natural spoken Malay.",
+        "Prefer short everyday phrasing and remove redundant explanatory words.",
+    ],
+    "tl": [
+        "Write concise natural spoken Tagalog.",
+        "Prefer short everyday phrasing and remove redundant explanatory words.",
+    ],
+    "fr": [
+        "Write concise natural spoken French.",
+        "Prefer short common phrasing over formal or literal wording.",
+    ],
+    "de": [
+        "Write concise natural spoken German.",
+        "Prefer short direct phrasing and avoid heavy compound constructions when possible.",
+    ],
+    "es": [
+        "Write concise natural spoken Spanish.",
+        "Prefer short common phrasing over formal or literal wording.",
+    ],
+    "pt": [
+        "Write concise natural spoken Portuguese.",
+        "Prefer short common phrasing over formal or literal wording.",
+    ],
+    "it": [
+        "Write concise natural spoken Italian.",
+        "Prefer short common phrasing over formal or literal wording.",
+    ],
+    "ru": [
+        "Write concise natural spoken Russian.",
+        "Prefer short direct phrasing and remove redundant explanatory words.",
+    ],
+    "ar": [
+        "Write concise natural spoken Arabic.",
+        "Prefer short direct phrasing and remove redundant explanatory words.",
+    ],
+    "hi": [
+        "Write concise natural spoken Hindi.",
+        "Prefer short everyday phrasing and remove redundant explanatory words.",
+    ],
+}
+
 GEMINI_INITIAL_SRT_PROMPT = """Translate this SRT into the requested target language for voiceover dubbing.
 
 Timing is the top priority.
@@ -53,7 +170,6 @@ TIMING RULES:
 - Avoid long clauses.
 - Remove filler and redundant wording.
 - Remove unnecessary adjectives/modifiers.
-- Use natural contractions.
 - Do not add new information.
 
 STRICT RULES:
@@ -101,6 +217,7 @@ For each item you will receive:
 - SOURCE: original source-language subtitle
 - CURRENT: current translated subtitle
 - OUTPUT_LANGUAGE: target language code, or "same as CURRENT"
+- OUTPUT_LANGUAGE_NAME: target language name
 - AVAILABLE_SECONDS: available subtitle speech duration
 - VOICE_SECONDS: measured duration of the current generated AI voice
 - REQUIRED_SPEED: speed currently required to fit
@@ -114,7 +231,7 @@ RULES:
 2. Preserve the established story context.
 3. Preserve character identity, names, pronouns, relationships, and terminology.
 4. Keep the output in OUTPUT_LANGUAGE. If OUTPUT_LANGUAGE is "same as CURRENT", keep the same language as CURRENT.
-5. Never switch languages. Do not translate Vietnamese to English, English to Vietnamese, or any other language pair during timing optimization.
+5. Never switch languages. Do not translate into any language other than the item's OUTPUT_LANGUAGE.
 6. Shorten CURRENT enough that the new AI voice has a strong chance of fitting at or below 1.20x playback speed.
 7. Respect TARGET_WORDS as a strong maximum target.
 8. Prefer concise, natural spoken wording in OUTPUT_LANGUAGE.
@@ -152,6 +269,100 @@ Return only valid JSON:
   }
 ]
 """
+
+
+def _normalize_prompt_language(language: str | None) -> str:
+    value = str(language or "auto").strip().lower().replace("_", "-")
+    if not value or value in {"default", "same as current", "same-as-current"}:
+        return "auto"
+    if value.startswith("vi"):
+        return "vi"
+    if value.startswith("en") or value == "english":
+        return "en"
+    if value.startswith("zh"):
+        return "zh"
+    if value.startswith("ja"):
+        return "ja"
+    if value.startswith("ko"):
+        return "ko"
+    if value.startswith("th"):
+        return "th"
+    if value.startswith("id"):
+        return "id"
+    if value.startswith("ms"):
+        return "ms"
+    if value.startswith("tl") or value.startswith("fil"):
+        return "tl"
+    if value.startswith("fr") or value == "french-24l":
+        return "fr"
+    if value.startswith("de"):
+        return "de"
+    if value.startswith("es"):
+        return "es"
+    if value.startswith("pt"):
+        return "pt"
+    if value.startswith("it"):
+        return "it"
+    if value.startswith("ru"):
+        return "ru"
+    if value.startswith("ar"):
+        return "ar"
+    if value.startswith("hi"):
+        return "hi"
+    return value
+
+
+def _language_prompt_profile(language: str | None) -> dict[str, Any]:
+    code = _normalize_prompt_language(language)
+    if code == "mixed":
+        return {
+            "code": "mixed",
+            "name": "the per-item OUTPUT_LANGUAGE",
+            "rules": [
+                "Each subtitle item may have its own OUTPUT_LANGUAGE; keep every item in its specified language.",
+                "Use the natural spoken compression style for that item language.",
+                "Never translate an item into a different language just because nearby items use another language.",
+            ],
+        }
+    name = LANGUAGE_NAMES.get(code, LANGUAGE_NAMES.get(str(language or "").strip().lower(), code or "target language"))
+    rules = LANGUAGE_COMPRESSION_RULES.get(code, [
+        f"Write concise natural spoken {name}.",
+        "Prefer short everyday phrasing over formal or literal wording.",
+        "Remove redundant words when the meaning remains clear.",
+    ])
+    return {"code": code, "name": name, "rules": rules}
+
+
+def _build_language_profile_block(language: str | None) -> str:
+    profile = _language_prompt_profile(language)
+    rule_lines = "\n".join(f"- {rule}" for rule in profile["rules"])
+    return (
+        "TARGET LANGUAGE PROFILE:\n"
+        f"- Target language code: {profile['code']}\n"
+        f"- Target language name: {profile['name']}\n"
+        f"{rule_lines}"
+    )
+
+
+def _build_initial_srt_prompt(target_language: str) -> str:
+    return f"{GEMINI_INITIAL_SRT_PROMPT}\n\n{_build_language_profile_block(target_language)}"
+
+
+def _build_timing_retry_prompt(output_language: str | None) -> str:
+    return f"{GEMINI_TIMING_RETRY_PROMPT}\n\n{_build_language_profile_block(output_language)}"
+
+
+def _dominant_output_language(items: list[dict[str, Any]]) -> str:
+    values = [
+        str(item.get("OUTPUT_LANGUAGE") or item.get("output_language") or "").strip()
+        for item in items
+    ]
+    values = [value for value in values if value and value.lower() not in {"auto", "same as current"}]
+    if not values:
+        return "auto"
+    normalized = [_normalize_prompt_language(value) for value in values]
+    first = normalized[0]
+    return first if all(value == first for value in normalized) else "mixed"
 
 
 def extract_video_url(text: str) -> str:
@@ -1833,7 +2044,7 @@ class TranslationService:
 
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
             srt_content = self._segments_to_srt_text(chunk_segments)
-            prompt = f"{GEMINI_INITIAL_SRT_PROMPT}\nTarget language code: {target_language}\n\nSRT:\n{srt_content}"
+            prompt = f"{_build_initial_srt_prompt(target_language)}\n\nSRT:\n{srt_content}"
             try:
                 response = client.models.generate_content(
                     model=GEMINI_MODEL,
@@ -1885,6 +2096,7 @@ class TranslationService:
                 "SOURCE": str(item.get("SOURCE", item.get("source", "")) or ""),
                 "CURRENT": str(item.get("CURRENT", item.get("current", "")) or ""),
                 "OUTPUT_LANGUAGE": str(item.get("OUTPUT_LANGUAGE", item.get("output_language", "same as CURRENT")) or "same as CURRENT"),
+                "OUTPUT_LANGUAGE_NAME": _language_prompt_profile(str(item.get("OUTPUT_LANGUAGE", item.get("output_language", "same as CURRENT")) or "same as CURRENT"))["name"],
                 "AVAILABLE_SECONDS": round(float(item.get("AVAILABLE_SECONDS", item.get("available_seconds", 0)) or 0), 3),
                 "VOICE_SECONDS": round(float(item.get("VOICE_SECONDS", item.get("voice_seconds", 0)) or 0), 3),
                 "REQUIRED_SPEED": round(float(item.get("REQUIRED_SPEED", item.get("required_speed", 0)) or 0), 3),
@@ -1895,7 +2107,7 @@ class TranslationService:
             }
             for item in items
         ]
-        prompt = f"{GEMINI_TIMING_RETRY_PROMPT}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
+        prompt = f"{_build_timing_retry_prompt(_dominant_output_language(compact_items))}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
         _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)

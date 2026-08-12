@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 
 from stitch_studio.models import SubtitleSegment, VideoItem
-from stitch_studio.services import GEMINI_TIMING_RETRY_PROMPT, TranslationService, _clean_capcut_tts_text, _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
+from stitch_studio.services import GEMINI_TIMING_RETRY_PROMPT, TranslationService, _build_timing_retry_prompt, _clean_capcut_tts_text, _load_tts_segment_cache, _tts_generation_signature, process_and_register_plain_tts
 from stitch_studio.srt import write_srt
 from stitch_studio.storage import Storage
 from stitch_studio.subtitle_timeline_scaler import (
@@ -295,6 +295,8 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"SOURCE": "src 1"', calls[0])
         self.assertIn('"CURRENT": "current 1"', calls[0])
         self.assertIn('"OUTPUT_LANGUAGE": "vi"', calls[0])
+        self.assertIn('"OUTPUT_LANGUAGE_NAME": "Vietnamese"', calls[0])
+        self.assertIn("Write natural spoken Vietnamese", calls[0])
         self.assertIn('"AVAILABLE_SECONDS": 1.0', calls[0])
         self.assertIn('"REQUIRED_SPEED": 2.0', calls[0])
         self.assertIn('"TARGET_WORDS": 3', calls[0])
@@ -303,6 +305,16 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"CORRECTION_ROUND": 2', calls[0])
         self.assertIn('"VOICE_SECONDS": 2.0', calls[0])
         self.assertIn("Never switch languages", calls[0])
+
+    def test_timing_retry_prompt_uses_language_specific_rules(self) -> None:
+        vietnamese_prompt = _build_timing_retry_prompt("vi")
+        english_prompt = _build_timing_retry_prompt("en")
+
+        self.assertIn("Target language name: Vietnamese", vietnamese_prompt)
+        self.assertIn("Write natural spoken Vietnamese", vietnamese_prompt)
+        self.assertNotIn("American English", vietnamese_prompt)
+        self.assertIn("Target language name: English", english_prompt)
+        self.assertIn("Use contractions", english_prompt)
 
     def test_gemini_timing_retry_ignores_empty_replacements(self) -> None:
         class FakeModels:
