@@ -491,7 +491,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
     optimized_srt_persisted = False
     correction_round = 0
     MAX_TIMING_CORRECTION_ROUNDS = 10
-    text_was_rewritten = False
+    rewrite_state_by_id: dict[int, bool] = {}
 
     def persist_timing_srt(path: Path) -> None:
         nonlocal active_srt_asset, optimized_srt_persisted
@@ -506,8 +506,13 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         
         # Initial round uses strict 1.10 threshold for text shortening. 
         # Retries can accept up to hard_max_local_speed if they failed to shorten enough.
-        allow_post_rewrite_speed_fallback = text_was_rewritten or (correction_round >= MAX_TIMING_CORRECTION_ROUNDS)
-        timeline_options["text_retry_preferred_speed_threshold"] = timeline_options.get("hard_max_local_speed", 1.30) if allow_post_rewrite_speed_fallback else 1.10
+        if correction_round >= MAX_TIMING_CORRECTION_ROUNDS:
+            timeline_options["text_retry_preferred_speed_threshold"] = timeline_options.get("hard_max_local_speed", 1.30)
+        else:
+            segment_thresholds = {}
+            for _idx, _rewritten in rewrite_state_by_id.items():
+                segment_thresholds[_idx] = timeline_options.get("hard_max_local_speed", 1.30) if _rewritten else 1.10
+            timeline_options["text_retry_preferred_speed_threshold"] = segment_thresholds
         
         try:
             output_path = do_synthesis(current_srt_path)
@@ -577,18 +582,25 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             )
 
         replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
-        def normalize_retry_text(text: str) -> str:
-            return " ".join(text.split())
+        def normalize_retry_text_for_change_detection(text: str) -> str:
+            import re
+            return re.sub(r'[^\w\s]', '', " ".join((text or "").split())).casefold()
 
         changed = 0
-        for idx, replacement in replacements.items():
+        for item in optimizer_items:
+            idx = item["id"]
+            replacement = replacements.get(idx, "")
             segment = current_map.get(idx)
             if segment and replacement.strip():
-                if normalize_retry_text(segment.text) != normalize_retry_text(replacement):
+                if normalize_retry_text_for_change_detection(segment.text) != normalize_retry_text_for_change_detection(replacement):
                     segment.text = replacement.strip()
                     changed += 1
-        if changed > 0:
-            text_was_rewritten = True
+                    rewrite_state_by_id[idx] = True
+                else:
+                    rewrite_state_by_id[idx] = False
+            else:
+                rewrite_state_by_id[idx] = False
+
         if changed <= 0:
             progress(
                 f"Gemini timing optimizer returned no changed subtitle text (Round {correction_round}); "
