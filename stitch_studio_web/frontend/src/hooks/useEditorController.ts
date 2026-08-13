@@ -421,10 +421,14 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }, [jobs, optimisticJobs.length]);
 
   useEffect(() => {
-    const original = originalSrtAssets[0];
-    if (original) studioApi.srtAsset(original.id).then(setSourceSrt).catch(() => setSourceSrt(EMPTY_SRT));
+    if (srt.asset && !isTranslatedAsset(srt.asset)) {
+      setSourceSrt(EMPTY_SRT);
+      return;
+    }
+    const sourceId = srt.asset?.sourceAssetId || originalSrtAssets[0]?.id;
+    if (sourceId) studioApi.srtAsset(sourceId).then(setSourceSrt).catch(() => setSourceSrt(EMPTY_SRT));
     else setSourceSrt(EMPTY_SRT);
-  }, [project.id, originalSrtAssets.map((item) => item.id).join(',')]);
+  }, [project.id, srt.asset?.id, srt.asset?.sourceAssetId, originalSrtAssets.map((item) => item.id).join(',')]);
   useEffect(() => {
     const translated = translatedSrtAssets.at(-1);
     if (translated) studioApi.srtAsset(translated.id).then(setTranslatedSrt).catch(() => setTranslatedSrt(EMPTY_SRT));

@@ -2103,7 +2103,7 @@ class TranslationService:
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
             srt_content = self._segments_to_srt_text(chunk_segments)
             base_prompt = _build_initial_srt_prompt(source_language, target_language)
-            prompt = f"{base_prompt}\n\nSRT:\n{srt_content}"
+            prompt = base_prompt.replace("{SRT_CONTENT}", srt_content)
             try:
                 response = client.models.generate_content(
                     model=GEMINI_MODEL,
@@ -2200,15 +2200,46 @@ class TranslationService:
             
             enriched_items.append(enriched)
 
-        timing_guidance = """
-TIMING_CONTEXT:
-The previous translation is still too long for the timing target.
+        timing_guidance = """INPUT FIELD MAPPING:
 
-Your rewrite must reduce spoken duration enough to meaningfully approach TARGET_MAX_TTS_DURATION.
+For every JSON input item:
 
-Do not make only cosmetic wording changes if the current duration substantially exceeds the target.
+- SOURCE_TEXT = `source_text`
+- CURRENT_TRANSLATION = `current_translation`
+- PREVIOUS_CONTEXT = `previous_context`
+- NEXT_CONTEXT = `next_context`
+- AVAILABLE_DURATION = `available_seconds`
+- CURRENT_TTS_DURATION = `voice_seconds`
 
-If this is a later correction round, the previous shortening attempt was insufficient. Compress more strongly than the previous round while preserving the essential story meaning."""
+Use these exact JSON fields.
+Do not expect alternative aliases.
+
+TIMING OPTIMIZATION CONTEXT:
+
+For every input item:
+
+- `voice_seconds` is the measured TTS duration of the current translation.
+- `available_seconds` is the subtitle's available timeline duration.
+- `max_local_speed` is the maximum local playback-speed adjustment that may be used after rewriting.
+- `target_max_tts_duration` is the target maximum TTS duration the rewritten text should aim to reach before the final local-speed adjustment.
+- `required_reduction_percent` is the approximate minimum spoken-duration reduction currently required.
+- `correction_round` tells you which timing-shortening attempt this is.
+
+You MUST use these values when deciding how strongly to shorten the translation.
+
+If `required_reduction_percent` is very small, make only a small natural reduction.
+
+If `required_reduction_percent` is moderate, make a clearly shorter rewrite while preserving the important meaning.
+
+If `required_reduction_percent` is large, a cosmetic paraphrase or synonym replacement is NOT sufficient. Produce a materially shorter spoken version.
+
+If `correction_round` is greater than 1, the previous shortening attempt was insufficient. Make a stronger reduction than the previous attempt while preserving the essential story meaning.
+
+The objective is not merely to change the wording.
+
+The objective is to reduce actual spoken TTS duration enough to approach `target_max_tts_duration`.
+
+Do not optimize for a fixed word count or character count."""
 
         prompt = (
             f"{_build_timing_retry_prompt(normalized_lang)}"
