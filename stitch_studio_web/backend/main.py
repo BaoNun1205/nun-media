@@ -275,16 +275,6 @@ def _timeline_options(payload: TtsRequest | TimelineRemapRequest) -> dict[str, f
     }
 
 
-def _timing_retry_target_words(current_text: str, available: float, voice_duration: float) -> int:
-    words = len(re.findall(r"\S+", current_text))
-    if words <= 1:
-        return max(1, words)
-    if voice_duration > 0 and available > 0:
-        estimated = math.floor(words * (available * 1.20 / voice_duration) * 0.85)
-    else:
-        estimated = math.floor(max(1.0, available) * 2.2)
-    return max(1, min(words - 1, estimated))
-
 
 def _srt_timeline_speed(video, payload: SrtGenerateRequest) -> float:
     stored = ((video.metadata or {}).get("clip_settings") or {}).get("videoSpeed")
@@ -550,26 +540,22 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             current_text = current_segment.text if current_segment else str(row.get("text") or "")
             available = float(row.get("working_available_duration") or 0)
             voice_duration = float(row.get("original_tts_duration") or 0)
-            required_speed = float(row.get("required_local_speed") or (voice_duration / available if available > 0 else 0))
             previous_context = current_map[idx - 1].text if idx - 1 in current_map else ""
             next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
             optimizer_items.append(
                 {
-                    "ID": idx,
-                    "SOURCE": source_map.get(idx, ""),
-                    "CURRENT": current_text,
-                    "OUTPUT_LANGUAGE": output_language,
-                    "AVAILABLE_SECONDS": available,
-                    "VOICE_SECONDS": voice_duration,
-                    "REQUIRED_SPEED": required_speed,
-                    "TARGET_WORDS": _timing_retry_target_words(current_text, available, voice_duration),
-                    "PREVIOUS_CONTEXT": previous_context,
-                    "NEXT_CONTEXT": next_context,
-                    "CORRECTION_ROUND": correction_round,
+                    "id": idx,
+                    "output_language": output_language,
+                    "source_text": source_map.get(idx, ""),
+                    "current_translation": current_text,
+                    "previous_context": previous_context,
+                    "next_context": next_context,
+                    "available_seconds": available,
+                    "current_tts_duration": voice_duration,
                 }
             )
 
-        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
+        replacements = translator.optimize_timing_translations(optimizer_items, progress=progress)
         changed = 0
         for idx, replacement in replacements.items():
             segment = current_map.get(idx)

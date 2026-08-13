@@ -67,196 +67,76 @@ LANGUAGE_NAMES = {
     "hi": "Hindi",
 }
 
-LANGUAGE_COMPRESSION_RULES = {
-    "vi": [
-        "Write natural spoken Vietnamese, not word-for-word translated English.",
-        "Prefer short Vietnamese clauses and familiar everyday wording.",
-        "Remove filler particles, repeated subjects, and explanatory words when the meaning remains clear.",
-        "Do not add English words unless they are names, brands, or already part of the source.",
-        "Keep Vietnamese diacritics and punctuation natural for TTS.",
-    ],
-    "en": [
-        "Write natural spoken English.",
-        "Use contractions when they make the line shorter and still natural.",
-        "Prefer short common words over formal phrasing.",
-    ],
-    "zh": [
-        "Write concise natural spoken Chinese.",
-        "Prefer compact phrasing; omit redundant subjects or connectors when context is clear.",
-        "TARGET_WORDS is only approximate for Chinese; prioritize short readable text.",
-    ],
-    "ja": [
-        "Write concise natural spoken Japanese.",
-        "Prefer compact phrasing and omit redundant subjects when context is clear.",
-        "TARGET_WORDS is only approximate for Japanese; prioritize short readable text.",
-    ],
-    "ko": [
-        "Write concise natural spoken Korean.",
-        "Prefer compact phrasing and omit redundant subjects when context is clear.",
-        "TARGET_WORDS is only approximate for Korean; prioritize short readable text.",
-    ],
-    "th": [
-        "Write concise natural spoken Thai.",
-        "Prefer short everyday phrasing and remove redundant explanatory words.",
-        "TARGET_WORDS is only approximate for Thai; prioritize short readable text.",
-    ],
-    "id": [
-        "Write concise natural spoken Indonesian.",
-        "Prefer short everyday phrasing and remove redundant explanatory words.",
-    ],
-    "ms": [
-        "Write concise natural spoken Malay.",
-        "Prefer short everyday phrasing and remove redundant explanatory words.",
-    ],
-    "tl": [
-        "Write concise natural spoken Tagalog.",
-        "Prefer short everyday phrasing and remove redundant explanatory words.",
-    ],
-    "fr": [
-        "Write concise natural spoken French.",
-        "Prefer short common phrasing over formal or literal wording.",
-    ],
-    "de": [
-        "Write concise natural spoken German.",
-        "Prefer short direct phrasing and avoid heavy compound constructions when possible.",
-    ],
-    "es": [
-        "Write concise natural spoken Spanish.",
-        "Prefer short common phrasing over formal or literal wording.",
-    ],
-    "pt": [
-        "Write concise natural spoken Portuguese.",
-        "Prefer short common phrasing over formal or literal wording.",
-    ],
-    "it": [
-        "Write concise natural spoken Italian.",
-        "Prefer short common phrasing over formal or literal wording.",
-    ],
-    "ru": [
-        "Write concise natural spoken Russian.",
-        "Prefer short direct phrasing and remove redundant explanatory words.",
-    ],
-    "ar": [
-        "Write concise natural spoken Arabic.",
-        "Prefer short direct phrasing and remove redundant explanatory words.",
-    ],
-    "hi": [
-        "Write concise natural spoken Hindi.",
-        "Prefer short everyday phrasing and remove redundant explanatory words.",
-    ],
-}
 
-GEMINI_INITIAL_SRT_PROMPT = """Translate this SRT into the requested target language for voiceover dubbing.
 
-Timing is the top priority.
+# Template for the initial SRT translation prompt.
+# Placeholders {source_language} and {target_language} are filled at runtime.
+_GEMINI_INITIAL_SRT_PROMPT_TEMPLATE = """\
+You are translating subtitles for natural spoken voiceover.
 
-CONTEXT RULES:
-- Read the entire provided SRT before translating.
-- Understand the full story/context.
-- Translate using surrounding subtitle blocks as context.
-- Do not translate subtitle blocks independently.
-- Keep characters, pronouns, terminology, relationships, tone, and story events consistent.
-- Resolve ambiguous short lines from surrounding context.
+SOURCE_LANGUAGE: {source_language}
+TARGET_LANGUAGE: {target_language}
 
-TIMING RULES:
-- Each translated subtitle must be short enough to be spoken naturally within its original SRT duration.
-- Treat each original subtitle duration as a strict speech-time budget.
-- Aim for a natural spoken pace in the requested target language.
-- Prefer shorter wording when timing is tight.
-- Prefer concise natural speech over literal translation.
-- Compress dense source lines while preserving the essential meaning.
-- Keep short source lines very short.
-- Prefer short common spoken words in the requested target language.
-- Avoid long clauses.
-- Remove filler and redundant wording.
-- Remove unnecessary adjectives/modifiers.
-- Do not add new information.
+Read the complete subtitle context before translating.
 
-STRICT RULES:
+Translate the content naturally from SOURCE_LANGUAGE into TARGET_LANGUAGE.
+
+Requirements:
+- Write as a native speaker of TARGET_LANGUAGE would naturally speak.
+- Preserve the original meaning, tone, emotion, relationships, narrative intent, and continuity.
+- Use surrounding subtitle context to resolve pronouns, omitted subjects, ambiguous references, and incomplete sentences.
+- Do not translate mechanically or word-for-word when that would sound unnatural.
+- Use grammar, sentence structure, vocabulary, expressions, and speaking conventions appropriate to TARGET_LANGUAGE.
+- Keep the wording reasonably concise for spoken dubbing, but do not sacrifice important meaning merely to make it shorter.
+- Do not summarize.
+- Do not add information not present in the source.
+- Preserve names, terminology, and story events consistently.
+
+SRT requirements:
 - Preserve every subtitle ID.
+- Preserve every timestamp exactly.
 - Preserve the same number of subtitle blocks.
-- Never merge blocks.
-- Never split blocks.
-- Never omit blocks.
-- Never move content between blocks.
-- Return only the translation result.
-- No explanation.
-- No commentary.
-- No markdown.
+- Never merge, split, omit, reorder, or move content between blocks.
 
-PRIORITY:
-1. Fit subtitle duration.
-2. Preserve intended meaning in context.
-3. Natural spoken target-language wording.
-4. Literal wording only when compatible with the above.
+Return only valid translated SRT."""
 
-TARGET:
-- Spoken target language.
-- Natural for TTS.
-- Concise storytelling language.
-"""
-
-GEMINI_TIMING_RETRY_PROMPT = """You are optimizing already-translated subtitles for AI voiceover timing.
-
-These subtitle lines have already been translated using the full story context.
-Their meanings are already correct.
-
-Your task is NOT to freely retranslate the story.
-
-Your task is to SHORTEN each CURRENT subtitle so its generated AI voice can fit within the available subtitle time.
-
-The application allows a maximum playback speed of 1.20x.
-
-Every subtitle included below has already been measured and currently requires more than 1.20x speed, so it is too long.
-
-TIMING IS THE HIGHEST PRIORITY.
+# System preamble for the timing retry prompt.
+# Per-item fields (output_language, source_text, current_translation,
+# previous_context, next_context, available_seconds, current_tts_duration)
+# are supplied as a JSON array following this preamble.
+_GEMINI_TIMING_RETRY_PREAMBLE = """\
+You are adjusting translated subtitles for TTS timing.
 
 For each item you will receive:
+- id: subtitle ID
+- output_language: the language the subtitle must remain in
+- source_text: original source-language subtitle
+- current_translation: the current translated text
+- previous_context: nearby previous subtitle text
+- next_context: nearby following subtitle text
+- available_seconds: available subtitle speech duration
+- current_tts_duration: measured TTS duration of current_translation
 
-- ID: subtitle ID
-- SOURCE: original source-language subtitle
-- CURRENT: current translated subtitle
-- OUTPUT_LANGUAGE: target language code, or "same as CURRENT"
-- OUTPUT_LANGUAGE_NAME: target language name
-- AVAILABLE_SECONDS: available subtitle speech duration
-- VOICE_SECONDS: measured duration of the current generated AI voice
-- REQUIRED_SPEED: speed currently required to fit
-- TARGET_WORDS: recommended maximum word count
-- PREVIOUS_CONTEXT: nearby previous subtitle text when available
-- NEXT_CONTEXT: nearby following subtitle text when available
+For each item, rewrite current_translation in output_language so that it is
+likely to fit available_seconds when spoken.
 
-RULES:
-
-1. Preserve the essential meaning of SOURCE.
-2. Preserve the established story context.
-3. Preserve character identity, names, pronouns, relationships, and terminology.
-4. Keep the output in OUTPUT_LANGUAGE. If OUTPUT_LANGUAGE is "same as CURRENT", keep the same language as CURRENT.
-5. Never switch languages. Do not translate into any language other than the item's OUTPUT_LANGUAGE.
-6. Shorten CURRENT enough that the new AI voice has a strong chance of fitting at or below 1.20x playback speed.
-7. Respect TARGET_WORDS as a strong maximum target.
-8. Prefer concise, natural spoken wording in OUTPUT_LANGUAGE.
-9. Prefer short and common spoken words in OUTPUT_LANGUAGE.
-10. Remove redundant wording.
-11. Remove unnecessary adjectives, modifiers, explanations, and filler.
-12. Simplify long clauses.
-13. Do not add new information.
-14. Do not change the meaning merely to make the line shorter.
-15. Do not merge subtitle IDs.
-16. Do not split subtitle IDs.
-17. Return exactly one replacement for every supplied ID.
-18. Do not return any ID that was not supplied.
-19. Do not include explanations, notes, markdown, or commentary.
-
-IMPORTANT:
-The target is NOT perfect literal translation.
-The target is the shortest natural wording in OUTPUT_LANGUAGE that preserves the essential intended meaning and works for spoken AI voiceover.
-
-If CORRECTION_ROUND is greater than 1:
-- the subtitle has already failed a previous timing correction
-- CURRENT is already the shortened version from the previous round
-- shorten it further
-- do not return only a minor rewording
-- stay at or below TARGET_WORDS whenever reasonably possible
+Requirements:
+- Keep the same output language.
+- Preserve the original meaning and narrative intent.
+- Preserve tone, emotion, character relationships, and important details.
+- Make only as much change as necessary.
+- Use whatever shortening techniques are natural for output_language.
+- Let the grammar and speaking conventions of output_language determine how the sentence should be shortened.
+- Do not optimize for word count or character count.
+- Do not apply English-specific shortening rules.
+- If current_tts_duration only slightly exceeds available_seconds, shorten only slightly.
+- If it exceeds available_seconds substantially, compress more strongly while preserving essential meaning.
+- Prefer natural spoken language over mechanically shortened wording.
+- Do not merge subtitle IDs.
+- Do not split subtitle IDs.
+- Return exactly one replacement for every supplied ID.
+- Do not return any ID that was not supplied.
+- Do not include explanations, notes, markdown, or commentary.
 
 OUTPUT FORMAT:
 
@@ -265,10 +145,9 @@ Return only valid JSON:
 [
   {
     "id": 123,
-    "text": "Shortened subtitle in OUTPUT_LANGUAGE."
+    "text": "Rewritten subtitle in output_language."
   }
-]
-"""
+]"""
 
 
 def _normalize_prompt_language(language: str | None) -> str:
@@ -312,58 +191,16 @@ def _normalize_prompt_language(language: str | None) -> str:
     return value
 
 
-def _language_prompt_profile(language: str | None) -> dict[str, Any]:
-    code = _normalize_prompt_language(language)
-    if code == "mixed":
-        return {
-            "code": "mixed",
-            "name": "the per-item OUTPUT_LANGUAGE",
-            "rules": [
-                "Each subtitle item may have its own OUTPUT_LANGUAGE; keep every item in its specified language.",
-                "Use the natural spoken compression style for that item language.",
-                "Never translate an item into a different language just because nearby items use another language.",
-            ],
-        }
-    name = LANGUAGE_NAMES.get(code, LANGUAGE_NAMES.get(str(language or "").strip().lower(), code or "target language"))
-    rules = LANGUAGE_COMPRESSION_RULES.get(code, [
-        f"Write concise natural spoken {name}.",
-        "Prefer short everyday phrasing over formal or literal wording.",
-        "Remove redundant words when the meaning remains clear.",
-    ])
-    return {"code": code, "name": name, "rules": rules}
+def _build_initial_srt_prompt(source_language: str, target_language: str) -> str:
+    """Return the Gemini initial-translation prompt with source/target language filled in."""
+    src = source_language.strip() if source_language and source_language.strip() else "auto"
+    tgt = target_language.strip() if target_language and target_language.strip() else "target language"
+    return _GEMINI_INITIAL_SRT_PROMPT_TEMPLATE.format(source_language=src, target_language=tgt)
 
 
-def _build_language_profile_block(language: str | None) -> str:
-    profile = _language_prompt_profile(language)
-    rule_lines = "\n".join(f"- {rule}" for rule in profile["rules"])
-    return (
-        "TARGET LANGUAGE PROFILE:\n"
-        f"- Target language code: {profile['code']}\n"
-        f"- Target language name: {profile['name']}\n"
-        f"{rule_lines}"
-    )
-
-
-def _build_initial_srt_prompt(target_language: str) -> str:
-    return f"{GEMINI_INITIAL_SRT_PROMPT}\n\n{_build_language_profile_block(target_language)}"
-
-
-def _build_timing_retry_prompt(output_language: str | None) -> str:
-    return f"{GEMINI_TIMING_RETRY_PROMPT}\n\n{_build_language_profile_block(output_language)}"
-
-
-def _dominant_output_language(items: list[dict[str, Any]]) -> str:
-    values = [
-        str(item.get("OUTPUT_LANGUAGE") or item.get("output_language") or "").strip()
-        for item in items
-    ]
-    values = [value for value in values if value and value.lower() not in {"auto", "same as current"}]
-    if not values:
-        return "auto"
-    normalized = [_normalize_prompt_language(value) for value in values]
-    first = normalized[0]
-    return first if all(value == first for value in normalized) else "mixed"
-
+def _build_timing_retry_prompt() -> str:
+    """Return the system preamble for the Gemini timing retry batch request."""
+    return _GEMINI_TIMING_RETRY_PREAMBLE
 
 def extract_video_url(text: str) -> str:
     value = text.strip()
@@ -2000,7 +1837,6 @@ class TranslationService:
         progress: Optional[Progress] = None,
         register_asset: bool = True,
     ) -> Path:
-        del source_language
         if engine != GEMINI_MODEL:
             raise RuntimeError(f"Unsupported translation engine: {engine}")
         if not target_language or target_language == "auto":
@@ -2010,7 +1846,7 @@ class TranslationService:
         if not segments:
             raise RuntimeError(f"No subtitle segments found in {srt_path}")
 
-        translated = self._translate_with_gemini(segments, target_language, progress)
+        translated = self._translate_with_gemini(segments, source_language, target_language, progress)
 
         output_dir = self.config.outputs_dir / f"video_{video.id}"
         output_path = output_dir / f"{srt_path.stem}.{engine}-{target_language}.srt"
@@ -2037,6 +1873,7 @@ class TranslationService:
     def _translate_with_gemini(
         self,
         segments: list[SubtitleSegment],
+        source_language: str,
         target_language: str,
         progress: Optional[Progress] = None,
     ) -> list[str]:
@@ -2044,7 +1881,7 @@ class TranslationService:
 
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
             srt_content = self._segments_to_srt_text(chunk_segments)
-            prompt = f"{_build_initial_srt_prompt(target_language)}\n\nSRT:\n{srt_content}"
+            prompt = f"{_build_initial_srt_prompt(source_language, target_language)}\n\nSRT:\n{srt_content}"
             try:
                 response = client.models.generate_content(
                     model=GEMINI_MODEL,
@@ -2084,37 +1921,33 @@ class TranslationService:
         self,
         items: list[dict[str, Any]],
         *,
-        correction_round: int = 1,
         progress: Optional[Progress] = None,
     ) -> dict[int, str]:
         if not items:
             return {}
         client = self._gemini_client()
+        # Build compact items using the field names expected by the new retry prompt.
         compact_items = [
             {
-                "ID": int(item.get("ID", item.get("id"))),
-                "SOURCE": str(item.get("SOURCE", item.get("source", "")) or ""),
-                "CURRENT": str(item.get("CURRENT", item.get("current", "")) or ""),
-                "OUTPUT_LANGUAGE": str(item.get("OUTPUT_LANGUAGE", item.get("output_language", "same as CURRENT")) or "same as CURRENT"),
-                "OUTPUT_LANGUAGE_NAME": _language_prompt_profile(str(item.get("OUTPUT_LANGUAGE", item.get("output_language", "same as CURRENT")) or "same as CURRENT"))["name"],
-                "AVAILABLE_SECONDS": round(float(item.get("AVAILABLE_SECONDS", item.get("available_seconds", 0)) or 0), 3),
-                "VOICE_SECONDS": round(float(item.get("VOICE_SECONDS", item.get("voice_seconds", 0)) or 0), 3),
-                "REQUIRED_SPEED": round(float(item.get("REQUIRED_SPEED", item.get("required_speed", 0)) or 0), 3),
-                "TARGET_WORDS": int(item.get("TARGET_WORDS", item.get("target_words", 1)) or 1),
-                "PREVIOUS_CONTEXT": str(item.get("PREVIOUS_CONTEXT", item.get("previous_context", "")) or ""),
-                "NEXT_CONTEXT": str(item.get("NEXT_CONTEXT", item.get("next_context", "")) or ""),
-                "CORRECTION_ROUND": int(item.get("CORRECTION_ROUND", correction_round) or correction_round),
+                "id": int(item.get("id", item.get("ID", 0))),
+                "output_language": str(item.get("output_language", item.get("OUTPUT_LANGUAGE", "same as current")) or "same as current"),
+                "source_text": str(item.get("source_text", item.get("SOURCE", "")) or ""),
+                "current_translation": str(item.get("current_translation", item.get("CURRENT", "")) or ""),
+                "previous_context": str(item.get("previous_context", item.get("PREVIOUS_CONTEXT", "")) or ""),
+                "next_context": str(item.get("next_context", item.get("NEXT_CONTEXT", "")) or ""),
+                "available_seconds": round(float(item.get("available_seconds", item.get("AVAILABLE_SECONDS", 0)) or 0), 3),
+                "current_tts_duration": round(float(item.get("current_tts_duration", item.get("VOICE_SECONDS", 0)) or 0), 3),
             }
             for item in items
         ]
-        prompt = f"{_build_timing_retry_prompt(_dominant_output_language(compact_items))}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
+        prompt = f"{_build_timing_retry_prompt()}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
         _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         except Exception as exc:
             raise RuntimeError(self._friendly_gemini_error(exc)) from exc
         replacements = self._parse_gemini_replacement_json(response.text or "")
-        expected = [int(item.get("ID", item.get("id"))) for item in items]
+        expected = [int(item["id"]) for item in compact_items]
         actual = list(replacements)
         missing = [item_id for item_id in expected if item_id not in replacements]
         unexpected = [item_id for item_id in actual if item_id not in expected]
