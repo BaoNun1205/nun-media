@@ -2276,7 +2276,14 @@ even if some rewritten text remains unchanged."""
         config_kwargs = {}
         try:
             from google.genai import types
+            from pydantic import BaseModel
+            
+            class TimingReplacement(BaseModel):
+                id: int
+                text: str
+                
             config_kwargs["response_mime_type"] = "application/json"
+            config_kwargs["response_schema"] = list[TimingReplacement]
         except ImportError:
             pass
 
@@ -2314,7 +2321,23 @@ even if some rewritten text remains unchanged."""
                     raise RuntimeError(self._friendly_gemini_error(exc)) from exc
                 
                 try:
-                    replacements = self._parse_gemini_replacement_json(response.text or "")
+                    # check if response.parsed is available and works
+                    if hasattr(response, "parsed") and response.parsed is not None:
+                        # response.parsed should be a list of TimingReplacement objects
+                        # we still use standard dictionary to ensure safety against dupes, etc.
+                        replacements = {}
+                        duplicated = set()
+                        for item in response.parsed:
+                            item_id = item.id
+                            if item_id in duplicated:
+                                continue
+                            if item_id in replacements:
+                                del replacements[item_id]
+                                duplicated.add(item_id)
+                                continue
+                            replacements[item_id] = str(item.text).strip()
+                    else:
+                        replacements = self._parse_gemini_replacement_json(response.text or "")
                 except Exception as exc:
                     _emit(progress, f"Warning: Failed to parse Gemini response: {exc}")
                     replacements = {}
@@ -3411,18 +3434,26 @@ def process_and_register_srt_slot_timeline(
     engine: str,
     source_srt: Path,
     sample_rate: int,
-    timeline_options: dict[str, float] | None = None,
+    timeline_options: dict[str, Any] | None = None,
     progress: Optional[Progress] = None,
 ) -> dict[str, Any]:
     timeline_options = timeline_options or {}
     max_speed = float(timeline_options.get("max_speed") or timeline_options.get("hard_max_local_speed") or DEFAULT_SLOT_MAX_SPEED)
     safety_gap = float(timeline_options.get("safety_gap") or 0.12)
+    
+    raw_retry_threshold = timeline_options.get("text_retry_preferred_speed_threshold", 1.10)
+    if isinstance(raw_retry_threshold, dict):
+        text_retry_preferred_speed_threshold = {int(k): float(v) for k, v in raw_retry_threshold.items()}
+    else:
+        text_retry_preferred_speed_threshold = float(raw_retry_threshold)
+        
     result = process_srt_slot_timeline(
         video,
         rendered,
         output_dir,
         sample_rate=sample_rate,
         max_speed=max_speed,
+        text_retry_preferred_speed_threshold=text_retry_preferred_speed_threshold,
         safety_gap=safety_gap,
         progress=progress,
     )
