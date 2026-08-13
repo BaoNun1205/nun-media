@@ -174,7 +174,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             self.assertEqual(sf.info(rendered[0][1]).frames, original_frames)
             self.assertFalse((root / "out" / "voiceover.wav").exists())
 
-    def test_srt_slot_timeline_blocks_above_one_point_two_after_full_pass(self) -> None:
+    def test_srt_slot_timeline_blocks_above_one_point_three_after_full_pass(self) -> None:
         with TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
             video_path = self._video_file(root, 3.0)
@@ -182,7 +182,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "TEXT_TOO_LONG"):
                 process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5)
             manifest = json.loads((root / "out" / "srt_slot_timeline.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["state"]["max_speed"], 1.2)
+            self.assertEqual(manifest["state"]["max_speed"], 1.3)
             self.assertEqual(len(manifest["segments"]), 2)
             self.assertEqual(manifest["segments"][0]["segment_status"], "TEXT_TOO_LONG")
             self.assertFalse((root / "out" / "voiceover.wav").exists())
@@ -206,17 +206,17 @@ class AdaptiveIntegrationTests(unittest.TestCase):
                     self.assertAlmostEqual(row["applied_local_speed"], expected_speed, places=2)
                     self.assertLessEqual(row["applied_local_speed"], 1.2)
 
-    def test_srt_slot_timeline_marks_one_point_two_one_text_too_long(self) -> None:
+    def test_srt_slot_timeline_marks_one_point_three_one_text_too_long(self) -> None:
         with TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
             video_path = self._video_file(root, 3.0)
-            rendered = self._rendered(root, [(1, 0.0, 2.0, 2.42)])
+            rendered = self._rendered(root, [(1, 0.0, 2.0, 2.62)])
             with self.assertRaisesRegex(RuntimeError, "TEXT_TOO_LONG"):
                 process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.0)
             manifest = json.loads((root / "out" / "srt_slot_timeline.json").read_text(encoding="utf-8"))
             row = manifest["segments"][0]
             self.assertEqual(row["segment_status"], "TEXT_TOO_LONG")
-            self.assertAlmostEqual(row["required_local_speed"], 1.21, places=6)
+            self.assertAlmostEqual(row["required_local_speed"], 1.31, places=6)
 
     def test_srt_slot_text_too_long_does_not_shift_following_subtitle(self) -> None:
         with TemporaryDirectory() as raw_dir:

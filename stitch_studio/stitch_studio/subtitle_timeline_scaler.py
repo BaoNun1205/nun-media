@@ -14,14 +14,14 @@ from .srt import write_srt
 
 MIN_WORKING_SPEED = 0.7
 MAX_WORKING_SPEED = 1.0
-PREFERRED_MAX_LOCAL_SPEED = 1.20
-HARD_MAX_LOCAL_SPEED = 1.20
+PREFERRED_MAX_LOCAL_SPEED = 1.30
+HARD_MAX_LOCAL_SPEED = 1.30
 SAFETY_GAP_SECONDS = 0.12
 TIMELINE_TOLERANCE_SECONDS = 0.03
 VIDEO_DURATION_TOLERANCE_SECONDS = 0.08
 OVERLAP_THRESHOLD_SECONDS = 0.01
 MIN_SEGMENT_DURATION_SECONDS = 0.05
-DEFAULT_SLOT_MAX_SPEED = 1.20
+DEFAULT_SLOT_MAX_SPEED = 1.30
 
 
 class AdaptiveTimelineError(RuntimeError):
@@ -80,7 +80,7 @@ def select_adaptive_working_speed(
     hard_max_local_speed: float = HARD_MAX_LOCAL_SPEED,
 ) -> tuple[float, dict]:
     preferred_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(preferred_max_local_speed)))
-    hard_max_local_speed = HARD_MAX_LOCAL_SPEED
+    hard_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(hard_max_local_speed)))
     if len(durations) != len(original_starts) or not durations:
         raise ValueError("Adaptive analysis requires matching non-empty duration/start arrays")
     limits_preferred: list[float] = []
@@ -138,7 +138,7 @@ def process_adaptive_timeline(
     progress: Callable[[str], None] | None = None,
 ) -> dict:
     preferred_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(preferred_max_local_speed)))
-    hard_max_local_speed = HARD_MAX_LOCAL_SPEED
+    hard_max_local_speed = min(HARD_MAX_LOCAL_SPEED, max(1.0, float(hard_max_local_speed)))
     if not rendered:
         raise RuntimeError("Adaptive Timeline Fit received no TTS segments")
     ffmpeg = shutil.which("ffmpeg")

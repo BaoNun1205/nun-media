@@ -94,8 +94,8 @@ class TtsRequest(BaseModel):
     rate: str = "1.0"
     timingMode: str = "srt_slot"
     minWorkingSpeed: float = 0.7
-    preferredMaxLocalSpeed: float = 1.20
-    hardMaxLocalSpeed: float = 1.20
+    preferredMaxLocalSpeed: float = 1.30
+    hardMaxLocalSpeed: float = 1.30
     safetyGap: float = 0.12
 
 
@@ -108,8 +108,8 @@ class StandaloneTtsRequest(TtsRequest):
 class TimelineRemapRequest(BaseModel):
     srtAssetId: int | None = None
     minWorkingSpeed: float = 0.7
-    preferredMaxLocalSpeed: float = 1.20
-    hardMaxLocalSpeed: float = 1.20
+    preferredMaxLocalSpeed: float = 1.30
+    hardMaxLocalSpeed: float = 1.30
     safetyGap: float = 0.12
 
 
@@ -263,8 +263,8 @@ def _job_cancelled(job_id: int) -> bool:
 
 def _timeline_options(payload: TtsRequest | TimelineRemapRequest) -> dict[str, float]:
     min_speed = max(0.5, min(float(payload.minWorkingSpeed), 1.0))
-    preferred_speed = max(1.0, min(float(payload.preferredMaxLocalSpeed), 1.20))
-    hard_speed = 1.20
+    preferred_speed = max(1.0, min(float(payload.preferredMaxLocalSpeed), 1.30))
+    hard_speed = 1.30
     safety_gap = max(0.02, min(float(payload.safetyGap), 0.3))
     return {
         "min_working_speed": min_speed,

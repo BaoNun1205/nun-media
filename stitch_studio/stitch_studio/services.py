@@ -69,9 +69,106 @@ LANGUAGE_NAMES = {
 
 
 
-# Template for the initial SRT translation prompt.
+# ---------------------------------------------------------------------------
+# Specialized English initial translation prompt (target = English)
+# ---------------------------------------------------------------------------
+_EN_INITIAL_SRT_PROMPT = """\
+Translate this SRT into natural spoken English for voiceover dubbing.
+
+Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, references, and story continuity.
+
+Timing is the top priority:
+- Keep each subtitle line short enough to fit its original SRT timecode.
+- Prefer concise, natural English over literal translation.
+- Preserve the core meaning, story event, tone, and important narrative information.
+- Do not add extra meaning, explanations, filler words, or repeated phrases.
+- Preserve the exact SRT numbering and timestamps.
+- Preserve the same number of subtitle blocks.
+- Never merge, split, omit, reorder, or move content between subtitle blocks.
+- Keep line breaks inside each subtitle block simple and readable.
+- If a source line is very short, translate it very short.
+- If a source line is dense, compress it into the shortest natural English that preserves the essential meaning.
+- Prefer direct, active constructions over long or passive ones.
+- Simplify long clauses when the same idea can be expressed naturally with fewer spoken words.
+- Remove redundant qualifiers, repeated subjects, repeated information, and nonessential descriptive wording when necessary for timing.
+- Prefer short, common spoken words when they express the same meaning naturally.
+- Use contractions when natural: "I'm", "don't", "can't", "it's", "we're", "they're", "I'd", "I'll".
+- Do not preserve source-language sentence structure when it sounds unnatural or unnecessarily long in English.
+- Do not summarize across subtitle blocks.
+- Never remove information that changes the plot, action, relationship, identity, cause, consequence, warning, discovery, or important emotional meaning.
+- Keep names, terminology, character references, and relationships consistent throughout the SRT.
+- Return only valid SRT content. No notes, explanations, or markdown.
+
+Compression priority when timing is tight:
+1. Remove repetition and unnecessary filler.
+2. Replace verbose phrases with shorter natural spoken English.
+3. Simplify clause structure.
+4. Use contractions and shorter grammatical forms.
+5. Remove nonessential modifiers.
+6. Compress secondary detail only when required to fit timing.
+7. Preserve the core event and intended meaning above everything that is optional.
+
+Target style:
+- Spoken, clear, neutral American English.
+- Natural for voiceover narration.
+- Natural for text-to-speech.
+- Easy to understand when heard once.
+- Concise without sounding robotic, telegraphic, or machine-translated."""
+
+# ---------------------------------------------------------------------------
+# Specialized Vietnamese initial translation prompt (target = Vietnamese)
+# ---------------------------------------------------------------------------
+_VI_INITIAL_SRT_PROMPT = """\
+Translate this SRT into natural spoken Vietnamese for voiceover dubbing.
+
+Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, forms of address, references, and story continuity.
+
+Timing is the top priority:
+- Keep each subtitle line short enough to fit its original SRT timecode.
+- Prefer concise, natural spoken Vietnamese over literal translation.
+- Preserve the core meaning, story event, tone, emotion, and important narrative information.
+- Do not add explanations, unnecessary interpretation, filler, or repeated information.
+- Preserve the exact SRT numbering and timestamps.
+- Preserve the same number of subtitle blocks.
+- Never merge, split, omit, reorder, or move content between subtitle blocks.
+- Keep line breaks inside each subtitle block simple and readable.
+- If a source line is very short, translate it very short.
+- If a source line is dense, express the same essential meaning in the shortest natural Vietnamese that still sounds complete and understandable.
+- Do not preserve source-language grammar or sentence structure when it sounds unnatural in Vietnamese.
+- Restructure long sentences into concise natural Vietnamese phrasing when necessary.
+- Prefer common spoken Vietnamese over formal, literary, overly Sino-Vietnamese, or machine-translated wording unless the story context specifically requires that register.
+- Avoid unnecessary repetition of subjects and pronouns when the subject is already obvious from context and omitting it remains completely clear in Vietnamese.
+- Do not remove a pronoun, kinship term, title, or form of address when it is important for identifying the speaker, listener, relationship, social role, or emotional tone.
+- Remove redundant wording, repeated explanations, and nonessential modifiers when necessary for timing.
+- Preserve natural Vietnamese particles or emotional wording when they carry meaningful tone; do not remove them mechanically.
+- Keep names, terminology, forms of address, pronoun choices, and character relationships consistent throughout the SRT.
+- Use context to choose natural Vietnamese pronouns and forms of address instead of mechanically translating every source pronoun.
+- Do not summarize across subtitle blocks.
+- Never remove information that changes the plot, action, identity, relationship, cause, consequence, warning, discovery, or important emotional meaning.
+- Return only valid SRT content. No notes, explanations, or markdown.
+
+Compression priority when timing is tight:
+1. Remove repeated or already-understood information.
+2. Replace verbose expressions with shorter natural spoken Vietnamese.
+3. Remove unnecessary repeated subjects or pronouns only when the meaning remains unmistakably clear.
+4. Simplify long clause structures.
+5. Remove nonessential descriptive wording or modifiers.
+6. Compress secondary detail only when required to fit timing.
+7. Preserve the core event, relationship, and intended meaning above everything optional.
+
+Target style:
+- Natural spoken Vietnamese.
+- Clear, modern, neutral Vietnamese suitable for narration.
+- Natural for text-to-speech.
+- Easy to understand when heard once.
+- Concise without sounding clipped, unnatural, overly literal, or machine-translated.
+- Maintain natural storytelling rhythm even when the wording must be shortened."""
+
+# ---------------------------------------------------------------------------
+# Generic initial translation prompt for all other target languages.
 # Placeholders {source_language} and {target_language} are filled at runtime.
-_GEMINI_INITIAL_SRT_PROMPT_TEMPLATE = """\
+# ---------------------------------------------------------------------------
+_GENERIC_INITIAL_SRT_PROMPT_TEMPLATE = """\
 You are translating subtitles for natural spoken voiceover.
 
 SOURCE_LANGUAGE: {source_language}
@@ -100,38 +197,38 @@ SRT requirements:
 
 Return only valid translated SRT."""
 
-# System preamble for the timing retry prompt.
-# Per-item fields (output_language, source_text, current_translation,
-# previous_context, next_context, available_seconds, current_tts_duration)
-# are supplied as a JSON array following this preamble.
-_GEMINI_TIMING_RETRY_PREAMBLE = """\
-You are adjusting translated subtitles for TTS timing.
+# ---------------------------------------------------------------------------
+# Common timing retry preamble – shared across all language-specific retry
+# prompts. Language-specific rules are appended after this base.
+# Public constant so tests can assert this text appears in every retry call.
+# ---------------------------------------------------------------------------
+GEMINI_TIMING_RETRY_PROMPT = """\
+You are shortening subtitle translations so they fit their available TTS duration.
 
 For each item you will receive:
-- id: subtitle ID
-- output_language: the language the subtitle must remain in
-- source_text: original source-language subtitle
-- current_translation: the current translated text
-- previous_context: nearby previous subtitle text
-- next_context: nearby following subtitle text
-- available_seconds: available subtitle speech duration
-- current_tts_duration: measured TTS duration of current_translation
+- ID: subtitle ID
+- OUTPUT_LANGUAGE: the BCP-47 code for the language the subtitle must remain in
+- OUTPUT_LANGUAGE_NAME: the human-readable name of that language
+- SOURCE: original source-language subtitle
+- CURRENT: the current translated text
+- PREVIOUS_CONTEXT: nearby previous subtitle text
+- NEXT_CONTEXT: nearby following subtitle text
+- AVAILABLE_SECONDS: available subtitle speech duration
+- VOICE_SECONDS: measured TTS duration of CURRENT
 
-For each item, rewrite current_translation in output_language so that it is
-likely to fit available_seconds when spoken.
+For each item, rewrite CURRENT so that it is likely to fit AVAILABLE_SECONDS when spoken.
 
-Requirements:
-- Keep the same output language.
-- Preserve the original meaning and narrative intent.
-- Preserve tone, emotion, character relationships, and important details.
-- Make only as much change as necessary.
-- Use whatever shortening techniques are natural for output_language.
-- Let the grammar and speaking conventions of output_language determine how the sentence should be shortened.
-- Do not optimize for word count or character count.
-- Do not apply English-specific shortening rules.
-- If current_tts_duration only slightly exceeds available_seconds, shorten only slightly.
-- If it exceeds available_seconds substantially, compress more strongly while preserving essential meaning.
-- Prefer natural spoken language over mechanically shortened wording.
+General rules:
+- Never switch languages. Output must remain in OUTPUT_LANGUAGE.
+- Use SOURCE and surrounding context to understand the intended meaning before shortening.
+- Make only as much change as necessary to solve the timing overflow.
+- If VOICE_SECONDS only slightly exceeds AVAILABLE_SECONDS, shorten only slightly.
+- If it exceeds the available duration substantially, compress more aggressively.
+- Preserve the core action, meaning, tone, character relationships, cause and effect, and plot-critical details.
+- Remove repetition and redundant information first.
+- Do not optimize for a fixed word count or character count.
+- Do not add new information.
+- Do not change the core meaning simply to fit the duration.
 - Do not merge subtitle IDs.
 - Do not split subtitle IDs.
 - Return exactly one replacement for every supplied ID.
@@ -145,16 +242,58 @@ Return only valid JSON:
 [
   {
     "id": 123,
-    "text": "Rewritten subtitle in output_language."
+    "text": "Rewritten subtitle text."
   }
 ]"""
 
+# ---------------------------------------------------------------------------
+# Language-specific timing retry prompts.
+# Each is GEMINI_TIMING_RETRY_PROMPT + language-specific guidance.
+# ---------------------------------------------------------------------------
+_EN_TIMING_RETRY_PROMPT = GEMINI_TIMING_RETRY_PROMPT + """
+
+Target language name: English
+
+English-specific shortening rules:
+- Keep the output in English.
+- Prefer shorter natural spoken phrases over formal or verbose alternatives.
+- Use contractions naturally: "I'm", "don't", "can't", "it's", "we're", "they're", "I'd", "I'll".
+- Prefer active constructions.
+- Simplify long clauses and cumbersome sentence structures.
+- Remove nonessential modifiers before removing meaningful information.
+- Do not preserve source-language syntax if shorter natural English expresses the same meaning.
+- Do not make the sentence unnaturally terse merely to make it shorter.
+- Preserve names, character relationships, cause and effect, and plot-critical details."""
+
+_VI_TIMING_RETRY_PROMPT = GEMINI_TIMING_RETRY_PROMPT + """
+
+Target language name: Vietnamese
+
+Vietnamese-specific shortening rules:
+- Keep the output entirely in Vietnamese.
+- Write natural spoken Vietnamese, not stiff word-for-word phrasing.
+- Shorten using natural Vietnamese phrasing rather than mechanically deleting words.
+- Remove repeated information and redundant explanations first.
+- Replace verbose expressions with shorter everyday Vietnamese when the meaning remains the same.
+- Omit repeated subjects or pronouns only when Vietnamese naturally allows it and the referent remains completely clear from context.
+- Simplify long or source-language-influenced sentence structures into shorter natural Vietnamese.
+- Prefer concise verbs and direct spoken constructions when natural.
+- Remove nonessential modifiers before removing meaningful information.
+- Preserve pronouns, kinship terms, titles, and forms of address when they communicate character identity, relationship, hierarchy, or emotional tone.
+- Preserve natural particles when they carry real emotional or conversational meaning; remove them only when genuinely unnecessary.
+- Avoid unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
+- Keep terminology and character references consistent with surrounding subtitles.
+- Write natural spoken Vietnamese.
+- Do not force English-style shortening techniques onto Vietnamese.
+- Do not make the sentence fragmented or unnatural merely to make it shorter."""
+
 
 def _normalize_prompt_language(language: str | None) -> str:
+    """Normalize a raw language tag to a short canonical code for prompt routing."""
     value = str(language or "auto").strip().lower().replace("_", "-")
     if not value or value in {"default", "same as current", "same-as-current"}:
         return "auto"
-    if value.startswith("vi"):
+    if value.startswith("vi") or value == "vietnamese":
         return "vi"
     if value.startswith("en") or value == "english":
         return "en"
@@ -174,13 +313,13 @@ def _normalize_prompt_language(language: str | None) -> str:
         return "tl"
     if value.startswith("fr") or value == "french-24l":
         return "fr"
-    if value.startswith("de"):
+    if value.startswith("de") or value == "german":
         return "de"
-    if value.startswith("es"):
+    if value.startswith("es") or value == "spanish":
         return "es"
-    if value.startswith("pt"):
+    if value.startswith("pt") or value == "portuguese":
         return "pt"
-    if value.startswith("it"):
+    if value.startswith("it") or value == "italian":
         return "it"
     if value.startswith("ru"):
         return "ru"
@@ -192,15 +331,33 @@ def _normalize_prompt_language(language: str | None) -> str:
 
 
 def _build_initial_srt_prompt(source_language: str, target_language: str) -> str:
-    """Return the Gemini initial-translation prompt with source/target language filled in."""
+    """Return the Gemini initial-translation prompt for the given target language.
+
+    English and Vietnamese use specialized profiles; all other languages use
+    the generic multilingual template.
+    """
+    normalized_target = _normalize_prompt_language(target_language)
+    if normalized_target == "en":
+        return _EN_INITIAL_SRT_PROMPT
+    if normalized_target == "vi":
+        return _VI_INITIAL_SRT_PROMPT
     src = source_language.strip() if source_language and source_language.strip() else "auto"
     tgt = target_language.strip() if target_language and target_language.strip() else "target language"
-    return _GEMINI_INITIAL_SRT_PROMPT_TEMPLATE.format(source_language=src, target_language=tgt)
+    return _GENERIC_INITIAL_SRT_PROMPT_TEMPLATE.format(source_language=src, target_language=tgt)
 
 
-def _build_timing_retry_prompt() -> str:
-    """Return the system preamble for the Gemini timing retry batch request."""
-    return _GEMINI_TIMING_RETRY_PREAMBLE
+def _build_timing_retry_prompt(language: str | None = None) -> str:
+    """Return the timing retry preamble for the given target language.
+
+    English and Vietnamese use specialized profiles; all other languages use
+    the generic multilingual preamble (GEMINI_TIMING_RETRY_PROMPT).
+    """
+    normalized = _normalize_prompt_language(language)
+    if normalized == "en":
+        return _EN_TIMING_RETRY_PROMPT
+    if normalized == "vi":
+        return _VI_TIMING_RETRY_PROMPT
+    return GEMINI_TIMING_RETRY_PROMPT
 
 def extract_video_url(text: str) -> str:
     value = text.strip()
@@ -1881,7 +2038,8 @@ class TranslationService:
 
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
             srt_content = self._segments_to_srt_text(chunk_segments)
-            prompt = f"{_build_initial_srt_prompt(source_language, target_language)}\n\nSRT:\n{srt_content}"
+            base_prompt = _build_initial_srt_prompt(source_language, target_language)
+            prompt = f"{base_prompt}\n\nSRT:\n{srt_content}"
             try:
                 response = client.models.generate_content(
                     model=GEMINI_MODEL,
@@ -1921,36 +2079,64 @@ class TranslationService:
         self,
         items: list[dict[str, Any]],
         *,
+        correction_round: int | None = None,
         progress: Optional[Progress] = None,
     ) -> dict[int, str]:
+        """Shorten overlong subtitle translations so they fit their TTS durations.
+
+        Accepts items with either new-style lowercase keys
+        (id, output_language, source_text, current_translation, previous_context,
+        next_context, available_seconds, current_tts_duration) or old-style
+        uppercase keys (ID, OUTPUT_LANGUAGE, SOURCE, CURRENT, PREVIOUS_CONTEXT,
+        NEXT_CONTEXT, AVAILABLE_SECONDS, VOICE_SECONDS) for backward compatibility.
+        All additional item fields are preserved and passed through to the model.
+
+        Language routing is based on the output_language of the first item.
+        English and Vietnamese use specialized prompts; all other languages use
+        the generic multilingual preamble.
+        """
         if not items:
             return {}
         client = self._gemini_client()
-        # Build compact items using the field names expected by the new retry prompt.
-        compact_items = [
-            {
-                "id": int(item.get("id", item.get("ID", 0))),
-                "output_language": str(item.get("output_language", item.get("OUTPUT_LANGUAGE", "same as current")) or "same as current"),
-                "source_text": str(item.get("source_text", item.get("SOURCE", "")) or ""),
-                "current_translation": str(item.get("current_translation", item.get("CURRENT", "")) or ""),
-                "previous_context": str(item.get("previous_context", item.get("PREVIOUS_CONTEXT", "")) or ""),
-                "next_context": str(item.get("next_context", item.get("NEXT_CONTEXT", "")) or ""),
-                "available_seconds": round(float(item.get("available_seconds", item.get("AVAILABLE_SECONDS", 0)) or 0), 3),
-                "current_tts_duration": round(float(item.get("current_tts_duration", item.get("VOICE_SECONDS", 0)) or 0), 3),
-            }
-            for item in items
-        ]
-        prompt = f"{_build_timing_retry_prompt()}\n\nSUBTITLES:\n{json.dumps(compact_items, ensure_ascii=False, indent=2)}"
+
+        # Detect output language from the first item for prompt routing.
+        first_lang_raw = str(
+            items[0].get("output_language", items[0].get("OUTPUT_LANGUAGE", "")) or ""
+        ).strip()
+        normalized_lang = _normalize_prompt_language(first_lang_raw)
+
+        # Build enriched items: preserve all original fields and add OUTPUT_LANGUAGE_NAME.
+        enriched_items: list[dict[str, Any]] = []
+        for item in items:
+            enriched: dict[str, Any] = {}
+            # Pass through all original fields.
+            enriched.update(item)
+            # Ensure the canonical ID field is an integer.
+            raw_id = item.get("id", item.get("ID", 0))
+            enriched["id"] = int(raw_id)
+            # Derive and inject the human-readable language name.
+            lang_code = str(
+                item.get("output_language", item.get("OUTPUT_LANGUAGE", "")) or ""
+            ).strip()
+            enriched["OUTPUT_LANGUAGE_NAME"] = LANGUAGE_NAMES.get(
+                lang_code.lower(), LANGUAGE_NAMES.get(_normalize_prompt_language(lang_code), lang_code or "unknown")
+            )
+            enriched_items.append(enriched)
+
+        prompt = (
+            f"{_build_timing_retry_prompt(normalized_lang)}"
+            f"\n\nSUBTITLES:\n{json.dumps(enriched_items, ensure_ascii=False, indent=2)}"
+        )
         _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         except Exception as exc:
             raise RuntimeError(self._friendly_gemini_error(exc)) from exc
         replacements = self._parse_gemini_replacement_json(response.text or "")
-        expected = [int(item["id"]) for item in compact_items]
-        actual = list(replacements)
-        missing = [item_id for item_id in expected if item_id not in replacements]
-        unexpected = [item_id for item_id in actual if item_id not in expected]
+        expected_ids = {int(item.get("id", item.get("ID", 0))) for item in items}
+        actual_ids = set(replacements)
+        missing = [item_id for item_id in sorted(expected_ids) if item_id not in replacements]
+        unexpected = [item_id for item_id in sorted(actual_ids) if item_id not in expected_ids]
         empty = [item_id for item_id, text in replacements.items() if not text.strip()]
         if missing or unexpected:
             raise RuntimeError(
