@@ -2099,21 +2099,70 @@ class TranslationService:
         progress: Optional[Progress] = None,
     ) -> list[str]:
         client = self._gemini_client()
+        
+        MAX_INITIAL_TRANSLATION_RECOVERY_ATTEMPTS = 2
+        INITIAL_TRANSLATION_CHUNK_SIZE = 25
 
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
-            srt_content = self._segments_to_srt_text(chunk_segments)
-            base_prompt = _build_initial_srt_prompt(source_language, target_language)
-            prompt = base_prompt.replace("{SRT_CONTENT}", srt_content)
-            try:
-                response = client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt,
-                )
-            except Exception as exc:
-                raise RuntimeError(self._friendly_gemini_error(exc)) from exc
-            translated_map = self._parse_gemini_srt_response(response.text or "")
-            self._validate_gemini_translation_map(chunk_segments, translated_map, label=label)
-            return translated_map
+            unresolved_segments = list(chunk_segments)
+            final_map = {}
+            attempt = 0
+            
+            while unresolved_segments and attempt <= MAX_INITIAL_TRANSLATION_RECOVERY_ATTEMPTS:
+                attempt += 1
+                srt_content = self._segments_to_srt_text(unresolved_segments)
+                base_prompt = _build_initial_srt_prompt(source_language, target_language)
+                prompt = base_prompt.replace("{SRT_CONTENT}", srt_content)
+                
+                msg = f"Sending {len(unresolved_segments)} subtitle(s) to Gemini"
+                if attempt > 1:
+                    msg = f"Initial translation recovery (attempt {attempt-1}/{MAX_INITIAL_TRANSLATION_RECOVERY_ATTEMPTS}): resending {len(unresolved_segments)} missing/invalid subtitle(s) for {label}"
+                else:
+                    msg += f" ({label})..."
+                _emit(progress, msg)
+                
+                try:
+                    response = client.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=prompt,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(self._friendly_gemini_error(exc)) from exc
+                
+                try:
+                    translated_map = self._parse_gemini_srt_response(response.text or "")
+                except Exception as exc:
+                    _emit(progress, f"Warning: Failed to parse Gemini response: {exc}")
+                    translated_map = {}
+                
+                expected_ids = {segment.index for segment in unresolved_segments}
+                actual_ids = set(translated_map)
+                
+                unexpected = [item_id for item_id in sorted(actual_ids) if item_id not in expected_ids]
+                if unexpected:
+                    _emit(progress, f"Warning: Gemini returned unexpected IDs {unexpected[:8]}; ignoring them.")
+                    for ui in unexpected:
+                        translated_map.pop(ui, None)
+                
+                empty = [item_id for item_id, text in translated_map.items() if not text.strip()]
+                for ei in empty:
+                    translated_map.pop(ei, None)
+                
+                for item_id, text in translated_map.items():
+                    if item_id in expected_ids:
+                        final_map[item_id] = text
+                        
+                missing = [item_id for item_id in sorted(expected_ids) if item_id not in translated_map]
+                unresolved_segments = [seg for seg in chunk_segments if seg.index in missing]
+                
+                _emit(progress, f"Translation {label}: requested={len(expected_ids)} valid={len(translated_map)} missing={len(missing)} unexpected={len(unexpected)} empty={len(empty)}")
+
+            if unresolved_segments and label == "full SRT":
+                unresolved_ids = [seg.index for seg in unresolved_segments]
+                raise RuntimeError(f"Invalid full SRT translation: failed to recover all IDs. Missing: {unresolved_ids[:8]}")
+
+                
+            return final_map
 
         _emit(progress, f"Sending FULL-SRT to Gemini 3.5 Flash-Lite...")
         try:
@@ -2126,17 +2175,31 @@ class TranslationService:
             _emit(progress, f"Gemini full-SRT translation failed validation: {exc}. Falling back to chunks...")
 
         translated_map: dict[int, str] = {}
-        chunk_size = 50
-        for offset in range(0, len(segments), chunk_size):
-            chunk = segments[offset:offset + chunk_size]
-            _emit(progress, f"Translating fallback chunk {offset // chunk_size + 1}...")
-            chunk_map = translate_chunk(chunk, label=f"chunk {offset // chunk_size + 1}")
+        for offset in range(0, len(segments), INITIAL_TRANSLATION_CHUNK_SIZE):
+            chunk = segments[offset:offset + INITIAL_TRANSLATION_CHUNK_SIZE]
+            _emit(progress, f"Translating fallback chunk {offset // INITIAL_TRANSLATION_CHUNK_SIZE + 1}...")
+            chunk_map = translate_chunk(chunk, label=f"chunk {offset // INITIAL_TRANSLATION_CHUNK_SIZE + 1}")
             overlap = set(translated_map).intersection(chunk_map)
             if overlap:
+                # Should not happen since we chunk disjointly, but keep check
                 raise RuntimeError(f"Gemini returned duplicate IDs across fallback chunks: {sorted(overlap)[:5]}")
             translated_map.update(chunk_map)
 
-        self._validate_gemini_translation_map(segments, translated_map, label="fallback chunks")
+        missing_ids = [segment.index for segment in segments if segment.index not in translated_map]
+        
+        if missing_ids:
+            _emit(progress, f"Starting final single-ID recovery for {len(missing_ids)} missing subtitle(s)...")
+            MAX_FINAL_SINGLE_RECOVERY = 10
+            for index in missing_ids[:MAX_FINAL_SINGLE_RECOVERY]:
+                segment = next(s for s in segments if s.index == index)
+                _emit(progress, f"Final recovery attempt for subtitle ID {index}...")
+                single_map = translate_chunk([segment], label=f"single-ID {index}")
+                translated_map.update(single_map)
+                
+            still_missing = [segment.index for segment in segments if segment.index not in translated_map]
+            if still_missing:
+                raise RuntimeError(f"Initial translation could not recover subtitle IDs: {still_missing}")
+
         return [translated_map[segment.index] for segment in segments]
 
     def optimize_timing_translations(
@@ -2410,6 +2473,7 @@ even if some rewritten text remains unchanged."""
             text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
             text = re.sub(r"\s*```$", "", text).strip()
         translated: dict[int, str] = {}
+        duplicated: set[int] = set()
         blocks = re.split(r"\n\s*\n", text)
         for block in blocks:
             lines = [line.strip("\ufeff") for line in block.splitlines() if line.strip()]
@@ -2419,28 +2483,21 @@ even if some rewritten text remains unchanged."""
                 index = int(lines[0].strip())
             except ValueError:
                 continue
+            if index in duplicated:
+                continue
             if index in translated:
-                raise RuntimeError(f"Gemini returned duplicate subtitle ID {index}")
+                del translated[index]
+                duplicated.add(index)
+                continue
             if "-->" not in lines[1]:
-                raise RuntimeError(f"Gemini response for subtitle ID {index} is missing a timestamp line")
-            translated[index] = " ".join(lines[2:]).strip()
+                continue
+            translated_text = " ".join(lines[2:]).strip()
+            if not translated_text:
+                continue
+            translated[index] = translated_text
         if not translated:
             raise RuntimeError("Gemini returned no parseable SRT blocks")
         return translated
-
-    @staticmethod
-    def _validate_gemini_translation_map(segments: list[SubtitleSegment], translated_map: dict[int, str], *, label: str) -> None:
-        expected = [segment.index for segment in segments]
-        expected_set = set(expected)
-        actual_set = set(translated_map)
-        missing = [item for item in expected if item not in actual_set]
-        unexpected = [item for item in translated_map if item not in expected_set]
-        empty = [item for item in expected if not str(translated_map.get(item) or "").strip()]
-        if missing or unexpected or empty or len(translated_map) != len(expected):
-            raise RuntimeError(
-                f"Invalid Gemini {label} output "
-                f"(missing={missing[:8]}, unexpected={unexpected[:8]}, empty={empty[:8]})"
-            )
 
     @staticmethod
     def _parse_gemini_replacement_json(raw: str) -> dict[int, str]:
