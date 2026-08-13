@@ -2239,33 +2239,118 @@ The objective is not merely to change the wording.
 
 The objective is to reduce actual spoken TTS duration enough to approach `target_max_tts_duration`.
 
-Do not optimize for a fixed word count or character count."""
+Do not optimize for a fixed word count or character count.
 
-        prompt = (
-            f"{_build_timing_retry_prompt(normalized_lang)}"
-            f"\n\n{timing_guidance}"
-            f"\n\nSUBTITLES:\n{json.dumps(enriched_items, ensure_ascii=False, indent=2)}"
-        )
-        _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")
+BATCH OUTPUT CONTRACT:
+
+You MUST return exactly one JSON result for EVERY input item.
+
+Rules:
+- Every supplied `id` MUST appear exactly once in the response.
+- Never omit an input ID.
+- Never invent a new ID.
+- Never duplicate an ID.
+- The number of returned result objects MUST equal the number of input items.
+- If you cannot shorten an item naturally, return its `current_translation` unchanged, but STILL return that item's ID.
+- Do NOT return only the subtitles that you changed.
+- Preserve every input ID exactly.
+- Return no commentary, markdown, explanation, or text outside the JSON response.
+
+For example:
+
+If the input IDs are:
+
+[12, 13, 14, 16]
+
+then the response MUST contain exactly:
+
+[12, 13, 14, 16]
+
+even if some rewritten text remains unchanged."""
+
+        TIMING_RETRY_BATCH_SIZE = 10
+        MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS = 2
+        
+        all_replacements = {}
+        
+        config_kwargs = {}
         try:
-            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        except Exception as exc:
-            raise RuntimeError(self._friendly_gemini_error(exc)) from exc
-        replacements = self._parse_gemini_replacement_json(response.text or "")
-        expected_ids = {int(item.get("id", item.get("ID", 0))) for item in items}
-        actual_ids = set(replacements)
-        missing = [item_id for item_id in sorted(expected_ids) if item_id not in replacements]
-        unexpected = [item_id for item_id in sorted(actual_ids) if item_id not in expected_ids]
-        empty = [item_id for item_id, text in replacements.items() if not text.strip()]
-        if missing or unexpected:
-            raise RuntimeError(
-                "Invalid Gemini timing response "
-                f"(missing={missing[:8]}, unexpected={unexpected[:8]}, empty={empty[:8]})"
-            )
-        if empty:
-            _emit(progress, f"Gemini timing response left {len(empty)} subtitle(s) empty; keeping their current text.")
-            replacements = {item_id: text for item_id, text in replacements.items() if item_id not in set(empty)}
-        return replacements
+            from google.genai import types
+            config_kwargs["response_mime_type"] = "application/json"
+        except ImportError:
+            pass
+
+        for offset in range(0, len(enriched_items), TIMING_RETRY_BATCH_SIZE):
+            batch_items = enriched_items[offset : offset + TIMING_RETRY_BATCH_SIZE]
+            
+            unresolved_items = list(batch_items)
+            batch_replacements = {}
+            attempt = 0
+            
+            while unresolved_items and attempt <= MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS:
+                attempt += 1
+                
+                prompt = (
+                    f"{_build_timing_retry_prompt(normalized_lang)}"
+                    f"\n\n{timing_guidance}"
+                    f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
+                )
+                
+                msg = f"Sending {len(unresolved_items)} overlong subtitle(s) to Gemini"
+                if attempt > 1:
+                    msg = f"Timing retry response recovery (attempt {attempt-1}/{MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS}): resending {len(unresolved_items)} missing/invalid subtitle(s)"
+                else:
+                    msg += f" in timing batch {offset // TIMING_RETRY_BATCH_SIZE + 1}"
+                _emit(progress, msg)
+                
+                try:
+                    if config_kwargs:
+                        from google.genai import types
+                        config = types.GenerateContentConfig(**config_kwargs)
+                        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=config)
+                    else:
+                        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+                except Exception as exc:
+                    raise RuntimeError(self._friendly_gemini_error(exc)) from exc
+                
+                try:
+                    replacements = self._parse_gemini_replacement_json(response.text or "")
+                except Exception as exc:
+                    _emit(progress, f"Warning: Failed to parse Gemini response: {exc}")
+                    replacements = {}
+                
+                expected_ids = {int(item.get("id", item.get("ID", 0))) for item in unresolved_items}
+                actual_ids = set(replacements)
+                
+                unexpected = [item_id for item_id in sorted(actual_ids) if item_id not in expected_ids]
+                if unexpected:
+                    _emit(progress, f"Warning: Gemini returned unexpected IDs {unexpected[:8]}; ignoring them.")
+                    for ui in unexpected:
+                        replacements.pop(ui, None)
+                
+                empty = [item_id for item_id, text in replacements.items() if not text.strip()]
+                for ei in empty:
+                    replacements.pop(ei, None)
+                
+                for item_id, text in replacements.items():
+                    if item_id in expected_ids:
+                        batch_replacements[item_id] = text
+                
+                missing = [item_id for item_id in sorted(expected_ids) if item_id not in replacements]
+                unresolved_items = [item for item in batch_items if int(item.get("id", item.get("ID", 0))) in missing]
+                
+                # Check for duplicates across original batch to report correctly
+                # (The parser already dropped them, so they end up in 'missing')
+                
+                _emit(progress, f"Timing retry batch: requested={len(expected_ids)} valid={len(replacements)} missing={len(missing)} unexpected={len(unexpected)} empty={len(empty)}")
+
+            if unresolved_items:
+                unresolved_ids = [int(item.get("id", item.get("ID", 0))) for item in unresolved_items]
+                _emit(progress, f"Warning: {len(unresolved_ids)} subtitle(s) remained unresolved after {MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS} recovery attempt(s): {unresolved_ids[:8]}")
+                
+            all_replacements.update(batch_replacements)
+            
+        return all_replacements
 
     def _gemini_client(self):
         api_key_path = self.config.gemini_api_key_path
@@ -2351,12 +2436,20 @@ Do not optimize for a fixed word count or character count."""
         if not isinstance(payload, list):
             raise RuntimeError("Gemini timing response must be a JSON array")
         replacements: dict[int, str] = {}
+        duplicated: set[int] = set()
         for item in payload:
             if not isinstance(item, dict) or "id" not in item or "text" not in item:
-                raise RuntimeError("Gemini timing response items must contain id and text")
-            item_id = int(item["id"])
+                continue
+            try:
+                item_id = int(item["id"])
+            except (ValueError, TypeError):
+                continue
+            if item_id in duplicated:
+                continue
             if item_id in replacements:
-                raise RuntimeError(f"Gemini timing response duplicated ID {item_id}")
+                del replacements[item_id]
+                duplicated.add(item_id)
+                continue
             replacements[item_id] = str(item["text"]).strip()
         return replacements
 
