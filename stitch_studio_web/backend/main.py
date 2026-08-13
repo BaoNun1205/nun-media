@@ -31,7 +31,7 @@ from stitch_studio.config import AppConfig, ensure_dirs  # noqa: E402
 from stitch_studio.audio_separation import AUDIO_MODE_ORIGINAL, AUDIO_MODE_REMOVE_MUSIC, AUDIO_MODE_REMOVE_VOCALS, AUDIO_MODES, AUDIO_SEPARATOR_MODEL, AudioSeparationService  # noqa: E402
 from stitch_studio.models import SubtitleSegment, VideoItem  # noqa: E402
 from stitch_studio.rendering.timeline_renderer import ExportSettings, render_project_timeline  # noqa: E402
-from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
+from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _build_timing_retry_duration_metadata, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
 from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
@@ -560,9 +560,12 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
             
             max_local_speed = 1.30
-            target_max_tts_duration = available * max_local_speed
-            required_reduction_ratio = max(0.0, 1.0 - (target_max_tts_duration / voice_duration)) if voice_duration > 0 else 0.0
-            required_reduction_percent = required_reduction_ratio * 100
+            timing_retry_metadata = _build_timing_retry_duration_metadata(
+                available,
+                voice_duration,
+                already_rewritten=bool(rewrite_state_by_id.get(idx)),
+                hard_max_local_speed=max_local_speed,
+            )
 
             optimizer_items.append(
                 {
@@ -575,8 +578,8 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                     "available_seconds": available,
                     "voice_seconds": voice_duration,
                     "max_local_speed": max_local_speed,
-                    "target_max_tts_duration": target_max_tts_duration,
-                    "required_reduction_percent": required_reduction_percent,
+                    "target_max_tts_duration": timing_retry_metadata["target_max_tts_duration"],
+                    "required_reduction_percent": timing_retry_metadata["required_reduction_percent"],
                     "correction_round": correction_round,
                 }
             )

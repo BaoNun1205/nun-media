@@ -68,6 +68,26 @@ LANGUAGE_NAMES = {
 }
 
 
+def _build_timing_retry_duration_metadata(
+    available_seconds: float,
+    voice_seconds: float,
+    *,
+    already_rewritten: bool,
+    hard_max_local_speed: float = 1.30,
+) -> dict[str, float]:
+    target_speed = hard_max_local_speed if already_rewritten else 1.10
+    target_tts_duration = available_seconds * target_speed
+    required_reduction_ratio = (
+        max(0.0, 1.0 - (target_tts_duration / voice_seconds))
+        if voice_seconds > 0
+        else 0.0
+    )
+    return {
+        "target_max_tts_duration": target_tts_duration,
+        "required_reduction_percent": required_reduction_ratio * 100.0,
+    }
+
+
 
 # ---------------------------------------------------------------------------
 # Specialized English initial translation prompt (target = English)
@@ -2284,7 +2304,7 @@ For every input item:
 - `voice_seconds` is the measured TTS duration of the current translation.
 - `available_seconds` is the subtitle's available timeline duration.
 - `max_local_speed` is the maximum local playback-speed adjustment that may be used after rewriting.
-- `target_max_tts_duration` is the target maximum TTS duration the rewritten text should aim to reach before the final local-speed adjustment.
+- `target_max_tts_duration` is the current retry target TTS duration the rewritten text should aim to reach before the final local-speed adjustment.
 - `required_reduction_percent` is the approximate minimum spoken-duration reduction currently required.
 - `correction_round` tells you which timing-shortening attempt this is.
 

@@ -1,6 +1,8 @@
 import unittest
 import re
 
+from stitch_studio.services import _build_timing_retry_duration_metadata
+
 def normalize_retry_text_for_change_detection(text: str) -> str:
     return re.sub(r'[^\w\s]', '', " ".join((text or "").split())).casefold()
 
@@ -64,6 +66,36 @@ class TestTimingOrchestrationState(unittest.TestCase):
             normalize_retry_text_for_change_detection(old),
             normalize_retry_text_for_change_detection(new)
         )
+
+    def test_unrewritten_1_18x_uses_preferred_retry_target(self):
+        metadata = _build_timing_retry_duration_metadata(
+            2.00,
+            2.36,
+            already_rewritten=False,
+        )
+
+        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.20)
+        self.assertAlmostEqual(metadata["required_reduction_percent"], 6.779661, places=5)
+
+    def test_unrewritten_1_25x_uses_preferred_retry_target(self):
+        metadata = _build_timing_retry_duration_metadata(
+            2.00,
+            2.50,
+            already_rewritten=False,
+        )
+
+        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.20)
+        self.assertAlmostEqual(metadata["required_reduction_percent"], 12.0)
+
+    def test_rewritten_over_hard_limit_uses_hard_retry_target(self):
+        metadata = _build_timing_retry_duration_metadata(
+            2.00,
+            2.90,
+            already_rewritten=True,
+        )
+
+        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.60)
+        self.assertAlmostEqual(metadata["required_reduction_percent"], 10.344828, places=5)
 
     def test_all_items_unchanged(self):
         old = "Không đổi gì cả"
