@@ -113,7 +113,11 @@ Target style:
 - Natural for voiceover narration.
 - Natural for text-to-speech.
 - Easy to understand when heard once.
-- Concise without sounding robotic, telegraphic, or machine-translated."""
+- Concise without sounding robotic, telegraphic, or machine-translated.
+
+Now translate this SRT:
+
+{SRT_CONTENT}"""
 
 # ---------------------------------------------------------------------------
 # Specialized Vietnamese initial translation prompt (target = Vietnamese)
@@ -162,7 +166,11 @@ Target style:
 - Natural for text-to-speech.
 - Easy to understand when heard once.
 - Concise without sounding clipped, unnatural, overly literal, or machine-translated.
-- Maintain natural storytelling rhythm even when the wording must be shortened."""
+- Maintain natural storytelling rhythm even when the wording must be shortened.
+
+Now translate this SRT:
+
+{SRT_CONTENT}"""
 
 # ---------------------------------------------------------------------------
 # Generic initial translation prompt for all other target languages.
@@ -246,32 +254,75 @@ Return only valid JSON:
   }
 ]"""
 
-# ---------------------------------------------------------------------------
-# Language-specific timing retry prompts.
-# Each is GEMINI_TIMING_RETRY_PROMPT + language-specific guidance.
-# ---------------------------------------------------------------------------
-_EN_TIMING_RETRY_PROMPT = GEMINI_TIMING_RETRY_PROMPT + """
+_EN_TIMING_RETRY_PROMPT = """\
+You are shortening existing English subtitle translations so they fit their available TTS duration.
 
-Target language name: English
+For each item in the batch you will receive:
+- id: subtitle ID
+- source_text: original source text
+- current_translation: current English translation
+- previous_context: previous subtitle context
+- next_context: next subtitle context
+- available_seconds: available duration in seconds
+- voice_seconds: current TTS duration in seconds
 
-English-specific shortening rules:
+Rewrite CURRENT_TRANSLATION in natural spoken American English so that it is likely to fit AVAILABLE_DURATION.
+
+Timing is the top priority, but preserve the essential meaning and story information.
+
+Rules:
 - Keep the output in English.
+- Use SOURCE_TEXT and surrounding context to understand the intended meaning before shortening.
+- Make only as much change as necessary to solve the timing overflow.
+- If CURRENT_TTS_DURATION only slightly exceeds AVAILABLE_DURATION, make only a small reduction.
+- If it exceeds the available duration substantially, compress more aggressively.
+- Preserve the core action, meaning, tone, character relationships, names, references, cause and effect, and plot-critical details.
+- Remove repetition, filler, unnecessary qualifiers, and duplicated information first.
 - Prefer shorter natural spoken phrases over formal or verbose alternatives.
-- Use contractions naturally: "I'm", "don't", "can't", "it's", "we're", "they're", "I'd", "I'll".
+- Use contractions naturally.
 - Prefer active constructions.
 - Simplify long clauses and cumbersome sentence structures.
 - Remove nonessential modifiers before removing meaningful information.
 - Do not preserve source-language syntax if shorter natural English expresses the same meaning.
+- Do not optimize for a fixed word count.
 - Do not make the sentence unnaturally terse merely to make it shorter.
-- Preserve names, character relationships, cause and effect, and plot-critical details."""
+- Do not add new information.
+- Do not change the meaning simply to fit the duration.
+- Return only the rewritten English subtitle text.
+- Do not include explanations, notes, markdown, or commentary.
 
-_VI_TIMING_RETRY_PROMPT = GEMINI_TIMING_RETRY_PROMPT + """
+OUTPUT FORMAT:
+Return only valid JSON mapping ID to rewritten text:
+[
+  {
+    "id": 123,
+    "text": "Rewritten subtitle text."
+  }
+]"""
 
-Target language name: Vietnamese
+_VI_TIMING_RETRY_PROMPT = """\
+You are shortening existing Vietnamese subtitle translations so they fit their available TTS duration.
 
-Vietnamese-specific shortening rules:
+For each item in the batch you will receive:
+- id: subtitle ID
+- source_text: original source text
+- current_translation: current Vietnamese translation
+- previous_context: previous subtitle context
+- next_context: next subtitle context
+- available_seconds: available duration in seconds
+- voice_seconds: current TTS duration in seconds
+
+Rewrite CURRENT_TRANSLATION in natural spoken Vietnamese so that it is likely to fit AVAILABLE_DURATION.
+
+Timing is the top priority, but preserve the essential meaning, narrative context, and natural Vietnamese expression.
+
+Rules:
 - Keep the output entirely in Vietnamese.
-- Write natural spoken Vietnamese, not stiff word-for-word phrasing.
+- Use SOURCE_TEXT and surrounding context to understand the intended meaning before shortening.
+- Make only as much change as necessary to solve the timing overflow.
+- If CURRENT_TTS_DURATION only slightly exceeds AVAILABLE_DURATION, shorten only slightly.
+- If it exceeds the available duration substantially, compress more strongly.
+- Preserve the core action, meaning, tone, emotion, names, character relationships, forms of address, cause and effect, and plot-critical details.
 - Shorten using natural Vietnamese phrasing rather than mechanically deleting words.
 - Remove repeated information and redundant explanations first.
 - Replace verbose expressions with shorter everyday Vietnamese when the meaning remains the same.
@@ -281,11 +332,24 @@ Vietnamese-specific shortening rules:
 - Remove nonessential modifiers before removing meaningful information.
 - Preserve pronouns, kinship terms, titles, and forms of address when they communicate character identity, relationship, hierarchy, or emotional tone.
 - Preserve natural particles when they carry real emotional or conversational meaning; remove them only when genuinely unnecessary.
-- Avoid unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
+- Avoid stiff word-for-word phrasing and unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
 - Keep terminology and character references consistent with surrounding subtitles.
-- Write natural spoken Vietnamese.
+- Do not optimize for a fixed word count or character count.
 - Do not force English-style shortening techniques onto Vietnamese.
-- Do not make the sentence fragmented or unnatural merely to make it shorter."""
+- Do not make the sentence fragmented or unnatural merely to make it shorter.
+- Do not add new information.
+- Do not change the core meaning simply to fit the duration.
+- Return only the rewritten Vietnamese subtitle text.
+- Do not include explanations, notes, markdown, or commentary.
+
+OUTPUT FORMAT:
+Return only valid JSON mapping ID to rewritten text:
+[
+  {
+    "id": 123,
+    "text": "Rewritten subtitle text."
+  }
+]"""
 
 
 def _normalize_prompt_language(language: str | None) -> str:
@@ -2114,6 +2178,15 @@ class TranslationService:
             # Ensure the canonical ID field is an integer.
             raw_id = item.get("id", item.get("ID", 0))
             enriched["id"] = int(raw_id)
+            
+            # Map canonical names if old names were used
+            if "source_text" not in enriched and "SOURCE" in item:
+                enriched["source_text"] = item["SOURCE"]
+            if "current_translation" not in enriched and "CURRENT" in item:
+                enriched["current_translation"] = item["CURRENT"]
+            if "voice_seconds" not in enriched:
+                enriched["voice_seconds"] = item.get("current_tts_duration", item.get("VOICE_SECONDS", 0))
+
             # Derive and inject the human-readable language name.
             lang_code = str(
                 item.get("output_language", item.get("OUTPUT_LANGUAGE", "")) or ""
@@ -2121,10 +2194,25 @@ class TranslationService:
             enriched["OUTPUT_LANGUAGE_NAME"] = LANGUAGE_NAMES.get(
                 lang_code.lower(), LANGUAGE_NAMES.get(_normalize_prompt_language(lang_code), lang_code or "unknown")
             )
+            
+            # Ensure timing context fields exist
+            enriched["correction_round"] = item.get("correction_round", correction_round or 1)
+            
             enriched_items.append(enriched)
+
+        timing_guidance = """
+TIMING_CONTEXT:
+The previous translation is still too long for the timing target.
+
+Your rewrite must reduce spoken duration enough to meaningfully approach TARGET_MAX_TTS_DURATION.
+
+Do not make only cosmetic wording changes if the current duration substantially exceeds the target.
+
+If this is a later correction round, the previous shortening attempt was insufficient. Compress more strongly than the previous round while preserving the essential story meaning."""
 
         prompt = (
             f"{_build_timing_retry_prompt(normalized_lang)}"
+            f"\n\n{timing_guidance}"
             f"\n\nSUBTITLES:\n{json.dumps(enriched_items, ensure_ascii=False, indent=2)}"
         )
         _emit(progress, f"Sending {len(items)} overlong subtitle(s) to Gemini in one timing batch...")

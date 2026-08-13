@@ -134,6 +134,7 @@ def process_adaptive_timeline(
     min_working_speed: float = MIN_WORKING_SPEED,
     preferred_max_local_speed: float = PREFERRED_MAX_LOCAL_SPEED,
     hard_max_local_speed: float = HARD_MAX_LOCAL_SPEED,
+    text_retry_preferred_speed_threshold: float = 1.10,
     safety_gap: float = SAFETY_GAP_SECONDS,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
@@ -189,7 +190,7 @@ def process_adaptive_timeline(
         processed_path = original_path
         if required_speed <= 1.0:
             status = "FIT"
-        elif required_speed <= hard_max_local_speed:
+        elif required_speed <= text_retry_preferred_speed_threshold:
             status = "SPEED_ADJUSTED"
             applied_speed = required_speed
         else:
@@ -409,6 +410,7 @@ def process_srt_slot_timeline(
     *,
     sample_rate: int,
     max_speed: float = DEFAULT_SLOT_MAX_SPEED,
+    text_retry_preferred_speed_threshold: float = 1.10,
     safety_gap: float = SAFETY_GAP_SECONDS,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
@@ -472,7 +474,7 @@ def process_srt_slot_timeline(
         status = "FIT"
         if slot_samples > 0 and len(original_audio) > 0:
             required_speed = required_speed or 1.0
-            if required_speed > max_speed:
+            if required_speed > text_retry_preferred_speed_threshold:
                 applied_speed = 1.0
                 status = "TEXT_TOO_LONG"
             elif required_speed > 1.000001:

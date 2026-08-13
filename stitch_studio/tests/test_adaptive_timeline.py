@@ -158,7 +158,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             specs.append((10, 18.0, 18.5, 2.2))
             specs.append((11, 20.0, 20.5, 0.5))
             rendered = self._rendered(root, specs)
-            result = process_adaptive_timeline(self._video(video_path, 22_000), rendered, root / "out", sample_rate=8_000)
+            result = process_adaptive_timeline(self._video(video_path, 22_000), rendered, root / "out", sample_rate=8_000, text_retry_preferred_speed_threshold=1.30)
             statuses = [row["segment_status"] for row in result["segments"]]
             self.assertEqual(statuses[9], "SPEED_ADJUSTED")
             self.assertNotIn("OVERLAP", statuses)
@@ -180,7 +180,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             video_path = self._video_file(root, 3.0)
             rendered = self._rendered(root, [(1, 0.0, 0.5, 5.0), (2, 1.0, 1.5, 0.5)])
             with self.assertRaisesRegex(RuntimeError, "TEXT_TOO_LONG"):
-                process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5)
+                process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, text_retry_preferred_speed_threshold=1.30)
             manifest = json.loads((root / "out" / "srt_slot_timeline.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["state"]["max_speed"], 1.3)
             self.assertEqual(len(manifest["segments"]), 2)
@@ -199,7 +199,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
                     root = Path(raw_dir)
                     video_path = self._video_file(root, 3.0)
                     rendered = self._rendered(root, [(1, 0.0, 2.0, voice_duration)])
-                    result = process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.0)
+                    result = process_srt_slot_timeline(self._video(video_path, 3_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.0, text_retry_preferred_speed_threshold=1.30)
                     row = result["segments"][0]
                     self.assertEqual(row["segment_status"], expected_status)
                     self.assertAlmostEqual(row["required_local_speed"], voice_duration / 2.0, places=6)
@@ -235,7 +235,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             root = Path(raw_dir)
             video_path = self._video_file(root, 2.0)
             rendered = self._rendered(root, [(1, 0.0, 1.0, 1.0)])
-            result = process_srt_slot_timeline(self._video(video_path, 2_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.12)
+            result = process_srt_slot_timeline(self._video(video_path, 2_000), rendered, root / "out", sample_rate=8_000, max_speed=1.5, safety_gap=0.12, text_retry_preferred_speed_threshold=1.30)
             row = result["segments"][0]
             self.assertEqual(row["segment_status"], "SPEED_ADJUSTED")
             self.assertAlmostEqual(row["required_local_speed"], 1.0 / 0.88, places=6)
@@ -272,17 +272,18 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         replacements = service.optimize_timing_translations(
             [
                 {
-                    "ID": item_id,
-                    "SOURCE": f"src {item_id}",
-                    "CURRENT": f"current {item_id}",
-                    "OUTPUT_LANGUAGE": "vi",
-                    "AVAILABLE_SECONDS": 1.0,
-                    "VOICE_SECONDS": 2.0,
-                    "REQUIRED_SPEED": 2.0,
-                    "TARGET_WORDS": 3,
-                    "PREVIOUS_CONTEXT": "prev",
-                    "NEXT_CONTEXT": "next",
-                    "CORRECTION_ROUND": 2,
+                    "id": item_id,
+                    "output_language": "vi",
+                    "source_text": f"src {item_id}",
+                    "current_translation": f"current {item_id}",
+                    "previous_context": "prev",
+                    "next_context": "next",
+                    "available_seconds": 1.0,
+                    "voice_seconds": 2.0,
+                    "max_local_speed": 1.30,
+                    "target_max_tts_duration": 1.30,
+                    "required_reduction_percent": 35.0,
+                    "correction_round": 2,
                 }
                 for item_id in requested_ids
             ],
@@ -291,29 +292,29 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertEqual(replacements[1], "Short 1.")
         self.assertEqual(replacements[100], "Short 100.")
         self.assertEqual(len(calls), 1)
-        self.assertIn(GEMINI_TIMING_RETRY_PROMPT, calls[0])
-        self.assertIn('"SOURCE": "src 1"', calls[0])
-        self.assertIn('"CURRENT": "current 1"', calls[0])
-        self.assertIn('"OUTPUT_LANGUAGE": "vi"', calls[0])
+        
+        # Check that it builds the correct Vietnamese retry prompt
+        self.assertIn("Keep the output entirely in Vietnamese", calls[0])
+        self.assertIn('"source_text": "src 1"', calls[0])
+        self.assertIn('"current_translation": "current 1"', calls[0])
+        self.assertIn('"output_language": "vi"', calls[0])
         self.assertIn('"OUTPUT_LANGUAGE_NAME": "Vietnamese"', calls[0])
-        self.assertIn("Write natural spoken Vietnamese", calls[0])
-        self.assertIn('"AVAILABLE_SECONDS": 1.0', calls[0])
-        self.assertIn('"REQUIRED_SPEED": 2.0', calls[0])
-        self.assertIn('"TARGET_WORDS": 3', calls[0])
-        self.assertIn('"PREVIOUS_CONTEXT": "prev"', calls[0])
-        self.assertIn('"NEXT_CONTEXT": "next"', calls[0])
-        self.assertIn('"CORRECTION_ROUND": 2', calls[0])
-        self.assertIn('"VOICE_SECONDS": 2.0', calls[0])
-        self.assertIn("Never switch languages", calls[0])
+        self.assertIn('"available_seconds": 1.0', calls[0])
+        self.assertIn('"target_max_tts_duration": 1.3', calls[0])
+        self.assertNotIn('"TARGET_WORDS"', calls[0])
+        self.assertIn('"previous_context": "prev"', calls[0])
+        self.assertIn('"next_context": "next"', calls[0])
+        self.assertIn('"correction_round": 2', calls[0])
+        self.assertIn('"voice_seconds": 2.0', calls[0])
 
     def test_timing_retry_prompt_uses_language_specific_rules(self) -> None:
         vietnamese_prompt = _build_timing_retry_prompt("vi")
         english_prompt = _build_timing_retry_prompt("en")
 
-        self.assertIn("Target language name: Vietnamese", vietnamese_prompt)
-        self.assertIn("Write natural spoken Vietnamese", vietnamese_prompt)
+        self.assertIn("Keep the output entirely in Vietnamese", vietnamese_prompt)
+        self.assertIn("natural spoken Vietnamese", vietnamese_prompt)
         self.assertNotIn("American English", vietnamese_prompt)
-        self.assertIn("Target language name: English", english_prompt)
+        self.assertIn("American English", english_prompt)
         self.assertIn("Use contractions", english_prompt)
 
     def test_gemini_timing_retry_ignores_empty_replacements(self) -> None:

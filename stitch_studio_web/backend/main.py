@@ -490,6 +490,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
     still_too_long: list[dict[str, Any]] = []
     optimized_srt_persisted = False
     correction_round = 0
+    MAX_TIMING_CORRECTION_ROUNDS = 3
 
     def persist_timing_srt(path: Path) -> None:
         nonlocal active_srt_asset, optimized_srt_persisted
@@ -498,10 +499,14 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             raise RuntimeError("Gemini timing correction changed subtitle text, but the active SRT could not be updated.")
         active_srt_asset = _replace_srt_asset(video, active, path.read_text(encoding="utf-8-sig"), "timing optimization", progress)
         optimized_srt_persisted = True
-
-    while True:
+    while correction_round <= MAX_TIMING_CORRECTION_ROUNDS:
         manifest_path = timing_manifest_path()
         synthesis_error: Exception | None = None
+        
+        # Initial round uses strict 1.10 threshold for text shortening. 
+        # Retries can accept up to hard_max_local_speed if they failed to shorten enough.
+        timeline_options["text_retry_preferred_speed_threshold"] = 1.10 if correction_round == 0 else timeline_options.get("hard_max_local_speed", 1.30)
+        
         try:
             output_path = do_synthesis(current_srt_path)
             final_output = output_path
@@ -522,6 +527,10 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
 
         if not still_too_long:
             break
+            
+        if correction_round >= MAX_TIMING_CORRECTION_ROUNDS:
+            break
+            
         correction_round += 1
 
         progress(
@@ -542,6 +551,12 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             voice_duration = float(row.get("original_tts_duration") or 0)
             previous_context = current_map[idx - 1].text if idx - 1 in current_map else ""
             next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
+            
+            max_local_speed = 1.30
+            target_max_tts_duration = available * max_local_speed
+            required_reduction_ratio = max(0.0, 1.0 - (target_max_tts_duration / voice_duration)) if voice_duration > 0 else 0.0
+            required_reduction_percent = required_reduction_ratio * 100
+
             optimizer_items.append(
                 {
                     "id": idx,
@@ -551,11 +566,15 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                     "previous_context": previous_context,
                     "next_context": next_context,
                     "available_seconds": available,
-                    "current_tts_duration": voice_duration,
+                    "voice_seconds": voice_duration,
+                    "max_local_speed": max_local_speed,
+                    "target_max_tts_duration": target_max_tts_duration,
+                    "required_reduction_percent": required_reduction_percent,
+                    "correction_round": correction_round,
                 }
             )
 
-        replacements = translator.optimize_timing_translations(optimizer_items, progress=progress)
+        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
         changed = 0
         for idx, replacement in replacements.items():
             segment = current_map.get(idx)
@@ -564,8 +583,8 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                 changed += 1
         if changed <= 0:
             progress(
-                "Gemini timing optimizer returned no changed subtitle text; "
-                "keeping subtitles unresolved for the next correction round."
+                f"Gemini timing optimizer returned no changed subtitle text (Round {correction_round}); "
+                "keeping subtitles unresolved and moving to next round with stronger constraints."
             )
             continue
 
