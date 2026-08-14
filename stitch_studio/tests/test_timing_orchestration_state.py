@@ -53,12 +53,13 @@ class TestTimingOrchestrationState(unittest.TestCase):
         correction_round = 2
         timeline_options = {"hard_max_local_speed": 1.30}
         
-        segment_thresholds = {}
-        for _idx, _rewritten in rewrite_state_by_id.items():
-            segment_thresholds[_idx] = timeline_options.get("hard_max_local_speed", 1.30) if _rewritten else 1.10
+        segment_thresholds = {
+            _idx: timeline_options.get("hard_max_local_speed", 1.30)
+            for _idx in rewrite_state_by_id
+        }
         
         self.assertEqual(segment_thresholds[10], 1.30)
-        self.assertEqual(segment_thresholds[11], 1.10)
+        self.assertEqual(segment_thresholds[11], 1.30)
 
     def test_punctuation_only_change(self):
         old = "Tôi phải chạy."
@@ -68,25 +69,25 @@ class TestTimingOrchestrationState(unittest.TestCase):
             normalize_retry_text_for_change_detection(new)
         )
 
-    def test_unrewritten_1_18x_uses_preferred_retry_target(self):
+    def test_unrewritten_1_18x_uses_hard_retry_target(self):
         metadata = _build_timing_retry_duration_metadata(
             2.00,
             2.36,
             already_rewritten=False,
         )
 
-        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.20)
-        self.assertAlmostEqual(metadata["required_reduction_percent"], 6.779661, places=5)
+        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.60)
+        self.assertAlmostEqual(metadata["required_reduction_percent"], 0.0)
 
-    def test_unrewritten_1_25x_uses_preferred_retry_target(self):
+    def test_unrewritten_1_25x_uses_hard_retry_target(self):
         metadata = _build_timing_retry_duration_metadata(
             2.00,
             2.50,
             already_rewritten=False,
         )
 
-        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.20)
-        self.assertAlmostEqual(metadata["required_reduction_percent"], 12.0)
+        self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.60)
+        self.assertAlmostEqual(metadata["required_reduction_percent"], 0.0)
 
     def test_rewritten_over_hard_limit_uses_hard_retry_target(self):
         metadata = _build_timing_retry_duration_metadata(

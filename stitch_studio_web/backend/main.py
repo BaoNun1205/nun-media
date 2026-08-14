@@ -509,15 +509,11 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         manifest_path = timing_manifest_path()
         synthesis_error: Exception | None = None
         
-        # Initial round uses strict 1.10 threshold for text shortening. 
-        # Retries can accept up to hard_max_local_speed if they failed to shorten enough.
+        # Gemini retries only start when a line cannot fit within the 1.30x local-speed limit.
         if correction_round >= MAX_TIMING_CORRECTION_ROUNDS:
             timeline_options["text_retry_preferred_speed_threshold"] = timeline_options.get("hard_max_local_speed", 1.30)
         else:
-            segment_thresholds = {}
-            for _idx, _rewritten in rewrite_state_by_id.items():
-                segment_thresholds[_idx] = timeline_options.get("hard_max_local_speed", 1.30) if _rewritten else 1.10
-            timeline_options["text_retry_preferred_speed_threshold"] = segment_thresholds
+            timeline_options["text_retry_preferred_speed_threshold"] = timeline_options.get("hard_max_local_speed", 1.30)
         
         try:
             output_path = do_synthesis(current_srt_path)

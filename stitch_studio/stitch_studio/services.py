@@ -75,7 +75,7 @@ def _build_timing_retry_duration_metadata(
     already_rewritten: bool,
     hard_max_local_speed: float = 1.30,
 ) -> dict[str, float]:
-    target_speed = hard_max_local_speed if already_rewritten else 1.10
+    target_speed = hard_max_local_speed
     target_tts_duration = available_seconds * target_speed
     required_reduction_ratio = (
         max(0.0, 1.0 - (target_tts_duration / voice_seconds))
@@ -3704,7 +3704,7 @@ def process_and_register_srt_slot_timeline(
     safety_gap = float(timeline_options.get("safety_gap") or 0.12)
     force_fit_overlong = bool(timeline_options.get("force_fit_overlong"))
     
-    raw_retry_threshold = timeline_options.get("text_retry_preferred_speed_threshold", 1.10)
+    raw_retry_threshold = timeline_options.get("text_retry_preferred_speed_threshold", DEFAULT_SLOT_MAX_SPEED)
     if isinstance(raw_retry_threshold, dict):
         text_retry_preferred_speed_threshold = {int(k): float(v) for k, v in raw_retry_threshold.items()}
     else:
