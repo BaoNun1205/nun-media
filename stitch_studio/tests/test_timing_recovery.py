@@ -148,3 +148,27 @@ class TestTimingRecovery(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertIn('"correction_round": 2', self.calls[1])
         self.assertNotIn('"correction_round": 3', self.calls[1])
+
+    def test_rejects_replacement_over_target_max_words(self):
+        self.responses = [
+            [{"id": 12, "text": "one two three four five six seven eight"}],
+            [{"id": 12, "text": "one two three four five six seven"}],
+        ]
+        items = [
+            {
+                "id": 12,
+                "output_language": "en",
+                "source_text": "src 12",
+                "current_translation": "one two three four five six seven eight nine ten",
+                "available_seconds": 2.0,
+                "voice_seconds": 3.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('"TARGET_MAX_WORDS": 7', self.calls[0])
+        self.assertEqual(replacements, {12: "one two three four five six seven"})

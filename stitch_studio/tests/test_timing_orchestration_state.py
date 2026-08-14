@@ -99,6 +99,48 @@ class TestTimingOrchestrationState(unittest.TestCase):
         self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.60)
         self.assertAlmostEqual(metadata["required_reduction_percent"], 10.344828, places=5)
 
+    def test_overlong_ten_word_line_gets_lower_target_word_count(self):
+        metadata = _build_timing_retry_duration_metadata(
+            2.00,
+            3.00,
+            already_rewritten=False,
+            current_translation="one two three four five six seven eight nine ten",
+        )
+
+        self.assertEqual(metadata["current_word_count"], 10)
+        self.assertLess(metadata["target_max_words"], 10)
+        self.assertEqual(metadata["target_max_words"], 7)
+
+    def test_retry_recalculates_smaller_target_from_latest_text_and_duration(self):
+        first_segments = [
+            SubtitleSegment(1, 0.0, 2.0, "one two three four five six seven eight nine ten"),
+        ]
+        second_segments = [
+            SubtitleSegment(1, 0.0, 2.0, "one two three four five six seven"),
+        ]
+        first_rows = [{"index": 1, "working_available_duration": 2.0, "original_tts_duration": 3.0, "segment_status": "TEXT_TOO_LONG"}]
+        second_rows = [{"index": 1, "working_available_duration": 2.0, "original_tts_duration": 3.0, "segment_status": "TEXT_TOO_LONG"}]
+
+        first_items = build_timing_retry_optimizer_items(
+            current_segments=first_segments,
+            rows=first_rows,
+            still_too_long=first_rows,
+            source_map={1: "source"},
+            output_language="en",
+            rewrite_state_by_id={},
+        )
+        second_items = build_timing_retry_optimizer_items(
+            current_segments=second_segments,
+            rows=second_rows,
+            still_too_long=second_rows,
+            source_map={1: "source"},
+            output_language="en",
+            rewrite_state_by_id={1: True},
+        )
+
+        self.assertEqual(first_items[0]["TARGET_MAX_WORDS"], 7)
+        self.assertLess(second_items[0]["TARGET_MAX_WORDS"], first_items[0]["TARGET_MAX_WORDS"])
+
     def test_vietnamese_timing_retry_includes_context_group(self):
         segments = [
             SubtitleSegment(index, float(index), float(index + 1), f"line {index}")

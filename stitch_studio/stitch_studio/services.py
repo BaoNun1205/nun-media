@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -68,13 +69,37 @@ LANGUAGE_NAMES = {
 }
 
 
+def _count_timing_retry_words(text: str) -> int:
+    return len([part for part in str(text or "").strip().split() if part])
+
+
+def _build_timing_retry_target_word_count(
+    current_translation: str,
+    available_seconds: float,
+    voice_seconds: float,
+    *,
+    hard_max_local_speed: float = 1.30,
+) -> tuple[int, int]:
+    current_words = _count_timing_retry_words(current_translation)
+    if current_words <= 1:
+        return current_words, 1
+    if voice_seconds > 0 and available_seconds > 0:
+        duration_ratio = (available_seconds * hard_max_local_speed) / voice_seconds
+        target_words = math.floor(current_words * duration_ratio * 0.92)
+    else:
+        target_words = current_words - 1
+    target_words = max(1, min(current_words - 1, target_words))
+    return current_words, target_words
+
+
 def _build_timing_retry_duration_metadata(
     available_seconds: float,
     voice_seconds: float,
     *,
     already_rewritten: bool,
     hard_max_local_speed: float = 1.30,
-) -> dict[str, float]:
+    current_translation: str = "",
+) -> dict[str, float | int]:
     target_speed = hard_max_local_speed
     target_tts_duration = available_seconds * target_speed
     required_reduction_ratio = (
@@ -82,9 +107,17 @@ def _build_timing_retry_duration_metadata(
         if voice_seconds > 0
         else 0.0
     )
+    current_words, target_max_words = _build_timing_retry_target_word_count(
+        current_translation,
+        available_seconds,
+        voice_seconds,
+        hard_max_local_speed=hard_max_local_speed,
+    )
     return {
         "target_max_tts_duration": target_tts_duration,
         "required_reduction_percent": required_reduction_ratio * 100.0,
+        "current_word_count": current_words,
+        "target_max_words": target_max_words,
     }
 
 
@@ -172,6 +205,7 @@ def build_timing_retry_optimizer_items(
             voice_duration,
             already_rewritten=bool(rewrite_state_by_id.get(idx)),
             hard_max_local_speed=hard_max_local_speed,
+            current_translation=segment.text,
         )
 
         item: dict[str, Any] = {
@@ -186,6 +220,10 @@ def build_timing_retry_optimizer_items(
             "max_local_speed": hard_max_local_speed,
             "target_max_tts_duration": timing_retry_metadata["target_max_tts_duration"],
             "required_reduction_percent": timing_retry_metadata["required_reduction_percent"],
+            "current_word_count": timing_retry_metadata["current_word_count"],
+            "target_max_words": timing_retry_metadata["target_max_words"],
+            "CURRENT_WORD_COUNT": timing_retry_metadata["current_word_count"],
+            "TARGET_MAX_WORDS": timing_retry_metadata["target_max_words"],
             "needs_timing_rewrite": idx in overlong_ids,
         }
         if use_context_groups:
@@ -368,6 +406,8 @@ For each item you will receive:
 - NEXT_CONTEXT: nearby following subtitle text
 - AVAILABLE_SECONDS: available subtitle speech duration
 - VOICE_SECONDS: measured TTS duration of CURRENT
+- CURRENT_WORD_COUNT: whitespace-separated word count of CURRENT
+- TARGET_MAX_WORDS: mandatory maximum word count for overlong items
 
 For each item, rewrite CURRENT so that it is likely to fit AVAILABLE_SECONDS when spoken.
 
@@ -379,7 +419,7 @@ General rules:
 - If it exceeds the available duration substantially, compress more aggressively.
 - Preserve the core action, meaning, tone, character relationships, cause and effect, and plot-critical details.
 - Remove repetition and redundant information first.
-- Do not optimize for a fixed word count or character count.
+- When TARGET_MAX_WORDS is present on a timing-rewrite item, rewrite using no more than TARGET_MAX_WORDS words.
 - Do not add new information.
 - Do not change the core meaning simply to fit the duration.
 - Do not merge subtitle IDs.
@@ -410,6 +450,8 @@ For each item in the batch you will receive:
 - next_context: next subtitle context
 - available_seconds: available duration in seconds
 - voice_seconds: current TTS duration in seconds
+- CURRENT_WORD_COUNT: whitespace-separated word count of current_translation
+- TARGET_MAX_WORDS: mandatory maximum word count for overlong items
 
 Rewrite CURRENT_TRANSLATION in natural spoken American English so that it is likely to fit AVAILABLE_DURATION.
 
@@ -429,7 +471,7 @@ Rules:
 - Simplify long clauses and cumbersome sentence structures.
 - Remove nonessential modifiers before removing meaningful information.
 - Do not preserve source-language syntax if shorter natural English expresses the same meaning.
-- Do not optimize for a fixed word count.
+- For timing-rewrite items, rewrite CURRENT_TRANSLATION naturally using NO MORE THAN TARGET_MAX_WORDS words. The word limit is mandatory.
 - Do not make the sentence unnaturally terse merely to make it shorter.
 - Do not add new information.
 - Do not change the meaning simply to fit the duration.
@@ -456,6 +498,8 @@ For each item in the batch you will receive:
 - next_context: next subtitle context
 - available_seconds: available duration in seconds
 - voice_seconds: current TTS duration in seconds
+- CURRENT_WORD_COUNT: whitespace-separated word count of current_translation
+- TARGET_MAX_WORDS: mandatory maximum word count for overlong items
 - needs_timing_rewrite: true when this subtitle caused the timing retry
 - context_group/context_group_ids: nearby subtitle lines that should be read together when present
 
@@ -486,7 +530,7 @@ Rules:
 - Avoid stiff word-for-word phrasing and unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
 - Keep terminology and character references consistent with surrounding subtitles.
 - Do not turn a complete thought into a one-word or two-word fragment unless that is already natural for the scene.
-- Do not optimize for a fixed word count or character count.
+- For timing-rewrite items, rewrite CURRENT_TRANSLATION naturally using NO MORE THAN TARGET_MAX_WORDS whitespace-separated Vietnamese words. The word limit is mandatory.
 - Do not force English-style shortening techniques onto Vietnamese.
 - Do not make the sentence fragmented or unnatural merely to make it shorter.
 - Do not add new information.
@@ -2453,6 +2497,28 @@ class TranslationService:
                 enriched["current_translation"] = item["CURRENT"]
             if "voice_seconds" not in enriched:
                 enriched["voice_seconds"] = item.get("current_tts_duration", item.get("VOICE_SECONDS", 0))
+            try:
+                available_seconds = float(enriched.get("available_seconds", enriched.get("AVAILABLE_SECONDS", 0)) or 0)
+            except (TypeError, ValueError):
+                available_seconds = 0.0
+            try:
+                voice_seconds = float(enriched.get("voice_seconds", enriched.get("VOICE_SECONDS", 0)) or 0)
+            except (TypeError, ValueError):
+                voice_seconds = 0.0
+            try:
+                max_local_speed = float(enriched.get("max_local_speed", enriched.get("MAX_LOCAL_SPEED", 1.30)) or 1.30)
+            except (TypeError, ValueError):
+                max_local_speed = 1.30
+            current_word_count, target_max_words = _build_timing_retry_target_word_count(
+                str(enriched.get("current_translation") or ""),
+                available_seconds,
+                voice_seconds,
+                hard_max_local_speed=max_local_speed,
+            )
+            enriched["current_word_count"] = int(enriched.get("current_word_count") or current_word_count)
+            enriched["target_max_words"] = int(enriched.get("target_max_words") or target_max_words)
+            enriched["CURRENT_WORD_COUNT"] = int(enriched.get("CURRENT_WORD_COUNT") or enriched["current_word_count"])
+            enriched["TARGET_MAX_WORDS"] = int(enriched.get("TARGET_MAX_WORDS") or enriched["target_max_words"])
 
             # Derive and inject the human-readable language name.
             lang_code = str(
@@ -2490,24 +2556,26 @@ For every input item:
 - `max_local_speed` is the maximum local playback-speed adjustment that may be used after rewriting.
 - `target_max_tts_duration` is the current retry target TTS duration the rewritten text should aim to reach before the final local-speed adjustment.
 - `required_reduction_percent` is the approximate minimum spoken-duration reduction currently required.
+- `CURRENT_WORD_COUNT` is the current whitespace-separated word count.
+- `TARGET_MAX_WORDS` is the mandatory maximum word count for this rewrite when `needs_timing_rewrite` is true.
 - `needs_timing_rewrite` marks the subtitles that triggered the timing retry; context-only lines may be included to preserve natural flow.
 - `correction_round` tells you which timing-shortening attempt this is.
 
 You MUST use these values when deciding how strongly to shorten the translation.
 
-If `required_reduction_percent` is very small, make only a small natural reduction.
+If `needs_timing_rewrite` is true, rewrite `current_translation` naturally using NO MORE THAN `TARGET_MAX_WORDS` words.
 
-If `required_reduction_percent` is moderate, make a clearly shorter rewrite while preserving the important meaning.
+The word limit is mandatory.
 
-If `required_reduction_percent` is large, a cosmetic paraphrase or synonym replacement is NOT sufficient. Produce a materially shorter spoken version.
+Preserve the essential meaning, action, characters, and plot-critical information.
 
-If `correction_round` is greater than 1, the previous shortening attempt was insufficient. Make a stronger reduction than the previous attempt while preserving the essential story meaning.
+Remove secondary details, repetition, fillers, and unnecessary modifiers first.
 
-The objective is not merely to change the wording.
+If `correction_round` is greater than 1, the previous measured TTS output was still too long. Follow the new, smaller `TARGET_MAX_WORDS` for this item.
 
-The objective is to reduce actual spoken TTS duration enough to approach `target_max_tts_duration`.
+The objective is to reduce actual spoken TTS duration enough to fit within `target_max_tts_duration`.
 
-Do not optimize for a fixed word count or character count.
+For context-only items where `needs_timing_rewrite` is false, keep the line unchanged unless a light adjustment is needed to preserve natural flow.
 
 BATCH OUTPUT CONTRACT:
 
@@ -2623,17 +2691,33 @@ even if some rewritten text remains unchanged."""
                 for ei in empty:
                     replacements.pop(ei, None)
                 
+                item_by_id = {int(item.get("id", item.get("ID", 0))): item for item in unresolved_items}
+                over_word_limit: list[int] = []
+                valid_replacements: dict[int, str] = {}
                 for item_id, text in replacements.items():
-                    if item_id in expected_ids:
-                        batch_replacements[item_id] = text
+                    if item_id not in expected_ids:
+                        continue
+                    source_item = item_by_id.get(item_id, {})
+                    word_limit_required = bool(source_item.get("needs_timing_rewrite", True))
+                    target_words = int(source_item.get("TARGET_MAX_WORDS") or source_item.get("target_max_words") or 0)
+                    if word_limit_required and target_words > 0 and _count_timing_retry_words(text) > target_words:
+                        over_word_limit.append(item_id)
+                        continue
+                    valid_replacements[item_id] = text
+
+                for item_id, text in valid_replacements.items():
+                    batch_replacements[item_id] = text
                 
-                missing = [item_id for item_id in sorted(expected_ids) if item_id not in replacements]
+                missing = [item_id for item_id in sorted(expected_ids) if item_id not in valid_replacements]
                 unresolved_items = [item for item in batch_items if int(item.get("id", item.get("ID", 0))) in missing]
                 
                 # Check for duplicates across original batch to report correctly
                 # (The parser already dropped them, so they end up in 'missing')
                 
-                _emit(progress, f"Timing retry batch: requested={len(expected_ids)} valid={len(replacements)} missing={len(missing)} unexpected={len(unexpected)} empty={len(empty)}")
+                if over_word_limit:
+                    _emit(progress, f"Warning: Gemini exceeded TARGET_MAX_WORDS for IDs {over_word_limit[:8]}; retrying those subtitle(s).")
+
+                _emit(progress, f"Timing retry batch: requested={len(expected_ids)} valid={len(valid_replacements)} missing={len(missing)} unexpected={len(unexpected)} empty={len(empty)} over_word_limit={len(over_word_limit)}")
 
             if unresolved_items:
                 unresolved_ids = [int(item.get("id", item.get("ID", 0))) for item in unresolved_items]
