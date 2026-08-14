@@ -165,6 +165,7 @@ def build_timing_retry_optimizer_items(
     output_language: str,
     rewrite_state_by_id: dict[int, bool],
     hard_max_local_speed: float = 1.30,
+    previous_target_words_by_id: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     current_map = {segment.index: segment for segment in current_segments}
     row_by_id = {int(row.get("index") or 0): row for row in rows if int(row.get("index") or 0)}
@@ -207,6 +208,13 @@ def build_timing_retry_optimizer_items(
             hard_max_local_speed=hard_max_local_speed,
             current_translation=segment.text,
         )
+        current_word_count = int(timing_retry_metadata["current_word_count"])
+        target_max_words = int(timing_retry_metadata["target_max_words"])
+        previous_target_words = int((previous_target_words_by_id or {}).get(idx) or 0)
+        if idx in overlong_ids and previous_target_words > 1:
+            target_max_words = max(1, min(target_max_words, previous_target_words - 1))
+        if current_word_count > 1:
+            target_max_words = max(1, min(target_max_words, current_word_count - 1))
 
         item: dict[str, Any] = {
             "id": idx,
@@ -220,10 +228,10 @@ def build_timing_retry_optimizer_items(
             "max_local_speed": hard_max_local_speed,
             "target_max_tts_duration": timing_retry_metadata["target_max_tts_duration"],
             "required_reduction_percent": timing_retry_metadata["required_reduction_percent"],
-            "current_word_count": timing_retry_metadata["current_word_count"],
-            "target_max_words": timing_retry_metadata["target_max_words"],
-            "CURRENT_WORD_COUNT": timing_retry_metadata["current_word_count"],
-            "TARGET_MAX_WORDS": timing_retry_metadata["target_max_words"],
+            "current_word_count": current_word_count,
+            "target_max_words": target_max_words,
+            "CURRENT_WORD_COUNT": current_word_count,
+            "TARGET_MAX_WORDS": target_max_words,
             "needs_timing_rewrite": idx in overlong_ids,
         }
         if use_context_groups:

@@ -284,7 +284,7 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             def generate_content(self, *, model: str, contents: str):
                 del model
                 calls.append(contents)
-                return SimpleNamespace(text=json.dumps([{"id": item_id, "text": f"Short {item_id}."} for item_id in requested_ids]))
+                return SimpleNamespace(text=json.dumps([{"id": item_id, "text": f"S{item_id}"} for item_id in requested_ids]))
 
         service = TranslationService.__new__(TranslationService)
         service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
@@ -308,9 +308,9 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             ],
             correction_round=2,
         )
-        self.assertEqual(replacements[1], "Short 1.")
-        self.assertEqual(replacements[100], "Short 100.")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(replacements[1], "S1")
+        self.assertEqual(replacements[100], "S100")
+        self.assertEqual(len(calls), 10)
         
         # Check that it builds the correct Vietnamese retry prompt
         self.assertIn("Keep the output entirely in Vietnamese", calls[0])
@@ -320,7 +320,8 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"OUTPUT_LANGUAGE_NAME": "Vietnamese"', calls[0])
         self.assertIn('"available_seconds": 1.0', calls[0])
         self.assertIn('"target_max_tts_duration": 1.3', calls[0])
-        self.assertNotIn('"TARGET_WORDS"', calls[0])
+        self.assertIn('"CURRENT_WORD_COUNT": 2', calls[0])
+        self.assertIn('"TARGET_MAX_WORDS": 1', calls[0])
         self.assertIn('"previous_context": "prev"', calls[0])
         self.assertIn('"next_context": "next"', calls[0])
         self.assertIn('"correction_round": 2', calls[0])

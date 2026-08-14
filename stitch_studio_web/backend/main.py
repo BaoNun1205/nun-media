@@ -497,6 +497,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
     correction_round = 0
     MAX_TIMING_CORRECTION_ROUNDS = 5
     rewrite_state_by_id: dict[int, bool] = {}
+    retry_target_words_by_id: dict[int, int] = {}
 
     def persist_timing_srt(path: Path) -> None:
         nonlocal active_srt_asset, optimized_srt_persisted
@@ -558,9 +559,12 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
             output_language=output_language,
             rewrite_state_by_id=rewrite_state_by_id,
             hard_max_local_speed=1.30,
+            previous_target_words_by_id=retry_target_words_by_id,
         )
         for item in optimizer_items:
             item["correction_round"] = correction_round
+            if item.get("needs_timing_rewrite"):
+                retry_target_words_by_id[int(item["id"])] = int(item.get("TARGET_MAX_WORDS") or item.get("target_max_words") or 1)
 
         try:
             replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)

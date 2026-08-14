@@ -141,6 +141,24 @@ class TestTimingOrchestrationState(unittest.TestCase):
         self.assertEqual(first_items[0]["TARGET_MAX_WORDS"], 7)
         self.assertLess(second_items[0]["TARGET_MAX_WORDS"], first_items[0]["TARGET_MAX_WORDS"])
 
+    def test_retry_target_is_forced_lower_than_previous_round(self):
+        segments = [
+            SubtitleSegment(1, 0.0, 2.0, "one two three four five six seven eight nine ten"),
+        ]
+        rows = [{"index": 1, "working_available_duration": 2.0, "original_tts_duration": 2.30, "segment_status": "TEXT_TOO_LONG"}]
+
+        items = build_timing_retry_optimizer_items(
+            current_segments=segments,
+            rows=rows,
+            still_too_long=rows,
+            source_map={1: "source"},
+            output_language="en",
+            rewrite_state_by_id={1: True},
+            previous_target_words_by_id={1: 8},
+        )
+
+        self.assertEqual(items[0]["TARGET_MAX_WORDS"], 7)
+
     def test_vietnamese_timing_retry_includes_context_group(self):
         segments = [
             SubtitleSegment(index, float(index), float(index + 1), f"line {index}")
@@ -194,6 +212,47 @@ class TestTimingOrchestrationState(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in items], [3])
         self.assertNotIn("context_group", items[0])
+
+    def test_fit_subtitle_is_not_sent_to_timing_retry(self):
+        segments = [
+            SubtitleSegment(1, 0.0, 2.0, "already fits"),
+            SubtitleSegment(2, 2.0, 4.0, "one two three four five six seven eight nine ten"),
+        ]
+        rows = [
+            {"index": 1, "working_available_duration": 2.0, "original_tts_duration": 2.40, "segment_status": "SPEED_ADJUSTED"},
+            {"index": 2, "working_available_duration": 2.0, "original_tts_duration": 3.00, "segment_status": "TEXT_TOO_LONG"},
+        ]
+
+        items = build_timing_retry_optimizer_items(
+            current_segments=segments,
+            rows=rows,
+            still_too_long=[rows[1]],
+            source_map={1: "source 1", 2: "source 2"},
+            output_language="en",
+            rewrite_state_by_id={},
+        )
+
+        self.assertEqual([item["id"] for item in items], [2])
+
+    def test_final_fit_after_tts_measurement_has_no_retry_items(self):
+        segments = [
+            SubtitleSegment(1, 0.0, 2.0, "short enough now"),
+        ]
+        rows = [
+            {"index": 1, "working_available_duration": 2.0, "original_tts_duration": 2.55, "segment_status": "SPEED_ADJUSTED"},
+        ]
+
+        items = build_timing_retry_optimizer_items(
+            current_segments=segments,
+            rows=rows,
+            still_too_long=[],
+            source_map={1: "source"},
+            output_language="en",
+            rewrite_state_by_id={1: True},
+            previous_target_words_by_id={1: 4},
+        )
+
+        self.assertEqual(items, [])
 
     def test_all_items_unchanged(self):
         old = "Không đổi gì cả"
