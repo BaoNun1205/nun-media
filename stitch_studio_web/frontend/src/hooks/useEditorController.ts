@@ -242,6 +242,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   ), [visibleJobs, project.id, project.workspaceId, timelineSourceVideoIds]);
   const activeJobs = videoJobs.filter((job) => ['queued', 'running'].includes(job.status));
   const activeAudioJob = activeJobs.find((job) => job.kind === 'audio-separate');
+  const activeVoiceJobKey = activeJobs
+    .filter((job) => ['tts', 'tts-segment'].includes(job.kind))
+    .map((job) => `${job.id}:${job.progress ?? ''}:${job.detail || ''}`)
+    .join('|');
   const audioJobForVideo = useCallback((videoId?: number) =>
     typeof videoId === 'number'
       ? activeJobs.find((job) => job.kind === 'audio-separate' && job.videoId === videoId)
@@ -551,6 +555,21 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     return () => window.removeEventListener('beforeunload', warnBeforeLeave);
   }, [dirty]);
   useEffect(() => { loadSegments(); }, [loadSegments]);
+  useEffect(() => {
+    if (!activeVoiceJobKey) return;
+    let cancelled = false;
+    const refreshVoiceReview = () => {
+      if (cancelled) return;
+      void loadSegments();
+      void loadTimelineIssues();
+    };
+    refreshVoiceReview();
+    const timer = window.setInterval(refreshVoiceReview, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeVoiceJobKey, loadSegments, loadTimelineIssues]);
   useEffect(() => {
     const hasTimingIssues = Boolean(project.ttsTimeline?.needs_review || project.ttsTimeline?.final_validation_status === 'NEEDS_REVIEW');
     if (project.hasTts || hasTimingIssues) loadTimelineIssues();

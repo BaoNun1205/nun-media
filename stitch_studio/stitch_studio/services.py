@@ -2814,6 +2814,9 @@ class VieneuTtsService:
         selected_voice = voice or None
         rendered: list[tuple[SubtitleSegment, Path]] = []
 
+        def persist_manifest() -> None:
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
         for segment in segments:
             if not segment.text.strip():
                 continue
@@ -2822,6 +2825,7 @@ class VieneuTtsService:
             if cached_row and cached_row.get("text") == segment.text and cached_path.exists():
                 rendered.append((segment, cached_path))
                 manifest.append(cached_row)
+                persist_manifest()
                 _emit(progress, f"Reusing cached TTS segment {segment.index}/{len(segments)}...")
                 continue
             _emit(progress, f"TTS segment {segment.index}/{len(segments)}...")
@@ -2839,8 +2843,9 @@ class VieneuTtsService:
                     "generation_signature": generation_signature,
                 }
             )
+            persist_manifest()
 
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        persist_manifest()
         if _is_plain_tts_request(video, timing_mode):
             timeline_result = process_and_register_plain_tts(
                 self.storage,
@@ -3349,12 +3354,16 @@ class PocketTtsService:
         manifest: list[dict] = []
         rendered: list[tuple[SubtitleSegment, Path]] = []
 
+        def persist_manifest() -> None:
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
         for segment in segments:
             cached_row = cached.get(segment.index)
             cached_path = Path(str((cached_row or {}).get("path") or ""))
             if cached_row and cached_row.get("text") == segment.text and cached_path.exists():
                 rendered.append((segment, cached_path))
                 manifest.append(cached_row)
+                persist_manifest()
                 _emit(progress, f"Reusing cached Pocket TTS segment {segment.index}/{len(segments)}...")
                 continue
             _emit(progress, f"Pocket TTS segment {segment.index}/{len(segments)}...")
@@ -3373,8 +3382,9 @@ class PocketTtsService:
                     "generation_signature": generation_signature,
                 }
             )
+            persist_manifest()
 
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        persist_manifest()
         if _is_plain_tts_request(video, timing_mode):
             timeline_result = process_and_register_plain_tts(
                 self.storage,

@@ -233,7 +233,7 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
   const currentJobKinds = jobKinds[editor.activeTool] || [];
   const toolJobs = [...editor.jobs].filter((job) => currentJobKinds.includes(job.kind)).sort((a, b) => b.id - a.id);
   const activeJob = editor.activeJobs.find((job) => currentJobKinds.includes(job.kind));
-  const displayJob = activeJob || toolJobs.find((job) => job.status === 'error' || job.status === 'cancelled' || (editor.activeTool === 'translate' && job.status === 'completed'));
+  const displayJob = activeJob || toolJobs.find((job) => job.status === 'error' || (editor.activeTool === 'translate' && job.status === 'completed'));
   const title = TOOLS.find(([key]) => key === editor.activeTool)?.[2];
   const voiceIssueByIndex = new Map(editor.timelineIssues.map((issue) => [issue.index, issue]));
   const voiceReadyCount = editor.srt.segments.filter((segment) => Boolean(editor.voiceByIndex[segment.index]?.audioUrl)).length;
