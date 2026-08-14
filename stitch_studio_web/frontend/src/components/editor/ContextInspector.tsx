@@ -92,7 +92,7 @@ function VoiceLinesInspector({ editor }: { editor: EditorController }) {
   const speedValueForLine = (index: number, appliedSpeed?: number, physicalSpeed?: number, issueSpeed?: number) => {
     const stored = speedByIndex[index];
     if (Number.isFinite(stored) && stored > 0) return stored;
-    const source = appliedSpeed && appliedSpeed > 0 ? appliedSpeed : physicalSpeed && physicalSpeed > 1 ? physicalSpeed : issueSpeed && issueSpeed > 1 ? issueSpeed : 1.1;
+    const source = appliedSpeed && appliedSpeed > 0 ? appliedSpeed : physicalSpeed && physicalSpeed > 1 ? physicalSpeed : issueSpeed && issueSpeed > 1 ? issueSpeed : 1.0;
     return Number(source.toFixed(2));
   };
   const applyVoiceSpeed = async (index: number, targetSpeed: number, currentAppliedSpeed: number) => {

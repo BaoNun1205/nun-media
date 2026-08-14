@@ -565,17 +565,9 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         try:
             replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
         except Exception as exc:
-            manifest_path = timing_manifest_path()
-            if manifest_path.exists():
-                mark_needs_review(manifest_path, still_too_long, correction_round)
-            progress(f"Timing optimizer needs manual review: {exc}")
-            return {
-                "needsReview": True,
-                "reviewLineIds": [int(row.get("index") or 0) for row in still_too_long],
-                "manifestPath": str(manifest_path) if manifest_path.exists() else "",
-                "outputPath": "Needs review",
-                "detail": str(exc),
-            }
+            progress(f"Timing optimizer failed in round {correction_round}; force-fitting remaining segment(s): {exc}")
+            correction_round = MAX_TIMING_CORRECTION_ROUNDS
+            break
 
         def normalize_retry_text_for_change_detection(text: str) -> str:
             import re
@@ -1612,7 +1604,8 @@ def _segment_text_for_engine(segment: SubtitleSegment, engine: str) -> str:
 
 def _segment_status(row: dict[str, Any] | None, segment: SubtitleSegment, engine: str, signature: str, timing_row: dict[str, Any] | None = None) -> dict[str, Any]:
     expected_text = _segment_text_for_engine(segment, engine)
-    path = _manifest_audio_path(row or {})
+    timing_path = Path(str((timing_row or {}).get("processed_tts_path") or ""))
+    path = timing_path if timing_path.exists() else _manifest_audio_path(row or {})
     has_audio = bool(row and path.exists())
     text_changed = bool(row) and row.get("text") != expected_text
     settings_changed = bool(row) and row.get("generation_signature") != signature
@@ -1627,7 +1620,9 @@ def _segment_status(row: dict[str, Any] | None, segment: SubtitleSegment, engine
         except Exception:
             duration = None
     subtitle_duration = max(0.0, segment.end - segment.start)
-    required_speed = duration / subtitle_duration if duration and subtitle_duration > 0 else None
+    required_speed = (timing_row or {}).get("required_local_speed")
+    if required_speed is None:
+        required_speed = duration / subtitle_duration if duration and subtitle_duration > 0 else None
     return {
         "index": segment.index,
         "engine": engine,
@@ -1659,7 +1654,7 @@ def _record_single_tts_timing_check(
     engine: str,
     source_srt: Path,
     payload: TtsSegmentRequest,
-) -> None:
+) -> dict[str, Any]:
     try:
         import soundfile as sf
         info = sf.info(str(audio_path))
@@ -1676,12 +1671,56 @@ def _record_single_tts_timing_check(
     if required_speed is None or required_speed > hard_max_speed:
         status = "TEXT_TOO_LONG"
         applied_speed = 1.0
+        processed_path = audio_path
+        processed_duration = tts_duration
     elif required_speed > 1.000001:
         status = "SPEED_ADJUSTED"
         applied_speed = required_speed
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg is required to fit TTS segment audio")
+        processed_path = audio_path.with_name(f"{audio_path.stem}_slot_{applied_speed:.3f}.wav")
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", str(audio_path), "-filter:a", _ffmpeg_atempo_filter(applied_speed), "-ac", "1", "-ar", "48000", str(processed_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if proc.returncode != 0 or not processed_path.exists() or processed_path.stat().st_size <= 0:
+            raise RuntimeError(f"Could not fit TTS segment audio: {proc.stderr[-800:]}")
+        processed_duration = _audio_duration_seconds(processed_path)
+        if processed_duration > available + 0.03:
+            for attempt in range(4):
+                target_duration = max(0.001, available - 0.03)
+                applied_speed *= (processed_duration / target_duration) * 1.005
+                if applied_speed > hard_max_speed + 0.000001:
+                    break
+                processed_path = audio_path.with_name(f"{audio_path.stem}_slot_{applied_speed:.3f}_{attempt + 1}.wav")
+                proc = subprocess.run(
+                    [ffmpeg, "-y", "-i", str(audio_path), "-filter:a", _ffmpeg_atempo_filter(applied_speed), "-ac", "1", "-ar", "48000", str(processed_path)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                if proc.returncode != 0 or not processed_path.exists() or processed_path.stat().st_size <= 0:
+                    raise RuntimeError(f"Could not fit TTS segment audio: {proc.stderr[-800:]}")
+                processed_duration = _audio_duration_seconds(processed_path)
+                if processed_duration <= available + 0.03:
+                    break
+            if processed_duration > available + 0.03 or applied_speed > hard_max_speed + 0.000001:
+                status = "TEXT_TOO_LONG"
+                applied_speed = 1.0
+                processed_path = audio_path
+                processed_duration = tts_duration
     else:
         status = "FIT"
         applied_speed = 1.0
+        processed_path = audio_path
+        processed_duration = tts_duration
 
     output_dir = _segment_output_dir(video.id, engine)
     timeline_manifest_path = output_dir / "srt_slot_timeline.json"
@@ -1704,8 +1743,8 @@ def _record_single_tts_timing_check(
             "working_end_time": segment.end,
             "original_tts_path": str(audio_path),
             "original_tts_duration": tts_duration,
-            "processed_tts_path": str(audio_path),
-            "processed_tts_duration": tts_duration,
+            "processed_tts_path": str(processed_path),
+            "processed_tts_duration": processed_duration,
             "working_available_duration": available,
             "required_local_speed": required_speed,
             "applied_local_speed": applied_speed,
@@ -1745,6 +1784,13 @@ def _record_single_tts_timing_check(
             engine=f"srt-slot-timeline:{engine}:line-check",
             metadata={"source_srt": str(source_srt), "timeline": state},
         )
+    return {
+        "processed_path": processed_path,
+        "processed_duration": processed_duration,
+        "required_local_speed": required_speed,
+        "applied_local_speed": applied_speed,
+        "segment_status": status,
+    }
 
 
 def _audio_duration_seconds(audio_path: Path) -> float:
@@ -1954,7 +2000,7 @@ def _render_single_tts_segment(video, srt_path: Path, segment_index: int, payloa
             "generation_signature": signature,
         }
     _write_manifest_row(manifest_path, row)
-    _record_single_tts_timing_check(
+    timing_result = _record_single_tts_timing_check(
         video,
         segment,
         _manifest_audio_path(row),
@@ -1962,6 +2008,16 @@ def _render_single_tts_segment(video, srt_path: Path, segment_index: int, payloa
         source_srt=srt_path,
         payload=payload,
     )
+    processed_path = Path(str(timing_result.get("processed_path") or _manifest_audio_path(row)))
+    if processed_path.exists() and processed_path != _manifest_audio_path(row):
+        row = {
+            **row,
+            "path": str(processed_path),
+            "speed_multiplier": timing_result.get("applied_local_speed") or 1.0,
+        }
+        if "wav" in row:
+            row["wav"] = str(processed_path)
+        _write_manifest_row(manifest_path, row)
     return {"index": segment.index, "path": str(_manifest_audio_path(row)), "manifest": str(manifest_path)}
 
 
@@ -4803,6 +4859,22 @@ def tts_segment_audio(video_id: int, segment_index: int, engine: str = "capcut")
     rows = {int(row.get("index") or -1): row for row in _read_manifest_rows(_segment_manifest_path(video.id, selected_engine))}
     row = rows.get(segment_index)
     path = _manifest_audio_path(row or {})
+    timing_manifest_path = _segment_output_dir(video.id, selected_engine) / "srt_slot_timeline.json"
+    if timing_manifest_path.exists():
+        try:
+            timing_payload = json.loads(timing_manifest_path.read_text(encoding="utf-8"))
+            timing_row = next(
+                (
+                    item for item in (timing_payload.get("segments") if isinstance(timing_payload, dict) else []) or []
+                    if int(item.get("index") or -1) == int(segment_index)
+                ),
+                None,
+            )
+            timing_path = Path(str((timing_row or {}).get("processed_tts_path") or ""))
+            if timing_path.exists():
+                path = timing_path
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     if not row or not path.exists():
         raise HTTPException(404, f"TTS segment #{segment_index} not found")
     return FileResponse(path, media_type="audio/wav", filename=path.name)
