@@ -496,25 +496,12 @@ Return only valid JSON mapping ID to rewritten text:
 ]"""
 
 _VI_TIMING_RETRY_PROMPT = """\
-Với mỗi item trong SUBTITLES, dùng TARGET_MAX_WORDS và current_translation của item đó.
+Rút gọn từng câu tiếng Việt theo đúng giới hạn từ được ghi riêng cho từng id.
 
-Rút gọn câu tiếng Việt sau còn tối đa {TARGET_MAX_WORDS} từ.
-
-Giữ ý nghĩa chính và viết tự nhiên.
-Bắt buộc không vượt quá {TARGET_MAX_WORDS} từ.
-
-Câu hiện tại:
-{CURRENT_TRANSLATION}
-
-Chỉ trả về câu đã rút gọn.
-
-Return only valid JSON:
-[
-  {
-    "id": 123,
-    "text": "Câu đã rút gọn."
-  }
-]"""
+Ưu tiên tuyệt đối:
+1. Không vượt số từ tối đa.
+2. Giữ ý nghĩa chính.
+3. Câu tiếng Việt tự nhiên."""
 
 
 def _normalize_prompt_language(language: str | None) -> str:
@@ -618,6 +605,46 @@ def _build_timing_retry_prompt(language: str | None = None) -> str:
     if normalized == "vi":
         return _VI_TIMING_RETRY_PROMPT
     return GEMINI_TIMING_RETRY_PROMPT
+
+
+def _build_vietnamese_timing_retry_prompt(items: list[dict[str, Any]]) -> str:
+    blocks = [_VI_TIMING_RETRY_PROMPT, "ITEMS:"]
+    output_ids: list[int] = []
+    for item in items:
+        item_id = int(item.get("id", item.get("ID", 0)) or 0)
+        target_words = int(item.get("TARGET_MAX_WORDS") or item.get("target_max_words") or 1)
+        current_translation = str(item.get("current_translation", item.get("CURRENT", "")) or "").strip()
+        output_ids.append(item_id)
+        blocks.append(
+            "\n".join(
+                [
+                    f'{{"id": {item_id}, "target_max_words": {target_words}, "current_translation": {json.dumps(current_translation, ensure_ascii=False)}}}',
+                    "",
+                    f"Rút gọn câu tiếng Việt sau còn tối đa {target_words} từ.",
+                    "",
+                    "Giữ ý nghĩa chính và viết tự nhiên.",
+                    f"Bắt buộc không vượt quá {target_words} từ.",
+                    "",
+                    "Câu hiện tại:",
+                    current_translation,
+                    "",
+                    "Chỉ trả về câu đã rút gọn.",
+                ]
+            )
+        )
+    blocks.append(
+        "\n".join(
+            [
+                "Return only valid JSON:",
+                "Return exactly one object for every id listed here: "
+                + json.dumps(output_ids, ensure_ascii=False),
+                "Each object must have this shape:",
+                '[{"id": 123, "text": "Câu đã rút gọn."}]',
+            ]
+        )
+    )
+    return "\n\n".join(blocks)
+
 
 def extract_video_url(text: str) -> str:
     value = text.strip()
@@ -2572,13 +2599,6 @@ then the response MUST contain exactly:
 [12, 13, 14, 16]
 
 even if some rewritten text remains unchanged."""
-        vietnamese_timing_guidance = """BATCH OUTPUT CONTRACT:
-
-Return exactly one JSON result for every supplied id.
-Do not omit, invent, or duplicate ids.
-Return no commentary, markdown, explanation, or text outside the JSON response."""
-        prompt_guidance = vietnamese_timing_guidance if normalized_lang == "vi" else timing_guidance
-
         TIMING_RETRY_BATCH_SIZE = 10
         MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS = 2
         
@@ -2607,12 +2627,14 @@ Return no commentary, markdown, explanation, or text outside the JSON response."
             
             while unresolved_items and attempt <= MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS:
                 attempt += 1
-                
-                prompt = (
-                    f"{_build_timing_retry_prompt(normalized_lang)}"
-                    f"\n\n{prompt_guidance}"
-                    f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
-                )
+                if normalized_lang == "vi":
+                    prompt = _build_vietnamese_timing_retry_prompt(unresolved_items)
+                else:
+                    prompt = (
+                        f"{_build_timing_retry_prompt(normalized_lang)}"
+                        f"\n\n{timing_guidance}"
+                        f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
+                    )
                 
                 msg = f"Sending {len(unresolved_items)} overlong subtitle(s) to Gemini"
                 if attempt > 1:

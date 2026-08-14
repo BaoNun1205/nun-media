@@ -142,6 +142,7 @@ class TestTimingRecovery(unittest.TestCase):
         # Set correction round specifically
         for item in items:
             item["correction_round"] = 2
+            item["output_language"] = "en"
             
         self.service.optimize_timing_translations(items)
         
@@ -172,3 +173,34 @@ class TestTimingRecovery(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertIn('"TARGET_MAX_WORDS": 7', self.calls[0])
         self.assertEqual(replacements, {12: "one two three four five six seven"})
+
+    def test_vietnamese_prompt_renders_real_target_and_translation(self):
+        current = "Làm khán giả được một phen hú vía phải không nào?"
+        self.responses = [
+            [{"id": 7, "text": "Khán giả hú vía."}],
+        ]
+        items = [
+            {
+                "id": 7,
+                "output_language": "vi",
+                "current_translation": current,
+                "available_seconds": 1.0,
+                "voice_seconds": 2.6,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+        prompt = self.calls[0]
+
+        self.assertEqual(replacements, {7: "Khán giả hú vía."})
+        self.assertIn("Rút gọn câu tiếng Việt sau còn tối đa 5 từ.", prompt)
+        self.assertIn("Bắt buộc không vượt quá 5 từ.", prompt)
+        self.assertIn(f"Câu hiện tại:\n{current}", prompt)
+        self.assertIn('"id": 7', prompt)
+        self.assertNotIn("{TARGET_MAX_WORDS}", prompt)
+        self.assertNotIn("{CURRENT_TRANSLATION}", prompt)
+        self.assertNotIn('"available_seconds":', prompt)
+        self.assertNotIn('"voice_seconds":', prompt)
+        self.assertNotIn('"source_text":', prompt)
