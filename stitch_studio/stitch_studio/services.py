@@ -496,62 +496,23 @@ Return only valid JSON mapping ID to rewritten text:
 ]"""
 
 _VI_TIMING_RETRY_PROMPT = """\
-You are shortening existing Vietnamese subtitle translations so they fit their available TTS duration.
+Với mỗi item trong SUBTITLES, dùng TARGET_MAX_WORDS và current_translation của item đó.
 
-For each item in the batch you will receive:
-- id: subtitle ID
-- source_text: original source text
-- current_translation: current Vietnamese translation
-- previous_context: previous subtitle context
-- next_context: next subtitle context
-- available_seconds: available duration in seconds
-- voice_seconds: current TTS duration in seconds
-- CURRENT_WORD_COUNT: whitespace-separated word count of current_translation
-- TARGET_MAX_WORDS: mandatory maximum word count for overlong items
-- needs_timing_rewrite: true when this subtitle caused the timing retry
-- context_group/context_group_ids: nearby subtitle lines that should be read together when present
+Rút gọn câu tiếng Việt sau còn tối đa {TARGET_MAX_WORDS} từ.
 
-Rewrite CURRENT_TRANSLATION in natural spoken Vietnamese so that it is likely to fit AVAILABLE_DURATION.
+Giữ ý nghĩa chính và viết tự nhiên.
+Bắt buộc không vượt quá {TARGET_MAX_WORDS} từ.
 
-Timing is the top priority, but preserve the essential meaning, narrative context, and natural Vietnamese expression.
+Câu hiện tại:
+{CURRENT_TRANSLATION}
 
-Rules:
-- Keep the output entirely in Vietnamese.
-- Use SOURCE_TEXT and surrounding context to understand the intended meaning before shortening.
-- When context_group is present, read the whole group as one continuous Vietnamese passage before rewriting any line.
-- For adjacent items with the same context_group_id, preserve the sentence flow across IDs; avoid creating isolated fragments unless the original line is naturally that short.
-- You may lightly adjust non-overlong context lines in the same group only when needed to keep Vietnamese grammar, reference, and story flow natural.
-- Keep each returned ID at its original narrative position; do not move an event, name, or meaning to a distant subtitle.
-- Make only as much change as necessary to solve the timing overflow.
-- If CURRENT_TTS_DURATION only slightly exceeds AVAILABLE_DURATION, shorten only slightly.
-- If it exceeds the available duration substantially, compress more strongly.
-- Preserve the core action, meaning, tone, emotion, names, character relationships, forms of address, cause and effect, and plot-critical details.
-- Shorten using natural Vietnamese phrasing rather than mechanically deleting words.
-- Remove repeated information and redundant explanations first.
-- Replace verbose expressions with shorter everyday Vietnamese when the meaning remains the same.
-- Omit repeated subjects or pronouns only when Vietnamese naturally allows it and the referent remains completely clear from context.
-- Simplify long or source-language-influenced sentence structures into shorter natural Vietnamese.
-- Prefer concise verbs and direct spoken constructions when natural.
-- Remove nonessential modifiers before removing meaningful information.
-- Preserve pronouns, kinship terms, titles, and forms of address when they communicate character identity, relationship, hierarchy, or emotional tone.
-- Preserve natural particles when they carry real emotional or conversational meaning; remove them only when genuinely unnecessary.
-- Avoid stiff word-for-word phrasing and unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
-- Keep terminology and character references consistent with surrounding subtitles.
-- Do not turn a complete thought into a one-word or two-word fragment unless that is already natural for the scene.
-- For timing-rewrite items, rewrite CURRENT_TRANSLATION naturally using NO MORE THAN TARGET_MAX_WORDS whitespace-separated Vietnamese words. The word limit is mandatory.
-- Do not force English-style shortening techniques onto Vietnamese.
-- Do not make the sentence fragmented or unnatural merely to make it shorter.
-- Do not add new information.
-- Do not change the core meaning simply to fit the duration.
-- Return only the rewritten Vietnamese subtitle text.
-- Do not include explanations, notes, markdown, or commentary.
+Chỉ trả về câu đã rút gọn.
 
-OUTPUT FORMAT:
-Return only valid JSON mapping ID to rewritten text:
+Return only valid JSON:
 [
   {
     "id": 123,
-    "text": "Rewritten subtitle text."
+    "text": "Câu đã rút gọn."
   }
 ]"""
 
@@ -2611,6 +2572,12 @@ then the response MUST contain exactly:
 [12, 13, 14, 16]
 
 even if some rewritten text remains unchanged."""
+        vietnamese_timing_guidance = """BATCH OUTPUT CONTRACT:
+
+Return exactly one JSON result for every supplied id.
+Do not omit, invent, or duplicate ids.
+Return no commentary, markdown, explanation, or text outside the JSON response."""
+        prompt_guidance = vietnamese_timing_guidance if normalized_lang == "vi" else timing_guidance
 
         TIMING_RETRY_BATCH_SIZE = 10
         MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS = 2
@@ -2643,7 +2610,7 @@ even if some rewritten text remains unchanged."""
                 
                 prompt = (
                     f"{_build_timing_retry_prompt(normalized_lang)}"
-                    f"\n\n{timing_guidance}"
+                    f"\n\n{prompt_guidance}"
                     f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
                 )
                 

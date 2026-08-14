@@ -312,8 +312,10 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertEqual(replacements[100], "S100")
         self.assertEqual(len(calls), 10)
         
-        # Check that it builds the correct Vietnamese retry prompt
-        self.assertIn("Keep the output entirely in Vietnamese", calls[0])
+        # Check that it builds the simplified Vietnamese retry prompt
+        self.assertIn("Rút gọn câu tiếng Việt sau còn tối đa {TARGET_MAX_WORDS} từ.", calls[0])
+        self.assertIn("Bắt buộc không vượt quá {TARGET_MAX_WORDS} từ.", calls[0])
+        self.assertIn("Câu hiện tại:\n{CURRENT_TRANSLATION}", calls[0])
         self.assertIn('"source_text": "src 1"', calls[0])
         self.assertIn('"current_translation": "current 1"', calls[0])
         self.assertIn('"output_language": "vi"', calls[0])
@@ -326,13 +328,19 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         self.assertIn('"next_context": "next"', calls[0])
         self.assertIn('"correction_round": 2', calls[0])
         self.assertIn('"voice_seconds": 2.0', calls[0])
+        self.assertNotIn("TIMING OPTIMIZATION CONTEXT", calls[0])
+        self.assertNotIn("required_reduction_percent` is", calls[0])
+        self.assertNotIn("Use SOURCE_TEXT", calls[0])
 
     def test_timing_retry_prompt_uses_language_specific_rules(self) -> None:
         vietnamese_prompt = _build_timing_retry_prompt("vi")
         english_prompt = _build_timing_retry_prompt("en")
 
-        self.assertIn("Keep the output entirely in Vietnamese", vietnamese_prompt)
-        self.assertIn("natural spoken Vietnamese", vietnamese_prompt)
+        self.assertIn("Rút gọn câu tiếng Việt", vietnamese_prompt)
+        self.assertIn("Bắt buộc không vượt quá", vietnamese_prompt)
+        self.assertNotIn("available duration", vietnamese_prompt)
+        self.assertNotIn("source_text", vietnamese_prompt)
+        self.assertNotIn("context", vietnamese_prompt.lower())
         self.assertNotIn("American English", vietnamese_prompt)
         self.assertIn("American English", english_prompt)
         self.assertIn("Use contractions", english_prompt)
