@@ -9,6 +9,16 @@ import { SliderNumericField } from './NumericField';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
+const TRANSLATION_TARGET_LANGUAGES = [
+  ['vi', 'Vietnamese'],
+  ['en', 'English'],
+] as const;
+
+const TRANSLATION_SOURCE_LANGUAGES = [
+  ['auto', 'Auto detect'],
+  ...TRANSLATION_TARGET_LANGUAGES,
+] as const;
+
 const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, string]> = [
   ['subtitles', Captions, 'Subtitles', 'Generate or import'],
   ['translate', Languages, 'Translate', 'Create translated SRT'],
@@ -223,8 +233,24 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
   const currentJobKinds = jobKinds[editor.activeTool] || [];
   const toolJobs = [...editor.jobs].filter((job) => currentJobKinds.includes(job.kind)).sort((a, b) => b.id - a.id);
   const activeJob = editor.activeJobs.find((job) => currentJobKinds.includes(job.kind));
-  const displayJob = activeJob || toolJobs.find((job) => job.status === 'error' || job.status === 'cancelled');
+  const displayJob = activeJob || toolJobs.find((job) => job.status === 'error' || job.status === 'cancelled' || (editor.activeTool === 'translate' && job.status === 'completed'));
   const title = TOOLS.find(([key]) => key === editor.activeTool)?.[2];
+  const voiceIssueByIndex = new Map(editor.timelineIssues.map((issue) => [issue.index, issue]));
+  const voiceReadyCount = editor.srt.segments.filter((segment) => Boolean(editor.voiceByIndex[segment.index]?.audioUrl)).length;
+  const activeVoiceIssueCount = editor.srt.segments.filter((segment) => {
+    const issue = voiceIssueByIndex.get(segment.index);
+    const currentText = editor.edits[segment.index] ?? segment.text;
+    return Boolean(issue && currentText.trim() === issue.text.trim());
+  }).length;
+  const allVoiceLinesReady = editor.srt.segments.length > 0 && voiceReadyCount === editor.srt.segments.length;
+  const canMergeVoice = allVoiceLinesReady && activeVoiceIssueCount <= 0;
+  const mergeVoiceTitle = !editor.srt.asset
+    ? 'Select an SRT before merging voiceover'
+    : activeVoiceIssueCount > 0
+      ? 'Review red voice lines before merging'
+      : !allVoiceLinesReady
+        ? 'Generate every voice line before merging'
+        : 'Merge voiceover into A2';
   return <div className="tool-form">
     <div className="tool-form-heading"><span className="eyebrow">Tool</span><h2>{title}</h2></div>
     {editor.activeTool === 'subtitles' && <>
@@ -236,10 +262,19 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
       <button className="full" disabled={busy} onClick={() => importSrtRef.current?.click()}><Upload size={15} /> Import & replace SRT</button>
     </>}
     {editor.activeTool === 'translate' && <>
-      <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-      <label>Source language<select value={editor.translationSourceLanguage} onChange={(event) => editor.setTranslationSourceLanguage(event.target.value)}>{SOURCE_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-      <label>Target language<select value={editor.targetLanguage} onChange={(e) => editor.setTargetLanguage(e.target.value)}>{LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-      <button className="primary full" disabled={!editor.srt.asset || busy} onClick={editor.translate}><Languages size={16} /> Translate & replace active SRT</button>
+      <label>Source SRT<select value={editor.srt.asset?.sourceAssetId || editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.originalSrtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+      <label>Source language<select value={editor.translationSourceLanguage} onChange={(event) => editor.setTranslationSourceLanguage(event.target.value)}>{TRANSLATION_SOURCE_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+      <label>Target language<select value={editor.targetLanguage} onChange={(e) => editor.setTargetLanguage(e.target.value)}>{TRANSLATION_TARGET_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+      <button className="primary full" disabled={!editor.originalSrtAssets.length || busy} onClick={editor.translate}><Languages size={16} /> Translate to new SRT</button>
+      {editor.translatedSrt.asset && <div className="operation-done">
+        <Languages size={18} />
+        <strong>{editor.translatedSrt.asset.name}</strong>
+        <p>{editor.translatedSrt.segments.length} translated subtitle lines are ready.</p>
+        <div className="inspector-buttons column">
+          <button onClick={() => editor.loadSrt(editor.translatedSrt.asset!.id)}><Captions size={14} /> Open translated SRT</button>
+          <button onClick={editor.replaceWithTranslated}><Languages size={14} /> Replace source text</button>
+        </div>
+      </div>}
     </>}
     {editor.activeTool === 'remove' && <>
       {editor.activeBlurEffect && <div className="operation-done"><Eraser size={18} /><strong>Blur effect is on FX</strong><p>Select the FX clip and press Delete or Backspace to remove it. The source video is unchanged.</p></div>}
@@ -256,7 +291,8 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
       <label>Voice<select value={editor.ttsVoice} onChange={(e) => editor.setTtsVoice(e.target.value)}>{editor.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label || voice.id}</option>)}</select></label>
       {editor.ttsEngine === 'vieneu' && <label>Rate<select value={editor.ttsRate} onChange={(e) => editor.setTtsRate(e.target.value)}><option>.9</option><option>1.0</option><option>1.1</option></select></label>}
       <button className="primary full" disabled={!editor.srt.asset || busy} onClick={() => editor.generateVoice()}><Volume2 size={16} /> Generate voiceover</button>
-      <p className="form-help">Voiceover is automatically merged into one clip on A2 and added to the preview.</p>
+      <button className="full" disabled={!editor.srt.asset || busy || !canMergeVoice} title={mergeVoiceTitle} onClick={editor.mergeVoice}><Volume2 size={16} /> Merge voiceover</button>
+      <p className="form-help">Voice lines: {voiceReadyCount}/{editor.srt.segments.length} ready{activeVoiceIssueCount ? ` - ${activeVoiceIssueCount} needs review` : ''}.</p>
     </>}
     {editor.activeTool === 'audio' && <><div className="operation-done"><Music2 size={18} /><strong>{editor.audioMode === 'remove_vocals' ? 'Removing vocals' : editor.audioMode === 'remove_music' ? 'Removing music' : 'Original audio'}</strong><p>Right-click the video on the timeline to change audio mode. Model: UVR-MDX-NET Inst HQ 3 · instrumental 95% + original audio 5%.</p></div><label>Video volume<SliderNumericField value={editor.videoVolumeDb} min={-60} max={20} step={0.1} unit="dB" onChange={editor.updateVideoVolumeDb} ariaLabel="Video volume in decibels" /></label><label className="check-line"><input type="checkbox" checked={editor.previewMuted} onChange={(event) => editor.setPreviewMuted(event.target.checked)} /> Mute preview</label></>}
     {editor.activeTool === 'export' && <><button className="primary full" disabled={editor.audioMode !== 'original' && !editor.audioSeparationReady} onClick={onOpenExport}><Download size={16} /> Export final video</button>{editor.srt.asset && <a className="button full" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={16} /> Export selected SRT</a>}<p className="form-help">Final video export renders the current timeline into one MP4.</p></>}

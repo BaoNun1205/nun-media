@@ -31,7 +31,7 @@ from stitch_studio.config import AppConfig, ensure_dirs  # noqa: E402
 from stitch_studio.audio_separation import AUDIO_MODE_ORIGINAL, AUDIO_MODE_REMOVE_MUSIC, AUDIO_MODE_REMOVE_VOCALS, AUDIO_MODES, AUDIO_SEPARATOR_MODEL, AudioSeparationService  # noqa: E402
 from stitch_studio.models import SubtitleSegment, VideoItem  # noqa: E402
 from stitch_studio.rendering.timeline_renderer import ExportSettings, render_project_timeline  # noqa: E402
-from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _build_timing_retry_duration_metadata, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
+from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, build_timing_retry_optimizer_items, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
 from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
@@ -115,6 +115,11 @@ class TimelineRemapRequest(BaseModel):
 
 class TtsSegmentRequest(TtsRequest):
     pass
+
+
+class TtsSegmentSpeedRequest(TtsSegmentRequest):
+    speed: float = 1.10
+    targetSpeed: float | None = None
 
 
 class SubtitleRemoveRequest(BaseModel):
@@ -490,7 +495,7 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
     still_too_long: list[dict[str, Any]] = []
     optimized_srt_persisted = False
     correction_round = 0
-    MAX_TIMING_CORRECTION_ROUNDS = 10
+    MAX_TIMING_CORRECTION_ROUNDS = 5
     rewrite_state_by_id: dict[int, bool] = {}
 
     def persist_timing_srt(path: Path) -> None:
@@ -549,42 +554,33 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
         output_language = timing_output_language()
         current_segments = read_srt(current_srt_path)
         current_map = {segment.index: segment for segment in current_segments}
-        optimizer_items: list[dict[str, Any]] = []
-        for row in still_too_long:
-            idx = int(row.get("index") or 0)
-            current_segment = current_map.get(idx)
-            current_text = current_segment.text if current_segment else str(row.get("text") or "")
-            available = float(row.get("working_available_duration") or 0)
-            voice_duration = float(row.get("original_tts_duration") or 0)
-            previous_context = current_map[idx - 1].text if idx - 1 in current_map else ""
-            next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
-            
-            max_local_speed = 1.30
-            timing_retry_metadata = _build_timing_retry_duration_metadata(
-                available,
-                voice_duration,
-                already_rewritten=bool(rewrite_state_by_id.get(idx)),
-                hard_max_local_speed=max_local_speed,
-            )
+        optimizer_items = build_timing_retry_optimizer_items(
+            current_segments=current_segments,
+            rows=rows,
+            still_too_long=still_too_long,
+            source_map=source_map,
+            output_language=output_language,
+            rewrite_state_by_id=rewrite_state_by_id,
+            hard_max_local_speed=1.30,
+        )
+        for item in optimizer_items:
+            item["correction_round"] = correction_round
 
-            optimizer_items.append(
-                {
-                    "id": idx,
-                    "output_language": output_language,
-                    "source_text": source_map.get(idx, ""),
-                    "current_translation": current_text,
-                    "previous_context": previous_context,
-                    "next_context": next_context,
-                    "available_seconds": available,
-                    "voice_seconds": voice_duration,
-                    "max_local_speed": max_local_speed,
-                    "target_max_tts_duration": timing_retry_metadata["target_max_tts_duration"],
-                    "required_reduction_percent": timing_retry_metadata["required_reduction_percent"],
-                    "correction_round": correction_round,
-                }
-            )
+        try:
+            replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
+        except Exception as exc:
+            manifest_path = timing_manifest_path()
+            if manifest_path.exists():
+                mark_needs_review(manifest_path, still_too_long, correction_round)
+            progress(f"Timing optimizer needs manual review: {exc}")
+            return {
+                "needsReview": True,
+                "reviewLineIds": [int(row.get("index") or 0) for row in still_too_long],
+                "manifestPath": str(manifest_path) if manifest_path.exists() else "",
+                "outputPath": "Needs review",
+                "detail": str(exc),
+            }
 
-        replacements = translator.optimize_timing_translations(optimizer_items, correction_round=correction_round, progress=progress)
         def normalize_retry_text_for_change_detection(text: str) -> str:
             import re
             return re.sub(r'[^\w\s]', '', " ".join((text or "").split())).casefold()
@@ -600,9 +596,9 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
                     changed += 1
                     rewrite_state_by_id[idx] = True
                 else:
-                    rewrite_state_by_id[idx] = False
+                    rewrite_state_by_id[idx] = bool(rewrite_state_by_id.get(idx))
             else:
-                rewrite_state_by_id[idx] = False
+                rewrite_state_by_id[idx] = bool(rewrite_state_by_id.get(idx))
 
         if changed <= 0:
             progress(
@@ -619,11 +615,31 @@ def _synthesize_tts_for_video(video, srt_path: Path, payload: TtsRequest, progre
 
     if still_too_long:
         manifest_path = timing_manifest_path()
-        if manifest_path.exists():
-            mark_needs_review(manifest_path, still_too_long, correction_round)
         preview = ", ".join(f"#{int(row.get('index') or 0)}" for row in still_too_long[:12])
         extra = f", +{len(still_too_long) - 12} more" if len(still_too_long) > 12 else ""
-        raise RuntimeError(f"TTS text is still TEXT_TOO_LONG / NEEDS_REVIEW after {correction_round} Gemini correction round(s): {preview}{extra}.")
+        progress(
+            f"Timing optimization reached {correction_round} Gemini correction round(s); "
+            f"force-fitting remaining overlong segment(s): {preview}{extra}."
+        )
+        timeline_options["text_retry_preferred_speed_threshold"] = float("inf")
+        timeline_options["force_fit_overlong"] = True
+        try:
+            final_output = do_synthesis(current_srt_path)
+        except Exception as exc:
+            if manifest_path.exists():
+                mark_needs_review(manifest_path, still_too_long, correction_round)
+            raise RuntimeError(f"Final force-fit TTS pass failed after {correction_round} Gemini correction round(s): {exc}") from exc
+        manifest_path = timing_manifest_path()
+        if manifest_path.exists():
+            state, rows = load_timing_manifest(manifest_path)
+            still_too_long = [row for row in rows if row.get("segment_status") == "TEXT_TOO_LONG"]
+        if still_too_long:
+            if manifest_path.exists():
+                mark_needs_review(manifest_path, still_too_long, correction_round)
+            preview = ", ".join(f"#{int(row.get('index') or 0)}" for row in still_too_long[:12])
+            extra = f", +{len(still_too_long) - 12} more" if len(still_too_long) > 12 else ""
+            raise RuntimeError(f"Final force-fit TTS pass still has TEXT_TOO_LONG segment(s): {preview}{extra}.")
+        progress("Final force-fit TTS pass completed; all remaining segment(s) fit their slots.")
 
     if current_srt_path != srt_path and not optimized_srt_persisted:
         persist_timing_srt(current_srt_path)
@@ -759,6 +775,10 @@ def _translation_progress(message: str, low: str) -> tuple[float, str] | None:
         total = max(1, int(match.group(2)))
         ratio = min(max(done, 0) / total, 1.0)
         return 0.10 + 0.85 * ratio, f"Translating subtitles ({done}/{total})"
+    if "sending full-srt" in low or ("sending " in low and "subtitle" in low and "gemini" in low):
+        return 0.08, "Sending subtitles to Gemini"
+    if "translated srt saved" in low or "translated srt exported" in low:
+        return 0.98, "Saving translated SRT"
     if "translating" in low:
         return 0.08, "Loading translation model"
     return None
@@ -916,6 +936,11 @@ def _asset_payload(asset) -> dict[str, Any]:
         metadata["segment_count"] = _srt_segment_count(asset.path)
     if metadata != (asset.metadata or {}):
         storage.update_asset_metadata(asset.id, metadata)
+    source_asset_id = metadata.get("source_asset_id") if isinstance(metadata, dict) else None
+    try:
+        source_asset_id_value = int(source_asset_id) if source_asset_id else None
+    except (TypeError, ValueError):
+        source_asset_id_value = None
     return {
         "id": asset.id,
         "videoId": asset.video_id,
@@ -925,6 +950,7 @@ def _asset_payload(asset) -> dict[str, Any]:
         "engine": asset.engine,
         "status": asset.status,
         "createdAt": asset.created_at,
+        "sourceAssetId": source_asset_id_value,
         "metadata": metadata,
     }
 
@@ -1300,6 +1326,21 @@ def _replace_srt_asset(video, asset, content: str, reason: str, progress: Callab
     return storage.get_asset(asset.id)
 
 
+def _translation_srt_asset(video, source_asset, target_language: str):
+    source_id = int(source_asset.id)
+    target = (target_language or "").strip().lower()
+    for asset in storage.list_assets(video.id):
+        metadata = asset.metadata or {}
+        if (
+            asset.kind == "srt"
+            and _is_translation_srt(asset)
+            and int(metadata.get("source_asset_id") or 0) == source_id
+            and str(metadata.get("target_language") or "").strip().lower() == target
+        ):
+            return asset
+    return None
+
+
 def _normalize_area_ratio(area: Any) -> dict[str, float] | None:
     if not isinstance(area, dict):
         return None
@@ -1573,25 +1614,279 @@ def _segment_text_for_engine(segment: SubtitleSegment, engine: str) -> str:
     return _clean_capcut_tts_text(segment.text) if engine == "capcut" else segment.text.strip()
 
 
-def _segment_status(row: dict[str, Any] | None, segment: SubtitleSegment, engine: str, signature: str) -> dict[str, Any]:
+def _segment_status(row: dict[str, Any] | None, segment: SubtitleSegment, engine: str, signature: str, timing_row: dict[str, Any] | None = None) -> dict[str, Any]:
     expected_text = _segment_text_for_engine(segment, engine)
     path = _manifest_audio_path(row or {})
     has_audio = bool(row and path.exists())
-    stale = bool(row) and (
-        row.get("text") != expected_text
-        or row.get("generation_signature") != signature
-        or not path.exists()
-    )
+    text_changed = bool(row) and row.get("text") != expected_text
+    settings_changed = bool(row) and row.get("generation_signature") != signature
+    audio_missing = bool(row) and not path.exists()
+    stale = text_changed or settings_changed or audio_missing
+    duration = None
+    if has_audio:
+        try:
+            import soundfile as sf
+            info = sf.info(str(path))
+            duration = float(info.frames) / float(info.samplerate) if info.samplerate else None
+        except Exception:
+            duration = None
+    subtitle_duration = max(0.0, segment.end - segment.start)
+    required_speed = duration / subtitle_duration if duration and subtitle_duration > 0 else None
     return {
         "index": segment.index,
+        "engine": engine,
         "startLabel": seconds_to_srt_time(segment.start),
         "endLabel": seconds_to_srt_time(segment.end),
         "text": segment.text,
         "ttsText": expected_text,
-        "hasAudio": has_audio and not stale,
+        "hasAudio": has_audio and not text_changed,
         "stale": stale,
+        "settingsChanged": settings_changed,
+        "textChanged": text_changed,
         "path": str(path) if has_audio else "",
-        "audioUrl": f"/videos/{{video_id}}/tts/segments/{segment.index}/audio?engine={engine}" if has_audio and not stale else "",
+        "audioUrl": f"/videos/{{video_id}}/tts/segments/{segment.index}/audio?engine={engine}" if has_audio and not text_changed else "",
+        "duration": duration,
+        "subtitleDuration": subtitle_duration,
+        "requiredLocalSpeed": required_speed,
+        "speedMultiplier": row.get("speed_multiplier") if row else None,
+        "appliedLocalSpeed": timing_row.get("applied_local_speed") if timing_row else None,
+        "timingStatus": timing_row.get("segment_status") if timing_row else None,
+        "availableDuration": timing_row.get("working_available_duration") if timing_row else None,
+    }
+
+
+def _record_single_tts_timing_check(
+    video,
+    segment: SubtitleSegment,
+    audio_path: Path,
+    *,
+    engine: str,
+    source_srt: Path,
+    payload: TtsSegmentRequest,
+) -> None:
+    try:
+        import soundfile as sf
+        info = sf.info(str(audio_path))
+        sample_rate = float(info.samplerate or 0)
+        tts_duration = float(info.frames) / sample_rate if sample_rate > 0 else 0.0
+    except Exception:
+        tts_duration = 0.0
+
+    timeline_options = _timeline_options(payload)
+    safety_gap = float(timeline_options.get("safety_gap") or 0.0)
+    hard_max_speed = float(timeline_options.get("hard_max_local_speed") or 1.30)
+    available = max(0.001, segment.end - segment.start - safety_gap)
+    required_speed = tts_duration / available if available > 0 else None
+    if required_speed is None or required_speed > hard_max_speed:
+        status = "TEXT_TOO_LONG"
+        applied_speed = 1.0
+    elif required_speed > 1.000001:
+        status = "SPEED_ADJUSTED"
+        applied_speed = required_speed
+    else:
+        status = "FIT"
+        applied_speed = 1.0
+
+    output_dir = _segment_output_dir(video.id, engine)
+    timeline_manifest_path = output_dir / "srt_slot_timeline.json"
+    try:
+        existing = json.loads(timeline_manifest_path.read_text(encoding="utf-8")) if timeline_manifest_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    rows = [
+        row
+        for row in (existing.get("segments") if isinstance(existing, dict) else []) or []
+        if int(row.get("index") or -1) != segment.index
+    ]
+    rows.append(
+        {
+            "index": segment.index,
+            "text": segment.text,
+            "original_start_time": segment.start,
+            "original_end_time": segment.end,
+            "working_start_time": segment.start,
+            "working_end_time": segment.end,
+            "original_tts_path": str(audio_path),
+            "original_tts_duration": tts_duration,
+            "processed_tts_path": str(audio_path),
+            "processed_tts_duration": tts_duration,
+            "working_available_duration": available,
+            "required_local_speed": required_speed,
+            "applied_local_speed": applied_speed,
+            "segment_status": status,
+            "max_speed": hard_max_speed,
+            "hard_max_local_speed": hard_max_speed,
+            "safety_gap": safety_gap,
+            "needs_review": status == "TEXT_TOO_LONG",
+        }
+    )
+    rows.sort(key=lambda item: int(item.get("index") or 0))
+    needs_review = any(str(row.get("segment_status") or "") == "TEXT_TOO_LONG" for row in rows)
+    state = {
+        **((existing.get("state") if isinstance(existing, dict) else {}) or {}),
+        "timing_mode": "srt_slot",
+        "max_speed": hard_max_speed,
+        "hard_max_local_speed": hard_max_speed,
+        "safety_gap": safety_gap,
+        "final_validation_status": "NEEDS_REVIEW" if needs_review else "OK",
+        "needs_review": needs_review,
+        "counts": {
+            "TEXT_TOO_LONG": sum(1 for row in rows if row.get("segment_status") == "TEXT_TOO_LONG"),
+            "SPEED_ADJUSTED": sum(1 for row in rows if row.get("segment_status") == "SPEED_ADJUSTED"),
+            "FIT": sum(1 for row in rows if row.get("segment_status") == "FIT"),
+        },
+    }
+    timeline_manifest_path.write_text(json.dumps({"state": state, "segments": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata = dict(video.metadata or {})
+    metadata["tts_timeline"] = state
+    storage.update_video_metadata(video.id, metadata)
+    latest_manifest = storage.latest_asset(video.id, "tts_timeline_manifest")
+    if not latest_manifest or latest_manifest.path != timeline_manifest_path:
+        storage.add_asset(
+            video_id=video.id,
+            kind="tts_timeline_manifest",
+            path=timeline_manifest_path,
+            engine=f"srt-slot-timeline:{engine}:line-check",
+            metadata={"source_srt": str(source_srt), "timeline": state},
+        )
+
+
+def _audio_duration_seconds(audio_path: Path) -> float:
+    try:
+        import soundfile as sf
+        info = sf.info(str(audio_path))
+        return float(info.frames) / float(info.samplerate) if info.samplerate else 0.0
+    except Exception:
+        return 0.0
+
+
+def _ffmpeg_atempo_filter(speed: float) -> str:
+    value = max(0.5, min(100.0, float(speed)))
+    filters: list[str] = []
+    while value > 2.0:
+        filters.append("atempo=2.0")
+        value /= 2.0
+    while value < 0.5:
+        filters.append("atempo=0.5")
+        value /= 0.5
+    filters.append(f"atempo={value:.6f}")
+    return ",".join(filters)
+
+
+def _update_single_tts_timing_row(video, segment: SubtitleSegment, audio_path: Path, *, engine: str, source_srt: Path, payload: TtsSegmentRequest, applied_speed: float | None = None) -> dict[str, Any]:
+    timeline_options = _timeline_options(payload)
+    safety_gap = float(timeline_options.get("safety_gap") or 0.0)
+    hard_max_speed = float(timeline_options.get("hard_max_local_speed") or 1.30)
+    available = max(0.001, segment.end - segment.start - safety_gap)
+    duration = _audio_duration_seconds(audio_path)
+    required_speed = duration / available if available > 0 else None
+    status = "FIT" if required_speed is not None and required_speed <= 1.000001 else "TEXT_TOO_LONG"
+
+    output_dir = _segment_output_dir(video.id, engine)
+    timeline_manifest_path = output_dir / "srt_slot_timeline.json"
+    try:
+        existing = json.loads(timeline_manifest_path.read_text(encoding="utf-8")) if timeline_manifest_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    previous_rows = (existing.get("segments") if isinstance(existing, dict) else []) or []
+    previous_row = next((row for row in previous_rows if int(row.get("index") or -1) == segment.index), {})
+    rows = [row for row in previous_rows if int(row.get("index") or -1) != segment.index]
+    row = {
+        **previous_row,
+        "index": segment.index,
+        "text": segment.text,
+        "original_start_time": segment.start,
+        "original_end_time": segment.end,
+        "working_start_time": segment.start,
+        "working_end_time": segment.end,
+        "original_tts_path": previous_row.get("original_tts_path") or str(audio_path),
+        "original_tts_duration": previous_row.get("original_tts_duration") or duration,
+        "processed_tts_path": str(audio_path),
+        "processed_tts_duration": duration,
+        "working_available_duration": available,
+        "required_local_speed": required_speed,
+        "applied_local_speed": float(applied_speed if applied_speed is not None else previous_row.get("applied_local_speed") or 1.0),
+        "segment_status": status,
+        "max_speed": hard_max_speed,
+        "hard_max_local_speed": hard_max_speed,
+        "safety_gap": safety_gap,
+        "needs_review": status == "TEXT_TOO_LONG",
+    }
+    rows.append(row)
+    rows.sort(key=lambda item: int(item.get("index") or 0))
+    needs_review = any(str(item.get("segment_status") or "") == "TEXT_TOO_LONG" for item in rows)
+    state = {
+        **((existing.get("state") if isinstance(existing, dict) else {}) or {}),
+        "timing_mode": "srt_slot",
+        "max_speed": hard_max_speed,
+        "hard_max_local_speed": hard_max_speed,
+        "safety_gap": safety_gap,
+        "final_validation_status": "NEEDS_REVIEW" if needs_review else "OK",
+        "needs_review": needs_review,
+        "counts": {
+            "TEXT_TOO_LONG": sum(1 for item in rows if item.get("segment_status") == "TEXT_TOO_LONG"),
+            "SPEED_ADJUSTED": sum(1 for item in rows if item.get("segment_status") == "SPEED_ADJUSTED"),
+            "FIT": sum(1 for item in rows if item.get("segment_status") == "FIT"),
+        },
+    }
+    timeline_manifest_path.write_text(json.dumps({"state": state, "segments": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata = dict(video.metadata or {})
+    metadata["tts_timeline"] = state
+    storage.update_video_metadata(video.id, metadata)
+    latest_manifest = storage.latest_asset(video.id, "tts_timeline_manifest")
+    if not latest_manifest or latest_manifest.path != timeline_manifest_path:
+        storage.add_asset(
+            video_id=video.id,
+            kind="tts_timeline_manifest",
+            path=timeline_manifest_path,
+            engine=f"srt-slot-timeline:{engine}:line-speed",
+            metadata={"source_srt": str(source_srt), "timeline": state},
+        )
+    return row
+
+
+def _speed_up_tts_segment(video, srt_path: Path, segment_index: int, payload: TtsSegmentSpeedRequest) -> dict[str, Any]:
+    engine = _segment_engine(payload.engine)
+    speed = max(1.0001, min(4.0, float(payload.speed or 1.10)))
+    segment = _segment_by_index(srt_path, segment_index)
+    manifest_path = _segment_manifest_path(video.id, engine)
+    rows = {int(row.get("index") or -1): row for row in _read_manifest_rows(manifest_path)}
+    row = rows.get(segment.index)
+    source_path = _manifest_audio_path(row or {})
+    if not row or not source_path.exists():
+        raise HTTPException(404, f"TTS segment #{segment.index} has no rendered audio to speed up")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(409, "ffmpeg is required to speed up TTS segment audio")
+    current_speed = float(row.get("speed_multiplier") or 1.0)
+    next_speed = current_speed * speed
+    target_speed = max(1.0, min(3.0, float(payload.targetSpeed or next_speed)))
+    output_path = _segment_output_dir(video.id, engine) / f"segment_{segment.index:04d}_speed_{next_speed:.3f}_{time.time_ns() % 1_000_000:06d}.wav"
+    proc = subprocess.run(
+        [ffmpeg, "-y", "-i", str(source_path), "-filter:a", _ffmpeg_atempo_filter(speed), "-ac", "1", "-ar", "48000", str(output_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError(f"Could not speed up TTS segment: {proc.stderr[-800:]}")
+    next_row = {**row, "path": str(output_path), "speed_multiplier": next_speed}
+    if "wav" in row:
+        next_row["wav"] = str(output_path)
+    _write_manifest_row(manifest_path, next_row)
+    timing_row = _update_single_tts_timing_row(video, segment, output_path, engine=engine, source_srt=srt_path, payload=payload, applied_speed=target_speed)
+    duration = _audio_duration_seconds(output_path)
+    return {
+        "index": segment.index,
+        "path": str(output_path),
+        "duration": duration,
+        "speedMultiplier": next_speed,
+        "appliedLocalSpeed": target_speed,
+        "status": timing_row.get("segment_status"),
+        "requiredLocalSpeed": timing_row.get("required_local_speed"),
+        "ready": timing_row.get("segment_status") == "FIT",
     }
 
 
@@ -1663,6 +1958,14 @@ def _render_single_tts_segment(video, srt_path: Path, segment_index: int, payloa
             "generation_signature": signature,
         }
     _write_manifest_row(manifest_path, row)
+    _record_single_tts_timing_check(
+        video,
+        segment,
+        _manifest_audio_path(row),
+        engine=engine,
+        source_srt=srt_path,
+        payload=payload,
+    )
     return {"index": segment.index, "path": str(_manifest_audio_path(row)), "manifest": str(manifest_path)}
 
 
@@ -4185,10 +4488,25 @@ def api_delete_asset(asset_id: int) -> dict[str, Any]:
                 pass
         return {"deletedAssetIds": deleted_ids}
     else:
-        path = asset.path
-        storage.delete_asset(asset.id)
-        removed_files = _delete_owned_path_if_unreferenced(path)
-        return {"deletedAssetIds": [asset.id], "deletedFiles": 1 if removed_files else 0}
+        assets_to_remove = [asset]
+        if asset.kind == "srt" and not _is_translation_srt(asset):
+            assets_to_remove.extend(
+                candidate
+                for candidate in storage.list_assets(asset.video_id)
+                if (
+                    candidate.kind == "srt"
+                    and _is_translation_srt(candidate)
+                    and int((candidate.metadata or {}).get("source_asset_id") or 0) == asset.id
+                )
+            )
+        deleted_ids: list[int] = []
+        deleted_files = 0
+        for candidate in assets_to_remove:
+            path = candidate.path
+            if storage.delete_asset(candidate.id):
+                deleted_ids.append(candidate.id)
+                deleted_files += 1 if _delete_owned_path_if_unreferenced(path) else 0
+        return {"deletedAssetIds": deleted_ids, "deletedFiles": deleted_files}
 
 
 @app.post("/api/assets/{asset_id}/reveal")
@@ -4252,11 +4570,17 @@ def translate_srt(video_id: int, payload: SrtTranslateRequest) -> dict[str, Any]
         raise HTTPException(404, "SRT not found")
     if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
         raise HTTPException(400, "SRT asset does not belong to this video")
+    if _is_translation_srt(asset):
+        source_id = int((asset.metadata or {}).get("source_asset_id") or 0)
+        source_asset = storage.get_asset(source_id) if source_id else None
+        if not source_asset or not source_asset.path.exists() or not _asset_belongs_to_video(source_asset, video):
+            raise HTTPException(400, "Translated SRT is missing its original source track")
+        asset = source_asset
     active = _active_job("translate", video.id)
     if active:
         return {"jobId": active["id"], "alreadyRunning": True}
     job_id = _new_job("translate", f"Translate SRT: {video.title}", video.id)
-    def translate_and_replace(progress: Callable[[str], None]):
+    def translate_and_save(progress: Callable[[str], None]):
         translated_path = translator.translate_srt(
             video,
             asset.path,
@@ -4266,22 +4590,38 @@ def translate_srt(video_id: int, payload: SrtTranslateRequest) -> dict[str, Any]
             progress=progress,
             register_asset=False,
         )
-        replaced = _replace_srt_asset(video, asset, translated_path.read_text(encoding="utf-8-sig"), "before-translation")
-        metadata = dict(replaced.metadata or {})
-        metadata.update(
-            {
-                "target_language": payload.targetLanguage,
-                "translation_engine": payload.engine,
-                "source_language": payload.sourceLanguage,
-            }
-        )
-        storage.update_asset_metadata(replaced.id, metadata)
-        replaced = storage.get_asset(replaced.id) or replaced
-        translated_path.unlink(missing_ok=True)
-        progress(f"Translated SRT replaced the active subtitle track: {replaced.path}")
-        return {"assetId": replaced.id, "outputPath": str(replaced.path)}
+        translated = _translation_srt_asset(video, asset, payload.targetLanguage)
+        metadata = {
+            "role": "translation",
+            "source_asset_id": asset.id,
+            "source_srt": str(asset.path),
+            "target_language": payload.targetLanguage,
+            "translation_engine": payload.engine,
+            "source_language": payload.sourceLanguage,
+        }
+        if translated:
+            if translated.path.resolve() != translated_path.resolve():
+                translated.path.write_text(translated_path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+                translated_path.unlink(missing_ok=True)
+            current_metadata = dict(translated.metadata or {})
+            current_metadata.update(metadata)
+            storage.update_asset_metadata(translated.id, current_metadata)
+            translated = storage.get_asset(translated.id) or translated
+        else:
+            asset_id = storage.add_asset(
+                video_id=video.id,
+                kind="srt",
+                path=translated_path,
+                engine=f"{payload.engine}:{payload.targetLanguage}",
+                metadata=metadata,
+            )
+            translated = storage.get_asset(asset_id)
+        if not translated:
+            raise RuntimeError("Translated SRT asset could not be saved")
+        progress(f"Translated SRT saved as a separate subtitle track: {translated.path}")
+        return {"assetId": translated.id, "sourceAssetId": asset.id, "outputPath": str(translated.path)}
 
-    _run_job(job_id, translate_and_replace)
+    _run_job(job_id, translate_and_save)
     return {"jobId": job_id}
 
 
@@ -4356,12 +4696,56 @@ def list_tts_segments(
     if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
         raise HTTPException(400, "SRT asset does not belong to this video")
     selected_engine = _segment_engine(engine)
-    payload = TtsSegmentRequest(srtAssetId=asset.id, engine=selected_engine, voice=voice, language=language, rate=rate)
-    signature, _ = _segment_signature(selected_engine, payload)
-    rows = {int(row.get("index") or -1): row for row in _read_manifest_rows(_segment_manifest_path(video.id, selected_engine))}
+    engines = [selected_engine, *[candidate for candidate in ("vieneu", "capcut", "pocket") if candidate != selected_engine]]
+    signatures: dict[str, str] = {}
+    manifest_rows: dict[str, dict[int, dict[str, Any]]] = {}
+    timing_rows_by_engine: dict[str, dict[int, dict[str, Any]]] = {}
+
+    def load_timing_rows(candidate_engine: str) -> dict[int, dict[str, Any]]:
+        timing_manifest_path = _segment_output_dir(video.id, candidate_engine) / "srt_slot_timeline.json"
+        if not timing_manifest_path.exists() and candidate_engine == selected_engine:
+            latest_manifest_path = _latest_timeline_manifest_path(video.id)
+            if latest_manifest_path:
+                timing_manifest_path = latest_manifest_path
+        if not timing_manifest_path.exists():
+            return {}
+        try:
+            timing_payload = json.loads(timing_manifest_path.read_text(encoding="utf-8"))
+            return {
+                int(row.get("index") or -1): row
+                for row in (timing_payload.get("segments") if isinstance(timing_payload, dict) else []) or []
+            }
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {}
+
+    for candidate_engine in engines:
+        payload = TtsSegmentRequest(srtAssetId=asset.id, engine=candidate_engine, voice=voice, language=language, rate=rate)
+        signatures[candidate_engine], _ = _segment_signature(candidate_engine, payload)
+        manifest_rows[candidate_engine] = {
+            int(row.get("index") or -1): row for row in _read_manifest_rows(_segment_manifest_path(video.id, candidate_engine))
+        }
+        timing_rows_by_engine[candidate_engine] = load_timing_rows(candidate_engine)
     segments = []
     for segment in read_srt(asset.path):
-        item = _segment_status(rows.get(segment.index), segment, selected_engine, signature)
+        item = _segment_status(
+            manifest_rows[selected_engine].get(segment.index),
+            segment,
+            selected_engine,
+            signatures[selected_engine],
+            timing_rows_by_engine[selected_engine].get(segment.index),
+        )
+        if not item["audioUrl"]:
+            for candidate_engine in engines[1:]:
+                fallback = _segment_status(
+                    manifest_rows[candidate_engine].get(segment.index),
+                    segment,
+                    candidate_engine,
+                    signatures[candidate_engine],
+                    timing_rows_by_engine[candidate_engine].get(segment.index),
+                )
+                if fallback["audioUrl"]:
+                    item = fallback
+                    break
         if item["audioUrl"]:
             item["audioUrl"] = item["audioUrl"].replace("{video_id}", str(video.id))
         segments.append(item)
@@ -4400,6 +4784,20 @@ def generate_tts_segment(video_id: int, segment_index: int, payload: TtsSegmentR
     job_id = _new_job("tts-segment", f"TTS Line #{segment_index}: {video.title}", video.id)
     _run_job(job_id, lambda progress: _render_single_tts_segment(video, asset.path, segment_index, payload, progress))
     return {"jobId": job_id, "segmentIndex": segment_index}
+
+
+@app.post("/api/videos/{video_id}/tts/segments/{segment_index}/speed")
+def speed_up_tts_segment(video_id: int, segment_index: int, payload: TtsSegmentSpeedRequest) -> dict[str, Any]:
+    video = _video_or_404(video_id)
+    asset = storage.get_asset(payload.srtAssetId) if payload.srtAssetId else _primary_srt_asset(video)
+    if not asset or not asset.path.exists():
+        raise HTTPException(404, "SRT not found")
+    if not _asset_belongs_to_video(asset, video) or asset.kind != "srt":
+        raise HTTPException(400, "SRT asset does not belong to this video")
+    active = _active_job("tts-segment", video.id) or _active_job("tts", video.id)
+    if active:
+        raise HTTPException(409, f"Wait for active TTS job #{active['id']} before speeding up this line")
+    return _speed_up_tts_segment(video, asset.path, segment_index, payload)
 
 
 @app.get("/api/videos/{video_id}/tts/segments/{segment_index}/audio")

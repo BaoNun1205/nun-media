@@ -1,7 +1,8 @@
 import unittest
 import re
 
-from stitch_studio.services import _build_timing_retry_duration_metadata
+from stitch_studio.models import SubtitleSegment
+from stitch_studio.services import _build_timing_retry_duration_metadata, build_timing_retry_optimizer_items
 
 def normalize_retry_text_for_change_detection(text: str) -> str:
     return re.sub(r'[^\w\s]', '', " ".join((text or "").split())).casefold()
@@ -96,6 +97,60 @@ class TestTimingOrchestrationState(unittest.TestCase):
 
         self.assertAlmostEqual(metadata["target_max_tts_duration"], 2.60)
         self.assertAlmostEqual(metadata["required_reduction_percent"], 10.344828, places=5)
+
+    def test_vietnamese_timing_retry_includes_context_group(self):
+        segments = [
+            SubtitleSegment(index, float(index), float(index + 1), f"line {index}")
+            for index in range(1, 6)
+        ]
+        rows = [
+            {
+                "index": index,
+                "working_available_duration": 1.0,
+                "original_tts_duration": 1.25 if index == 3 else 0.8,
+                "segment_status": "TEXT_TOO_LONG" if index == 3 else "FIT",
+            }
+            for index in range(1, 6)
+        ]
+        items = build_timing_retry_optimizer_items(
+            current_segments=segments,
+            rows=rows,
+            still_too_long=[rows[2]],
+            source_map={index: f"source {index}" for index in range(1, 6)},
+            output_language="vi",
+            rewrite_state_by_id={},
+        )
+
+        self.assertEqual([item["id"] for item in items], [1, 2, 3, 4, 5])
+        self.assertEqual([item["id"] for item in items if item["needs_timing_rewrite"]], [3])
+        self.assertEqual(items[2]["context_group_ids"], [1, 2, 3, 4, 5])
+        self.assertEqual(len(items[2]["context_group"]), 5)
+
+    def test_english_timing_retry_keeps_single_overlong_item(self):
+        segments = [
+            SubtitleSegment(index, float(index), float(index + 1), f"line {index}")
+            for index in range(1, 6)
+        ]
+        rows = [
+            {
+                "index": index,
+                "working_available_duration": 1.0,
+                "original_tts_duration": 1.25 if index == 3 else 0.8,
+                "segment_status": "TEXT_TOO_LONG" if index == 3 else "FIT",
+            }
+            for index in range(1, 6)
+        ]
+        items = build_timing_retry_optimizer_items(
+            current_segments=segments,
+            rows=rows,
+            still_too_long=[rows[2]],
+            source_map={index: f"source {index}" for index in range(1, 6)},
+            output_language="en",
+            rewrite_state_by_id={},
+        )
+
+        self.assertEqual([item["id"] for item in items], [3])
+        self.assertNotIn("context_group", items[0])
 
     def test_all_items_unchanged(self):
         old = "Không đổi gì cả"

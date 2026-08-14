@@ -88,6 +88,129 @@ def _build_timing_retry_duration_metadata(
     }
 
 
+def _timing_retry_is_vietnamese(language: str | None) -> bool:
+    return _normalize_prompt_language(language) == "vi"
+
+
+def _timing_retry_context_ranges(
+    current_segments: list[SubtitleSegment],
+    overlong_ids: set[int],
+    *,
+    context_radius: int = 2,
+) -> list[tuple[int, int]]:
+    positions = {segment.index: position for position, segment in enumerate(current_segments)}
+    ranges: list[tuple[int, int]] = []
+    for item_id in sorted(overlong_ids):
+        position = positions.get(item_id)
+        if position is None:
+            continue
+        ranges.append(
+            (
+                max(0, position - context_radius),
+                min(len(current_segments) - 1, position + context_radius),
+            )
+        )
+    if not ranges:
+        return []
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if not merged or start > merged[-1][1] + 1:
+            merged.append((start, end))
+        else:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+    return merged
+
+
+def build_timing_retry_optimizer_items(
+    *,
+    current_segments: list[SubtitleSegment],
+    rows: list[dict[str, Any]],
+    still_too_long: list[dict[str, Any]],
+    source_map: dict[int, str],
+    output_language: str,
+    rewrite_state_by_id: dict[int, bool],
+    hard_max_local_speed: float = 1.30,
+) -> list[dict[str, Any]]:
+    current_map = {segment.index: segment for segment in current_segments}
+    row_by_id = {int(row.get("index") or 0): row for row in rows if int(row.get("index") or 0)}
+    overlong_ids = {int(row.get("index") or 0) for row in still_too_long if int(row.get("index") or 0)}
+    use_context_groups = _timing_retry_is_vietnamese(output_language)
+
+    context_group_by_id: dict[int, tuple[str, list[int]]] = {}
+    included_ids: set[int] = set(overlong_ids)
+    if use_context_groups:
+        included_ids = set()
+        for group_number, (start, end) in enumerate(
+            _timing_retry_context_ranges(current_segments, overlong_ids),
+            start=1,
+        ):
+            group_segments = [segment for segment in current_segments[start : end + 1] if segment.index in row_by_id]
+            group_ids = [segment.index for segment in group_segments]
+            if not group_ids:
+                continue
+            group_id = f"vi-context-{group_number}"
+            for item_id in group_ids:
+                context_group_by_id[item_id] = (group_id, group_ids)
+            included_ids.update(group_ids)
+
+    optimizer_items: list[dict[str, Any]] = []
+    for segment in current_segments:
+        idx = segment.index
+        if idx not in included_ids:
+            continue
+        row = row_by_id.get(idx)
+        if not row:
+            continue
+        available = float(row.get("working_available_duration") or 0)
+        voice_duration = float(row.get("original_tts_duration") or 0)
+        previous_context = current_map[idx - 1].text if idx - 1 in current_map else ""
+        next_context = current_map[idx + 1].text if idx + 1 in current_map else ""
+        timing_retry_metadata = _build_timing_retry_duration_metadata(
+            available,
+            voice_duration,
+            already_rewritten=bool(rewrite_state_by_id.get(idx)),
+            hard_max_local_speed=hard_max_local_speed,
+        )
+
+        item: dict[str, Any] = {
+            "id": idx,
+            "output_language": output_language,
+            "source_text": source_map.get(idx, ""),
+            "current_translation": segment.text,
+            "previous_context": previous_context,
+            "next_context": next_context,
+            "available_seconds": available,
+            "voice_seconds": voice_duration,
+            "max_local_speed": hard_max_local_speed,
+            "target_max_tts_duration": timing_retry_metadata["target_max_tts_duration"],
+            "required_reduction_percent": timing_retry_metadata["required_reduction_percent"],
+            "needs_timing_rewrite": idx in overlong_ids,
+        }
+        if use_context_groups:
+            group_id, group_ids = context_group_by_id.get(idx, ("", [idx]))
+            group_segments = [current_map[item_id] for item_id in group_ids if item_id in current_map]
+            item.update(
+                {
+                    "context_group_id": group_id,
+                    "context_group_ids": group_ids,
+                    "context_group": [
+                        {
+                            "id": group_segment.index,
+                            "source_text": source_map.get(group_segment.index, ""),
+                            "current_translation": group_segment.text,
+                            "needs_timing_rewrite": group_segment.index in overlong_ids,
+                        }
+                        for group_segment in group_segments
+                    ],
+                }
+            )
+        optimizer_items.append(item)
+
+    return optimizer_items
+
+
 
 # ---------------------------------------------------------------------------
 # Specialized English initial translation prompt (target = English)
@@ -97,20 +220,19 @@ Translate this SRT into natural spoken English for voiceover dubbing.
 
 Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, references, and story continuity.
 
-Timing is the top priority:
-- Keep each subtitle line short enough to fit its original SRT timecode.
-- Prefer concise, natural English over literal translation.
+Translation quality and context are the top priority. Keep subtitles reasonably concise for dubbing, but do not over-compress the first translation because timing overflow will be handled later by the timing optimizer:
+- Prefer natural English that preserves meaning over the shortest possible wording.
 - Preserve the core meaning, story event, tone, and important narrative information.
 - Do not add extra meaning, explanations, filler words, or repeated phrases.
 - Preserve the exact SRT numbering and timestamps.
 - Preserve the same number of subtitle blocks.
 - Never merge, split, omit, reorder, or move content between subtitle blocks.
 - Keep line breaks inside each subtitle block simple and readable.
-- If a source line is very short, translate it very short.
-- If a source line is dense, compress it into the shortest natural English that preserves the essential meaning.
+- If a source line is very short, translate it naturally and briefly.
+- If a source line is dense, keep enough meaning for the line to sound complete and understandable.
 - Prefer direct, active constructions over long or passive ones.
 - Simplify long clauses when the same idea can be expressed naturally with fewer spoken words.
-- Remove redundant qualifiers, repeated subjects, repeated information, and nonessential descriptive wording when necessary for timing.
+- Remove only clearly redundant wording; do not remove plot, motive, relationship, cause, consequence, or emotional meaning just to make the line shorter.
 - Prefer short, common spoken words when they express the same meaning naturally.
 - Use contractions when natural: "I'm", "don't", "can't", "it's", "we're", "they're", "I'd", "I'll".
 - Do not preserve source-language sentence structure when it sounds unnatural or unnecessarily long in English.
@@ -119,13 +241,13 @@ Timing is the top priority:
 - Keep names, terminology, character references, and relationships consistent throughout the SRT.
 - Return only valid SRT content. No notes, explanations, or markdown.
 
-Compression priority when timing is tight:
+When a line is genuinely too dense:
 1. Remove repetition and unnecessary filler.
 2. Replace verbose phrases with shorter natural spoken English.
 3. Simplify clause structure.
 4. Use contractions and shorter grammatical forms.
 5. Remove nonessential modifiers.
-6. Compress secondary detail only when required to fit timing.
+6. Compress secondary detail only when required for readability.
 7. Preserve the core event and intended meaning above everything that is optional.
 
 Target style:
@@ -134,6 +256,7 @@ Target style:
 - Natural for text-to-speech.
 - Easy to understand when heard once.
 - Concise without sounding robotic, telegraphic, or machine-translated.
+- Do not copy the source subtitle text verbatim. If the source is already English, rewrite it into natural spoken English unless the line is only a name, number, sound, or fixed term.
 
 Now translate this SRT:
 
@@ -147,23 +270,22 @@ Translate this SRT into natural spoken Vietnamese for voiceover dubbing.
 
 Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, forms of address, references, and story continuity.
 
-Timing is the top priority:
-- Keep each subtitle line short enough to fit its original SRT timecode.
-- Prefer concise, natural spoken Vietnamese over literal translation.
+Translation quality and context are the top priority. Keep subtitles reasonably concise for dubbing, but do not over-compress the first translation because timing overflow will be handled later by the timing optimizer:
+- Prefer natural spoken Vietnamese that preserves meaning over the shortest possible wording.
 - Preserve the core meaning, story event, tone, emotion, and important narrative information.
 - Do not add explanations, unnecessary interpretation, filler, or repeated information.
 - Preserve the exact SRT numbering and timestamps.
 - Preserve the same number of subtitle blocks.
 - Never merge, split, omit, reorder, or move content between subtitle blocks.
 - Keep line breaks inside each subtitle block simple and readable.
-- If a source line is very short, translate it very short.
-- If a source line is dense, express the same essential meaning in the shortest natural Vietnamese that still sounds complete and understandable.
+- If a source line is very short, translate it naturally and briefly.
+- If a source line is dense, keep enough meaning for the line to sound complete and understandable in Vietnamese.
 - Do not preserve source-language grammar or sentence structure when it sounds unnatural in Vietnamese.
 - Restructure long sentences into concise natural Vietnamese phrasing when necessary.
 - Prefer common spoken Vietnamese over formal, literary, overly Sino-Vietnamese, or machine-translated wording unless the story context specifically requires that register.
 - Avoid unnecessary repetition of subjects and pronouns when the subject is already obvious from context and omitting it remains completely clear in Vietnamese.
 - Do not remove a pronoun, kinship term, title, or form of address when it is important for identifying the speaker, listener, relationship, social role, or emotional tone.
-- Remove redundant wording, repeated explanations, and nonessential modifiers when necessary for timing.
+- Remove only clearly redundant wording; do not remove plot, motive, relationship, cause, consequence, or emotional meaning just to make the line shorter.
 - Preserve natural Vietnamese particles or emotional wording when they carry meaningful tone; do not remove them mechanically.
 - Keep names, terminology, forms of address, pronoun choices, and character relationships consistent throughout the SRT.
 - Use context to choose natural Vietnamese pronouns and forms of address instead of mechanically translating every source pronoun.
@@ -171,13 +293,13 @@ Timing is the top priority:
 - Never remove information that changes the plot, action, identity, relationship, cause, consequence, warning, discovery, or important emotional meaning.
 - Return only valid SRT content. No notes, explanations, or markdown.
 
-Compression priority when timing is tight:
+When a line is genuinely too dense:
 1. Remove repeated or already-understood information.
 2. Replace verbose expressions with shorter natural spoken Vietnamese.
 3. Remove unnecessary repeated subjects or pronouns only when the meaning remains unmistakably clear.
 4. Simplify long clause structures.
 5. Remove nonessential descriptive wording or modifiers.
-6. Compress secondary detail only when required to fit timing.
+6. Compress secondary detail only when required for readability.
 7. Preserve the core event, relationship, and intended meaning above everything optional.
 
 Target style:
@@ -187,6 +309,8 @@ Target style:
 - Easy to understand when heard once.
 - Concise without sounding clipped, unnatural, overly literal, or machine-translated.
 - Maintain natural storytelling rhythm even when the wording must be shortened.
+- Avoid fragment-like Vietnamese that sounds as if important context was cut away.
+- Do not copy the source subtitle text verbatim. If the source is already Vietnamese, rewrite it into natural spoken Vietnamese unless the line is only a name, number, sound, or fixed term.
 
 Now translate this SRT:
 
@@ -208,6 +332,7 @@ Translate the content naturally from SOURCE_LANGUAGE into TARGET_LANGUAGE.
 
 Requirements:
 - Write as a native speaker of TARGET_LANGUAGE would naturally speak.
+- Do not return the source subtitle text unchanged. If the source is already TARGET_LANGUAGE, rewrite it naturally in TARGET_LANGUAGE unless the line is only a name, number, sound, or fixed term.
 - Preserve the original meaning, tone, emotion, relationships, narrative intent, and continuity.
 - Use surrounding subtitle context to resolve pronouns, omitted subjects, ambiguous references, and incomplete sentences.
 - Do not translate mechanically or word-for-word when that would sound unnatural.
@@ -331,6 +456,8 @@ For each item in the batch you will receive:
 - next_context: next subtitle context
 - available_seconds: available duration in seconds
 - voice_seconds: current TTS duration in seconds
+- needs_timing_rewrite: true when this subtitle caused the timing retry
+- context_group/context_group_ids: nearby subtitle lines that should be read together when present
 
 Rewrite CURRENT_TRANSLATION in natural spoken Vietnamese so that it is likely to fit AVAILABLE_DURATION.
 
@@ -339,6 +466,10 @@ Timing is the top priority, but preserve the essential meaning, narrative contex
 Rules:
 - Keep the output entirely in Vietnamese.
 - Use SOURCE_TEXT and surrounding context to understand the intended meaning before shortening.
+- When context_group is present, read the whole group as one continuous Vietnamese passage before rewriting any line.
+- For adjacent items with the same context_group_id, preserve the sentence flow across IDs; avoid creating isolated fragments unless the original line is naturally that short.
+- You may lightly adjust non-overlong context lines in the same group only when needed to keep Vietnamese grammar, reference, and story flow natural.
+- Keep each returned ID at its original narrative position; do not move an event, name, or meaning to a distant subtitle.
 - Make only as much change as necessary to solve the timing overflow.
 - If CURRENT_TTS_DURATION only slightly exceeds AVAILABLE_DURATION, shorten only slightly.
 - If it exceeds the available duration substantially, compress more strongly.
@@ -354,6 +485,7 @@ Rules:
 - Preserve natural particles when they carry real emotional or conversational meaning; remove them only when genuinely unnecessary.
 - Avoid stiff word-for-word phrasing and unnecessary Sino-Vietnamese wording when a shorter natural Vietnamese expression exists.
 - Keep terminology and character references consistent with surrounding subtitles.
+- Do not turn a complete thought into a one-word or two-word fragment unless that is already natural for the scene.
 - Do not optimize for a fixed word count or character count.
 - Do not force English-style shortening techniques onto Vietnamese.
 - Do not make the sentence fragmented or unnatural merely to make it shorter.
@@ -412,6 +544,37 @@ def _normalize_prompt_language(language: str | None) -> str:
     if value.startswith("hi"):
         return "hi"
     return value
+
+
+def _normalize_translation_echo_text(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", " ".join(str(text or "").split())).casefold()
+
+
+def _echoed_translation_ids(
+    source_segments: list[SubtitleSegment],
+    translated_map: dict[int, str],
+) -> list[int]:
+    source_by_id = {segment.index: segment.text for segment in source_segments}
+    compared = []
+    echoed = []
+    for item_id, translated_text in translated_map.items():
+        source_text = source_by_id.get(item_id, "")
+        source_norm = _normalize_translation_echo_text(source_text)
+        translated_norm = _normalize_translation_echo_text(translated_text)
+        if len(source_norm) < 8 or not re.search(r"\w", source_norm):
+            continue
+        compared.append((item_id, len(source_norm)))
+        if source_norm == translated_norm:
+            echoed.append((item_id, len(source_norm)))
+    if not compared:
+        return []
+    compared_chars = sum(length for _, length in compared)
+    echoed_chars = sum(length for _, length in echoed)
+    echoed_ratio = echoed_chars / max(1, compared_chars)
+    echoed_count_ratio = len(echoed) / max(1, len(compared))
+    if compared_chars >= 40 and echoed_ratio >= 0.60 and echoed_count_ratio >= 0.50:
+        return [item_id for item_id, _ in echoed]
+    return []
 
 
 def _build_initial_srt_prompt(source_language: str, target_language: str) -> str:
@@ -2122,6 +2285,11 @@ class TranslationService:
         
         MAX_INITIAL_TRANSLATION_RECOVERY_ATTEMPTS = 2
         INITIAL_TRANSLATION_CHUNK_SIZE = 25
+        total_segments = max(1, len(segments))
+        completed_ids: set[int] = set()
+
+        def emit_translation_progress() -> None:
+            _emit(progress, f"Translation progress: {len(completed_ids)}/{total_segments}")
 
         def translate_chunk(chunk_segments: list[SubtitleSegment], *, label: str) -> dict[int, str]:
             unresolved_segments = list(chunk_segments)
@@ -2133,6 +2301,13 @@ class TranslationService:
                 srt_content = self._segments_to_srt_text(unresolved_segments)
                 base_prompt = _build_initial_srt_prompt(source_language, target_language)
                 prompt = base_prompt.replace("{SRT_CONTENT}", srt_content)
+                if attempt > 1:
+                    prompt += (
+                        "\n\nIMPORTANT RECOVERY INSTRUCTION:\n"
+                        "The previous response copied some source subtitle text unchanged. "
+                        "For every subtitle below, output real target-language wording. "
+                        "Do not echo the source text verbatim unless the line is only a name, number, sound, or fixed term."
+                    )
                 
                 msg = f"Sending {len(unresolved_segments)} subtitle(s) to Gemini"
                 if attempt > 1:
@@ -2167,10 +2342,18 @@ class TranslationService:
                 empty = [item_id for item_id, text in translated_map.items() if not text.strip()]
                 for ei in empty:
                     translated_map.pop(ei, None)
+
+                echoed = _echoed_translation_ids(unresolved_segments, translated_map)
+                if echoed:
+                    _emit(progress, f"Warning: Gemini echoed source text for IDs {echoed[:8]}; retrying them.")
+                    for echoed_id in echoed:
+                        translated_map.pop(echoed_id, None)
                 
                 for item_id, text in translated_map.items():
                     if item_id in expected_ids:
                         final_map[item_id] = text
+                        completed_ids.add(item_id)
+                emit_translation_progress()
                         
                 missing = [item_id for item_id in sorted(expected_ids) if item_id not in translated_map]
                 unresolved_segments = [seg for seg in chunk_segments if seg.index in missing]
@@ -2184,6 +2367,7 @@ class TranslationService:
                 
             return final_map
 
+        emit_translation_progress()
         _emit(progress, f"Sending FULL-SRT to Gemini 3.5 Flash-Lite...")
         try:
             translated_map = translate_chunk(segments, label="full SRT")
@@ -2306,6 +2490,7 @@ For every input item:
 - `max_local_speed` is the maximum local playback-speed adjustment that may be used after rewriting.
 - `target_max_tts_duration` is the current retry target TTS duration the rewritten text should aim to reach before the final local-speed adjustment.
 - `required_reduction_percent` is the approximate minimum spoken-duration reduction currently required.
+- `needs_timing_rewrite` marks the subtitles that triggered the timing retry; context-only lines may be included to preserve natural flow.
 - `correction_round` tells you which timing-shortening attempt this is.
 
 You MUST use these values when deciding how strongly to shorten the translation.
@@ -3517,6 +3702,7 @@ def process_and_register_srt_slot_timeline(
     timeline_options = timeline_options or {}
     max_speed = float(timeline_options.get("max_speed") or timeline_options.get("hard_max_local_speed") or DEFAULT_SLOT_MAX_SPEED)
     safety_gap = float(timeline_options.get("safety_gap") or 0.12)
+    force_fit_overlong = bool(timeline_options.get("force_fit_overlong"))
     
     raw_retry_threshold = timeline_options.get("text_retry_preferred_speed_threshold", 1.10)
     if isinstance(raw_retry_threshold, dict):
@@ -3531,6 +3717,7 @@ def process_and_register_srt_slot_timeline(
         sample_rate=sample_rate,
         max_speed=max_speed,
         text_retry_preferred_speed_threshold=text_retry_preferred_speed_threshold,
+        force_fit_overlong=force_fit_overlong,
         safety_gap=safety_gap,
         progress=progress,
     )

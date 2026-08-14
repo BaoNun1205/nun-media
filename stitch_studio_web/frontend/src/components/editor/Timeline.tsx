@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Captions, Check, ChevronRight, Clipboard, Copy, Eye, EyeOff, FileAudio2, Film, Flag, Layers, Magnet, Minus, Music2, Plus, Redo2, Scissors, Trash2, Undo2, Volume2, VolumeX } from 'lucide-react';
-import { formatClock, percent } from '../../lib/studio';
+import { formatClock, isTranslatedAsset, percent, serializeSrt } from '../../lib/studio';
 import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { InspectorSelection, TimelineItem, TimelineTrack, TimelineTrackKind } from '../../types/studio';
@@ -83,7 +83,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     };
   }, [contextMenu]);
 
-  if (editor.bottomView === 'script') return <ScriptEditor editor={editor} />;
+  if (editor.bottomView === 'script') return <ScriptOriginalView editor={editor} />;
 
   const marks = Array.from({ length: 9 }, (_, index) => (displayDuration / 8) * index);
   const isTrackSelected = (track: string) => editor.selection.type === 'timeline-items' && editor.selection.track === track;
@@ -595,7 +595,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       </div>;
     }
     if (track.kind === 'subtitle') {
-      const srtJob = editor.activeJobs.find((job) => job.kind === 'srt');
+      const srtJob = editor.activeJobs.find((job) => job.kind === 'srt' || job.kind === 'translate');
       return <SubtitleTrack key={track.id} editor={editor} duration={displayDuration} selectedKeys={selectedKeys} trackSelected={isTrackSelected(track.id)} items={rowItems.filter((item) => item.kind === 'srt')} trackId={track.id} onSelect={selectItem} job={srtJob} />;
     }
     if (track.kind === 'audio') {
@@ -745,7 +745,6 @@ export function Timeline({ editor }: { editor: EditorController }) {
     )}
   </>;
 }
-
 function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd, onContextMenu }: {
   item: TimelineItem;
   duration: number;
@@ -855,7 +854,6 @@ function TrackLabel({
     </span>}
   </div>;
 }
-
 function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, trackId, onSelect, job }: {
   editor: EditorController;
   duration: number;
@@ -897,24 +895,34 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
   </div>;
 }
 
-function ScriptEditor({ editor }: { editor: EditorController }) {
-  const issueByIndex = new Map(editor.timelineIssues.map((issue) => [issue.index, issue]));
+function ScriptOriginalView({ editor }: { editor: EditorController }) {
+  const showingActiveOriginal = Boolean(editor.srt.segments.length && (!editor.srt.asset || !isTranslatedAsset(editor.srt.asset)));
+  const document = showingActiveOriginal ? editor.srt : (editor.sourceSrt.segments.length ? editor.sourceSrt : editor.srt);
+  const copyVisibleSrt = async () => {
+    if (!document.segments.length) {
+      editor.setMessage('No subtitle content to copy.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(serializeSrt(document.segments, showingActiveOriginal ? editor.edits : {}));
+      editor.setMessage(`Copied ${document.segments.length} subtitle lines.`);
+    } catch {
+      editor.setMessage('Clipboard access is unavailable.');
+    }
+  };
   return <section className="timeline-panel script-panel">
-    <header className="timeline-header"><div><button className="view-label" onClick={() => editor.setBottomView('timeline')}>Timeline</button><button className="view-label active">Script</button><span className="timeline-history"><button aria-label="Undo subtitle edit" title="Undo (Ctrl/Cmd+Z)" disabled={!editor.canUndo} onClick={editor.undoDraft}><Undo2 size={14} /></button><button aria-label="Redo subtitle edit" title="Redo (Ctrl/Cmd+Shift+Z)" disabled={!editor.canRedo} onClick={editor.redoDraft}><Redo2 size={14} /></button></span></div><div><span>{editor.srt.segments.length} subtitle lines</span><button className="view-label" onClick={editor.copySrt}>Copy SRT</button><button className="view-label" onClick={editor.pasteSrt}>Paste SRT</button><button className="primary view-label" onClick={editor.saveSrt} disabled={!editor.dirty}>Save script</button></div></header>
-    <div className="script-table"><div className="script-head"><span>Timecode</span><span>Current text</span><span>Active subtitle text</span><span>Voice</span><span>Issue</span></div>{editor.srt.segments.map((segment, index) => {
-      const source = editor.sourceSrt.segments[index];
-      const voice = editor.voiceByIndex[segment.index];
-      const currentText = editor.edits[segment.index] ?? segment.text;
-      const issue = issueByIndex.get(segment.index);
-      const activeIssue = issue && currentText.trim() === issue.text.trim() ? issue : undefined;
-      const timingDetail = activeIssue
-        ? [
-            activeIssue.ttsDuration ? `Voice: ${activeIssue.ttsDuration.toFixed(2)}s` : '',
-            activeIssue.availableDuration ? `Available: ${activeIssue.availableDuration.toFixed(2)}s` : '',
-            activeIssue.requiredLocalSpeed ? `Required: ${activeIssue.requiredLocalSpeed.toFixed(2)}x` : '',
-          ].filter(Boolean).join(' · ')
-        : '';
-      return <button className={`script-row ${activeIssue ? 'needs-review' : ''} ${editor.selection.type === 'subtitle' && editor.selection.index === segment.index ? 'active' : ''}`} key={segment.index} onClick={() => { editor.setSelection({ type: 'subtitle', index: segment.index }); editor.setPlayhead(segment.start); }}><span><strong>#{segment.index}</strong><small>{segment.startLabel}<br />{segment.endLabel}</small></span><span>{source?.text || segment.text}</span><textarea value={currentText} onClick={(event) => event.stopPropagation()} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} /><span className={`voice-dot ${voice?.status || ''}`}>{voice?.audioUrl ? 'Ready' : 'Not rendered'}</span><span className={activeIssue ? 'script-issue error' : 'script-issue'}>{activeIssue ? <><strong>{activeIssue.needsReview ? 'Needs Review' : 'Too long for 1.30x'}</strong>{timingDetail && <small>{timingDetail}</small>}</> : '-'}</span></button>;
-    })}{!editor.srt.segments.length && <div className="empty-row">Generate or select an SRT to open Script View.</div>}</div>
+    <header className="timeline-header">
+      <div><button className="view-label" onClick={() => editor.setBottomView('timeline')}>Timeline</button><button className="view-label active">Script</button><span className="timeline-history"><button aria-label="Undo subtitle edit" title="Undo (Ctrl/Cmd+Z)" disabled={!editor.canUndo} onClick={editor.undoDraft}><Undo2 size={14} /></button><button aria-label="Redo subtitle edit" title="Redo (Ctrl/Cmd+Shift+Z)" disabled={!editor.canRedo} onClick={editor.redoDraft}><Redo2 size={14} /></button></span></div>
+      <div><span>{document.segments.length} original subtitle lines</span><button className="view-label" onClick={() => void copyVisibleSrt()}>Copy SRT</button><button className="view-label" onClick={() => void editor.pasteSrt()} disabled={!showingActiveOriginal || !document.segments.length} title={showingActiveOriginal ? 'Paste SRT' : 'Select the original SRT before pasting'}>Paste SRT</button></div>
+    </header>
+    <div className="script-original-list">
+      {document.segments.map((segment) => (
+        <button className={`script-original-row ${editor.selection.type === 'subtitle' && editor.selection.index === segment.index ? 'active' : ''}`} key={segment.index} onClick={() => { editor.setSelection({ type: 'subtitle', index: segment.index }); editor.setPlayhead(segment.start); }}>
+          <span><strong>#{segment.index}</strong><small>{segment.startLabel}<br />{segment.endLabel}</small></span>
+          <p>{showingActiveOriginal ? editor.edits[segment.index] ?? segment.text : segment.text}</p>
+        </button>
+      ))}
+      {!document.segments.length && <div className="empty-row">No original SRT loaded.</div>}
+    </div>
   </section>;
 }

@@ -56,6 +56,27 @@ class TestInitialTranslationRecovery(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(results, ["R1", "R2", "R3", "R4"])
 
+    def test_echoed_source_text_is_retried(self):
+        segments = [
+            SubtitleSegment(index=1, start=0.0, end=1.0, text="I am being chased by a bear."),
+            SubtitleSegment(index=2, start=1.0, end=2.0, text="It is getting closer."),
+            SubtitleSegment(index=3, start=2.0, end=3.0, text="I have to run home."),
+        ]
+        self.responses = [
+            "1\n00:00:00,000 --> 00:00:01,000\nI am being chased by a bear.\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nIt is getting closer.\n\n"
+            "3\n00:00:02,000 --> 00:00:03,000\nI have to run home.",
+            "1\n00:00:00,000 --> 00:00:01,000\nTôi đang bị gấu đuổi.\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nNó đang tới gần.\n\n"
+            "3\n00:00:02,000 --> 00:00:03,000\nTôi phải chạy về nhà.",
+        ]
+
+        results = self.service._translate_with_gemini(segments, "en", "vi")
+
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("IMPORTANT RECOVERY INSTRUCTION", self.calls[1])
+        self.assertEqual(results, ["Tôi đang bị gấu đuổi.", "Nó đang tới gần.", "Tôi phải chạy về nhà."])
+
     def test_one_missing_id(self):
         # PART 21 - REQUIRED TEST: ONE MISSING ID
         # Input [1,2,3,4], Returns [1,2,4], missing 3. Recovers 3.

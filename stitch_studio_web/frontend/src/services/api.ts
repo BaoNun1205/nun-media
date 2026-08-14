@@ -90,6 +90,11 @@ export const studioApi = {
   srtAsset: (assetId: number) => request<SrtDocument>(`/assets/${assetId}/srt`),
   saveSrtAsset: (assetId: number, content: string) =>
     request(`/assets/${assetId}/srt`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  speedUpTtsSegment: (videoId: number, segmentIndex: number, payload: { srtAssetId?: number; engine: string; voice: string; language: string; rate: string; speed: number; targetSpeed?: number; timingMode?: string; minWorkingSpeed?: number; preferredMaxLocalSpeed?: number; hardMaxLocalSpeed?: number; safetyGap?: number }) =>
+    request<{ index: number; duration: number; speedMultiplier: number; appliedLocalSpeed?: number; status: string; requiredLocalSpeed?: number; ready: boolean }>(
+      `/videos/${videoId}/tts/segments/${segmentIndex}/speed`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
   voices: async (engine = 'vieneu', language = 'vi-VN') => {
     const data = await request<{ voices: Array<string | VoiceOption> }>(`/voices?${new URLSearchParams({ engine, language })}`);
     return (data.voices || []).map((voice) => typeof voice === 'string' ? { id: voice, label: voice } : voice);

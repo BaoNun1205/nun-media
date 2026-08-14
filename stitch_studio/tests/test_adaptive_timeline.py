@@ -218,6 +218,25 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             self.assertEqual(row["segment_status"], "TEXT_TOO_LONG")
             self.assertAlmostEqual(row["required_local_speed"], 1.31, places=6)
 
+    def test_srt_slot_force_fit_speeds_above_one_point_three(self) -> None:
+        with TemporaryDirectory() as raw_dir:
+            root = Path(raw_dir)
+            video_path = self._video_file(root, 3.0)
+            rendered = self._rendered(root, [(1, 0.0, 2.0, 3.4)])
+            result = process_srt_slot_timeline(
+                self._video(video_path, 3_000),
+                rendered,
+                root / "out",
+                sample_rate=8_000,
+                safety_gap=0.0,
+                force_fit_overlong=True,
+            )
+            row = result["segments"][0]
+            self.assertEqual(row["segment_status"], "SPEED_ADJUSTED")
+            self.assertGreater(row["applied_local_speed"], 1.3)
+            self.assertTrue((root / "out" / "voiceover.wav").exists())
+            self.assertTrue(result["state"]["force_fit_overlong"])
+
     def test_srt_slot_text_too_long_does_not_shift_following_subtitle(self) -> None:
         with TemporaryDirectory() as raw_dir:
             root = Path(raw_dir)
