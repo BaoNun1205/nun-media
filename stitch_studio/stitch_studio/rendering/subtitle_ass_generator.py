@@ -172,6 +172,104 @@ def format_ass_time(seconds: float) -> str:
     s = seconds % 60
     return f"{h}:{m:02d}:{s:05.2f}"
 
+def escape_ass_text(text: Any) -> str:
+    """Escape plain text so ASS override parsing cannot eat user text."""
+    value = str(text or "")
+    return (
+        value
+        .replace("\\", r"\\")
+        .replace("{", r"\{")
+        .replace("}", r"\}")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+def _font_weight_value(raw: Any, default: int = 800) -> int:
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    value = str(raw or "").strip().lower()
+    if value.isdigit():
+        return int(value)
+    if value in {"bold", "bolder", "black", "heavy"}:
+        return 800
+    if value in {"normal", "regular", "book"}:
+        return 400
+    if value in {"light", "lighter"}:
+        return 300
+    return default
+
+def _ass_flag(enabled: bool) -> int:
+    return -1 if enabled else 0
+
+def _normalized_text(style: Dict[str, Any], text: str) -> str:
+    transform = str(style.get("textTransform") or "none").lower()
+    if transform == "uppercase":
+        return text.upper()
+    if transform == "lowercase":
+        return text.lower()
+    if transform == "capitalize":
+        return text.title()
+    return text
+
+def _ass_color_override(color: Any, opacity: float = 1.0) -> str:
+    return format_ass_color(str(color or "#ffffff"), opacity)
+
+def _style_line(
+    *,
+    name: str,
+    style: Dict[str, Any],
+    fallback_style: Dict[str, Any],
+    font_scale: float,
+    timeline_width: int,
+    timeline_height: int,
+    margin_l: int = 0,
+    margin_r: int = 0,
+    margin_v: int = 0,
+    alignment: int = 5,
+) -> Tuple[str, Dict[str, Any]]:
+    merged = {**fallback_style, **(style or {})}
+    font_family = str(merged.get("fontFamily") or "Inter")
+    font_weight = _font_weight_value(merged.get("fontWeight"), 800)
+    actual_font = resolve_font_family(font_family, font_weight)
+    font_size = max(8.0, _clamp_float(merged.get("fontSize"), 50.0, 1.0, 1000.0) * font_scale)
+    letter_spacing = _clamp_float(merged.get("letterSpacing"), 0.0, -100.0, 100.0) * font_scale
+    opacity = _clamp_float(merged.get("opacity", 1.0), 1.0, 0.0, 1.0)
+    primary_color = format_ass_color(str(merged.get("fontColor") or merged.get("color") or "0xFFFFFF"), opacity)
+    outline_color = format_ass_color(str(merged.get("outlineColor") or "0x000000"), opacity)
+    background_enabled = bool(merged.get("backgroundEnabled") or merged.get("background"))
+    background_color = format_ass_color(
+        str(merged.get("backgroundColor") or "0x000000"),
+        _clamp_float(merged.get("backgroundOpacity"), 0.55, 0.0, 1.0),
+    ) if background_enabled else format_ass_color("000000", 0.0)
+    outline_width = _clamp_float(merged.get("outlineWidth") if merged.get("outlineWidth") is not None else merged.get("outline"), 0.0, 0.0, 100.0) * font_scale
+    shadow_x = _clamp_float(merged.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
+    shadow_y = _clamp_float(merged.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
+    shadow_blur = _clamp_float(merged.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
+    glow_blur = _clamp_float(merged.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if merged.get("glowEnabled") else 0.0
+    shadow_depth = max(abs(shadow_x), abs(shadow_y), shadow_blur, glow_blur)
+    border_style = 3 if background_enabled else 1
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:40] or "Text"
+    line = (
+        f"Style: {safe_name},{actual_font},{font_size:.2f},{primary_color},&H000000FF,{outline_color},{background_color},"
+        f"{_ass_flag(font_weight >= 700)},{_ass_flag(str(merged.get('fontStyle') or '').lower() == 'italic')},"
+        f"{_ass_flag(str(merged.get('textDecoration') or '').lower() == 'underline')},0,100,100,{letter_spacing:.2f},0,"
+        f"{border_style},{outline_width:.2f},{shadow_depth:.2f},{alignment},{margin_l},{margin_r},{margin_v},1"
+    )
+    metrics = {
+        "name": safe_name,
+        "font": actual_font,
+        "font_size": font_size,
+        "pixel_font_size": max(8, int(round(font_size))),
+        "font_weight": font_weight,
+        "letter_spacing": letter_spacing,
+        "max_width": max(1.0, timeline_width - 100),
+        "line_height": _clamp_float(merged.get("lineHeight"), 1.05, 0.5, 4.0),
+        "text_align": str(merged.get("textAlign") or "center"),
+        "vertical_align": str(merged.get("verticalAlign") or "middle"),
+        "style": merged,
+    }
+    return line, metrics
+
 def _clamp_float(val: Any, default: float, min_val: float, max_val: float) -> float:
     try:
         val = float(val)
@@ -240,7 +338,7 @@ def generate_ass_file(
     """Generate a single .ass file for all subtitle and text events."""
     
     scale_factor = timeline_height / project_canvas_height if project_canvas_height > 0 else 1.0
-    ass_font_scale = scale_factor * CSS_PX_TO_ASS_PT
+    ass_font_scale = scale_factor
     
     ass_lines = [
         "[Script Info]",
@@ -263,7 +361,7 @@ def generate_ass_file(
     actual_font_name = resolve_font_family(font_family, font_weight)
     
     font_size = max(8.0, _clamp_float(global_style.get("fontSize"), 50.0, 1.0, 1000.0) * ass_font_scale)
-    pixel_font_size = max(8, int(round(_clamp_float(global_style.get("fontSize"), 50.0, 1.0, 1000.0) * scale_factor)))
+    pixel_font_size = max(8, int(round(font_size)))
     letter_spacing = _clamp_float(global_style.get("letterSpacing"), 0.0, -100.0, 100.0) * ass_font_scale
     
     primary_color = format_ass_color(str(global_style.get("fontColor") or global_style.get("color") or "0xFFFFFF"), _clamp_float(global_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
@@ -317,13 +415,30 @@ def generate_ass_file(
     ass_lines.append(
         f"Style: Default,{actual_font_name},{font_size:.2f},{primary_color},&H000000FF,{outline_color},{bg_color_ass},{is_bold},0,0,0,100,100,{letter_spacing:.2f},0,{border_style},{outline_width:.2f},{shadow_depth:.2f},{align_code},{margin_l},{margin_r},{margin_v},1"
     )
+
+    text_style_metrics: List[Dict[str, Any]] = []
+    for index, text_event in enumerate(text_events):
+        t_style = text_event.get("style", {})
+        style_line, metrics = _style_line(
+            name=f"Text{index + 1}",
+            style=t_style if isinstance(t_style, dict) else {},
+            fallback_style={},
+            font_scale=ass_font_scale,
+            timeline_width=timeline_width,
+            timeline_height=timeline_height,
+            alignment=5,
+        )
+        ass_lines.append(style_line)
+        text_style_metrics.append(metrics)
     
     ass_lines.append("")
     ass_lines.append("[Events]")
     ass_lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
     
     for start, end, text in srt_events:
-        wrapped_lines = wrap_text_deterministic(text, actual_font_name, pixel_font_size, font_weight, letter_spacing / CSS_PX_TO_ASS_PT, effective_box_width)
+        source_text = _normalized_text(global_style, str(text or ""))
+        wrapped_lines = wrap_text_deterministic(source_text, actual_font_name, pixel_font_size, font_weight, letter_spacing, effective_box_width)
+        wrapped_lines = [escape_ass_text(line) for line in wrapped_lines]
         ass_text = r"\N".join(wrapped_lines)
         
         if v_align == "middle":
@@ -337,36 +452,54 @@ def generate_ass_file(
         ass_lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_text}")
         
     # Process regular text events as well
-    for text_event in text_events:
+    for index, text_event in enumerate(text_events):
         t_start = text_event["start"]
         t_end = text_event["end"]
-        t_text = text_event["text"]
-        t_style = text_event.get("style", {})
+        t_style_meta = text_style_metrics[index] if index < len(text_style_metrics) else {}
+        t_style = t_style_meta.get("style", {}) if isinstance(t_style_meta.get("style"), dict) else {}
+        t_text = _normalized_text(t_style, str(text_event["text"] or ""))
         t_x = text_event.get("x", 0.5)
         t_y = text_event.get("y", 0.45)
         
-        t_font_family = str(t_style.get("fontFamily") or "Inter")
-        t_font_weight = int(t_style.get("fontWeight") or 800)
-        t_actual_font = resolve_font_family(t_font_family, t_font_weight)
-        t_is_bold = r"\b1" if t_font_weight >= 700 else r"\b0"
-        
-        t_font_size = max(8.0, _clamp_float(t_style.get("fontSize"), 50.0, 1.0, 1000.0) * ass_font_scale)
-        t_pixel_font_size = max(8, int(round(_clamp_float(t_style.get("fontSize"), 50.0, 1.0, 1000.0) * scale_factor)))
-        t_letter_spacing = _clamp_float(t_style.get("letterSpacing"), 0.0, -100.0, 100.0) * ass_font_scale
-        
-        t_color = format_ass_color(str(t_style.get("fontColor") or t_style.get("color") or "0xFFFFFF"), _clamp_float(t_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
-        t_outline_color = format_ass_color(str(t_style.get("outlineColor") or "0x000000"), _clamp_float(t_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
-        t_outline_width = _clamp_float(t_style.get("outlineWidth") or t_style.get("outline"), 0.0, 0.0, 100.0) * ass_font_scale
-        
-        # Free-form text wraps at timeline_width - 100
-        wrapped_lines = wrap_text_deterministic(t_text, t_actual_font, t_pixel_font_size, t_font_weight, t_letter_spacing / CSS_PX_TO_ASS_PT, timeline_width - 100)
+        max_width = _clamp_float(t_style.get("maxWidth"), t_style_meta.get("max_width", timeline_width - 100), 1.0, float(timeline_width))
+        wrapped_lines = wrap_text_deterministic(
+            t_text,
+            str(t_style_meta.get("font") or "Inter"),
+            int(t_style_meta.get("pixel_font_size") or 50),
+            int(t_style_meta.get("font_weight") or 800),
+            float(t_style_meta.get("letter_spacing") or 0.0),
+            max_width,
+        )
+        wrapped_lines = [escape_ass_text(line) for line in wrapped_lines]
         t_ass_text = r"\N".join(wrapped_lines)
         
-        # Position mapping
         pos_x = int(t_x * timeline_width)
         pos_y = int(t_y * timeline_height)
-        t_ass_text = fr"{{\pos({pos_x},{pos_y})}}{{\fn{t_actual_font}}}{t_is_bold}{{\fs{t_font_size:.2f}}}{{\c{t_color}}}{{\3c{t_outline_color}}}{{\bord{t_outline_width:.2f}}}{{\an5}}{t_ass_text}"
+        align_tag = r"\an5"
+        if str(t_style.get("textAlign") or "").lower() == "left":
+            align_tag = r"\an4"
+        elif str(t_style.get("textAlign") or "").lower() == "right":
+            align_tag = r"\an6"
+        style_name = str(t_style_meta.get("name") or "Default")
+        effect = str(t_style.get("staticEffect") or "none").lower()
+        effect_text = t_ass_text
+        effect_color = t_style.get("secondaryOutlineColor") or t_style.get("shadowColor") or "#f02b36"
+        if effect == "duotone":
+            dx = int(round(4 * ass_font_scale))
+            dy = int(round(2 * ass_font_scale))
+            effect_override = fr"{{{align_tag}\pos({pos_x + dx},{pos_y + dy})\c{_ass_color_override(effect_color)}\bord0\shad0}}{effect_text}"
+            ass_lines.append(f"Dialogue: 0,{format_ass_time(t_start)},{format_ass_time(t_end)},{style_name},,0,0,0,,{effect_override}")
+        elif effect == "glitch":
+            dx = max(1, int(round(2 * ass_font_scale)))
+            dy = max(1, int(round(1 * ass_font_scale)))
+            top_clip = fr"\clip(0,0,{timeline_width},{int(timeline_height * 0.52)})"
+            bottom_clip = fr"\clip(0,{int(timeline_height * 0.46)},{timeline_width},{timeline_height})"
+            top_override = fr"{{{align_tag}\pos({pos_x - dx},{pos_y}){top_clip}\c{_ass_color_override('#00f5ff')}\bord0\shad0}}{effect_text}"
+            bottom_override = fr"{{{align_tag}\pos({pos_x + dx},{pos_y + dy}){bottom_clip}\c{_ass_color_override(effect_color)}\bord0\shad0}}{effect_text}"
+            ass_lines.append(f"Dialogue: 0,{format_ass_time(t_start)},{format_ass_time(t_end)},{style_name},,0,0,0,,{top_override}")
+            ass_lines.append(f"Dialogue: 0,{format_ass_time(t_start)},{format_ass_time(t_end)},{style_name},,0,0,0,,{bottom_override}")
+        t_ass_text = fr"{{{align_tag}\pos({pos_x},{pos_y})}}{t_ass_text}"
         
-        ass_lines.append(f"Dialogue: 1,{format_ass_time(t_start)},{format_ass_time(t_end)},Default,,0,0,0,,{t_ass_text}")
+        ass_lines.append(f"Dialogue: 1,{format_ass_time(t_start)},{format_ass_time(t_end)},{style_name},,0,0,0,,{t_ass_text}")
 
     out_path.write_text("\n".join(ass_lines), encoding="utf-8")

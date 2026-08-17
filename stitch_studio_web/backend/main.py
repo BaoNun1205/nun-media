@@ -3187,8 +3187,9 @@ def export_project_timeline(project_id: int, payload: ProjectExportRequest) -> d
 
     def run(progress: Callable[[str], None]) -> dict[str, Any]:
         progress("Resolving assets")
-        result = render_project_timeline(project=project, storage=storage, config=config, settings=settings, progress=progress)
-        metadata = dict((storage.get_project(project.id) or project).metadata or {})
+        fresh_project = storage.get_project(project.id) or project
+        result = render_project_timeline(project=fresh_project, storage=storage, config=config, settings=settings, progress=progress)
+        metadata = dict((storage.get_project(project.id) or fresh_project).metadata or {})
         metadata["last_export_directory"] = str(Path(result["path"]).parent)
         metadata["last_export"] = result
         storage.update_project_metadata(project.id, metadata)
@@ -3288,18 +3289,21 @@ def export_video_timeline(video_id: int, payload: ProjectExportRequest) -> dict[
 
     def run(progress: Callable[[str], None]) -> dict[str, Any]:
         progress("Building timeline")
-        timeline_state = _timeline_state_for_video_export(video, payload.timelineState)
+        fresh_video = storage.get_video(video.id) or video
+        timeline_state = _timeline_state_for_video_export(fresh_video, payload.timelineState)
+        meta = dict(fresh_video.metadata or {})
+        meta["timeline_state"] = timeline_state
         synthetic_project = SimpleNamespace(
-            id=video.id,
-            title=video.title,
-            primary_video_id=video.id,
-            metadata={"timeline_state": timeline_state},
+            id=fresh_video.id,
+            title=fresh_video.title,
+            primary_video_id=fresh_video.id,
+            metadata=meta,
         )
         result = render_project_timeline(project=synthetic_project, storage=storage, config=config, settings=settings, progress=progress)
-        metadata = dict((storage.get_video(video.id) or video).metadata or {})
+        metadata = dict((storage.get_video(fresh_video.id) or fresh_video).metadata or {})
         metadata["last_export_directory"] = str(Path(result["path"]).parent)
         metadata["last_export"] = result
-        storage.update_video_metadata(video.id, metadata)
+        storage.update_video_metadata(fresh_video.id, metadata)
         return {"outputPath": result["path"], **result}
 
     _run_job(job_id, run)

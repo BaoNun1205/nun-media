@@ -602,8 +602,12 @@ export function Timeline({ editor }: { editor: EditorController }) {
       return <div key={track.id} data-track-row={track.id} className={`${rowClass} audio-track voice-track`}>
         {track.id === 'A2' && mergedVoiceAsset && <button data-timeline-item="voice:merged" className={`voice-clip ready ${isItemSelected('voice:merged') ? 'selected' : ''}`} style={{ left: '0%', width: '100%' }} title="Select then press Delete or Backspace to remove voiceover" onKeyDown={deleteVoiceoverFromClip} onClick={(event) => { selectItem(event, 'voice:merged', { type: 'timeline-items', keys: ['voice:merged'], track: 'A2' }); }}><span>Voiceover</span></button>}
         {rowItems.filter((item) => item.kind === 'audio').map((item) => item.track === 'A1'
-          ? <button key={item.id} data-timeline-item={item.id} className={`audio-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>{item.sourceVideoId && <img className="waveform-image" src={`/api/videos/${item.sourceVideoId}/waveform?audioMode=original`} alt="Extracted audio waveform" />}</button>
-          : <TimelineAudioClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onSelect={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })} />)}
+          ? <button key={item.id} data-timeline-item={item.id} className={`audio-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} title="Select then press Delete or Backspace to remove this audio clip" onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>
+            {item.sourceVideoId && <img className="waveform-image" src={`/api/videos/${item.sourceVideoId}/waveform?audioMode=original`} alt="Extracted audio waveform" />}
+            <span className="timeline-trim-handle start" title="Trim start" onPointerDown={(event) => beginClipTrim(event, item, 'start')} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} />
+            <span className="timeline-trim-handle end" title="Trim end" onPointerDown={(event) => beginClipTrim(event, item, 'end')} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} />
+          </button>
+          : <TimelineAudioClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onTrimStart={(event) => beginClipTrim(event, item, 'start')} onTrimEnd={(event) => beginClipTrim(event, item, 'end')} onSelect={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })} />)}
         {track.id === 'A2' && editor.activeJobs.find((job) => ['tts', 'tts-segment', 'tts-mux'].includes(job.kind)) && <TimelineJob job={editor.activeJobs.find((job) => ['tts', 'tts-segment', 'tts-mux'].includes(job.kind))!} />}
       </div>;
     }
@@ -622,6 +626,19 @@ export function Timeline({ editor }: { editor: EditorController }) {
         <button aria-label="Duplicate selected clips" title="Duplicate selected clips (Ctrl/Cmd+D)" onClick={() => void editor.duplicateSelectedTimelineItems()}><Copy size={14} /></button>
         <button aria-label="Copy selected clips" title="Copy selected clips (Ctrl/Cmd+C)" onClick={() => void editor.copyTimelineItems()}><Clipboard size={14} /></button>
         <button aria-label="Paste timeline clips" title="Paste timeline clips (Ctrl/Cmd+V)" onClick={() => void editor.pasteTimelineItemsAt()}><Plus size={14} /></button>
+        <button
+          aria-label="Delete selected clips"
+          title="Delete selected clips (Delete / Backspace)"
+          disabled={editor.selection.type !== 'timeline-items' || !editor.selection.keys.some((key) => editor.timelineItems.some((item) => item.id === key))}
+          onClick={() => {
+            if (editor.selection.type === 'timeline-items') {
+              const keys = editor.selection.keys.filter((key) => editor.timelineItems.some((item) => item.id === key));
+              if (keys.length) void editor.deleteTimelineItems(keys);
+            }
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
         <button className={editor.timelineState.options.snapping ? 'active' : ''} aria-label="Toggle snapping" title="Toggle snapping" onClick={() => void editor.setTimelineOption('snapping', !editor.timelineState.options.snapping)}><Magnet size={14} /></button>
         <button className={editor.timelineState.options.ripple ? 'active' : ''} aria-label="Toggle ripple edit" title="Toggle ripple edit" onClick={() => void editor.setTimelineOption('ripple', !editor.timelineState.options.ripple)}><Layers size={14} /></button>
         <button aria-label="Bookmark playhead" title="Bookmark playhead" onClick={() => void editor.toggleTimelineBookmark()}><Flag size={14} /></button>
@@ -789,15 +806,17 @@ function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSe
   </button>;
 }
 
-function TimelineAudioClip({ item, duration, selected, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }: {
+function TimelineAudioClip({ item, duration, selected, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd }: {
   item: TimelineItem;
   duration: number;
   selected: boolean;
   onSelect: (event: React.MouseEvent) => void;
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerMove?: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerUp?: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  onPointerCancel?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerMove?: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<HTMLElement>) => void;
+  onPointerCancel?: (event: React.PointerEvent<HTMLElement>) => void;
+  onTrimStart?: (event: React.PointerEvent<HTMLElement>) => void;
+  onTrimEnd?: (event: React.PointerEvent<HTMLElement>) => void;
 }) {
   const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
   return <button
@@ -810,7 +829,11 @@ function TimelineAudioClip({ item, duration, selected, onSelect, onPointerDown, 
     onPointerUp={onPointerUp}
     onPointerCancel={onPointerCancel}
     onClick={onSelect}
-  ><span>{item.name}</span></button>;
+  >
+    <span className="timeline-trim-handle start" title="Trim start" onPointerDown={onTrimStart} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />
+    <span className="timeline-trim-handle end" title="Trim end" onPointerDown={onTrimEnd} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />
+    <span>{item.name}</span>
+  </button>;
 }
 
 function TimelineJob({ job }: { job: { progress?: number; detail?: string } }) {

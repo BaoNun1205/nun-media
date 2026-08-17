@@ -49,7 +49,7 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 const previewStyleFor = (style: TextStyle): TextStyle => {
   const real = base(style);
-  const outline = clamp(Number(real.outline ?? real.outlineWidth ?? 0), 0, real.backgroundEnabled ? 1.25 : 2.8);
+  const outline = clamp(Number(real.outline ?? real.outlineWidth ?? 0), 0, real.backgroundEnabled ? 1.25 : 3.6);
   return {
     ...real,
     fontSize: 21,
@@ -78,16 +78,16 @@ const preset = (id: string, name: string, style: TextStyle): TextStylePreset => 
 });
 
 export const TEXT_STYLE_PRESETS: TextStylePreset[] = [
-  preset('white-black-outline', 'White / Black Outline', { fontColor: '#ffffff', outlineColor: '#050505', outline: 4, fontWeight: 900 }),
-  preset('black-white-outline', 'Black / White Outline', { fontColor: '#080808', outlineColor: '#ffffff', outline: 4, fontWeight: 900 }),
-  preset('white-double-dark-outline', 'White / Double Dark Outline', { fontColor: '#ffffff', outlineColor: '#000000', outline: 5, secondaryOutlineColor: '#ffffff', secondaryOutlineWidth: 1, fontWeight: 900 }),
-  preset('white-soft-black-shadow', 'White / Soft Black Shadow', { fontColor: '#ffffff', outlineColor: '#111111', outline: 2, shadowColor: '#000000', shadowOffsetX: 2, shadowOffsetY: 3, shadowBlur: 3, fontWeight: 900 }),
-  preset('white-heavy-black-shadow', 'White / Heavy Black Shadow', { fontColor: '#ffffff', outlineColor: '#050505', outline: 3, shadowColor: '#000000', shadowOffsetX: 4, shadowOffsetY: 5, shadowBlur: 5, fontWeight: 900 }),
-  preset('yellow-black-outline', 'Yellow / Black Outline', { fontColor: '#fff000', outlineColor: '#030303', outline: 4, fontWeight: 900 }),
-  preset('red-white-outline', 'Red / White Outline', { fontColor: '#ff3338', outlineColor: '#ffffff', outline: 4, shadowColor: '#171717', shadowOffsetX: 1, shadowOffsetY: 1, shadowBlur: 1, fontWeight: 900 }),
-  preset('orange-white-outline', 'Orange / White Outline', { fontColor: '#ff7a18', outlineColor: '#ffffff', outline: 4, fontWeight: 900 }),
-  preset('blue-white-outline', 'Blue / White Outline', { fontColor: '#168fff', outlineColor: '#ffffff', outline: 4, fontWeight: 900 }),
-  preset('green-black-outline', 'Green / Black Outline', { fontColor: '#00f53a', outlineColor: '#000000', outline: 4, fontWeight: 900 }),
+  preset('white-black-outline', 'White / Black Outline', { fontColor: '#ffffff', outlineColor: '#000000', outline: 7, fontWeight: 900 }),
+  preset('black-white-outline', 'Black / White Outline', { fontColor: '#080808', outlineColor: '#ffffff', outline: 6, fontWeight: 900 }),
+  preset('white-double-dark-outline', 'White / Double Dark Outline', { fontColor: '#ffffff', outlineColor: '#000000', outline: 6, secondaryOutlineColor: '#ffffff', secondaryOutlineWidth: 1.5, fontWeight: 900 }),
+  preset('white-soft-black-shadow', 'White / Soft Black Shadow', { fontColor: '#ffffff', outlineColor: '#000000', outline: 3, shadowColor: '#000000', shadowOffsetX: 2, shadowOffsetY: 3, shadowBlur: 3, fontWeight: 900 }),
+  preset('white-heavy-black-shadow', 'White / Heavy Black Shadow', { fontColor: '#ffffff', outlineColor: '#000000', outline: 4, shadowColor: '#000000', shadowOffsetX: 4, shadowOffsetY: 5, shadowBlur: 5, fontWeight: 900 }),
+  preset('yellow-black-outline', 'Yellow / Black Outline', { fontColor: '#fff000', outlineColor: '#000000', outline: 7, fontWeight: 900 }),
+  preset('red-white-outline', 'Red / White Outline', { fontColor: '#ff3338', outlineColor: '#ffffff', outline: 6, shadowColor: '#171717', shadowOffsetX: 1, shadowOffsetY: 1, shadowBlur: 1, fontWeight: 900 }),
+  preset('orange-white-outline', 'Orange / White Outline', { fontColor: '#ff7a18', outlineColor: '#ffffff', outline: 6, fontWeight: 900 }),
+  preset('blue-white-outline', 'Blue / White Outline', { fontColor: '#168fff', outlineColor: '#ffffff', outline: 6, fontWeight: 900 }),
+  preset('green-black-outline', 'Green / Black Outline', { fontColor: '#00f53a', outlineColor: '#000000', outline: 7, fontWeight: 900 }),
   preset('black-light-gray-bg', 'Black / Light Gray Background', { fontColor: '#050505', outline: 0, background: true, backgroundEnabled: true, backgroundColor: '#cfcfcf', backgroundOpacity: 1, backgroundRadius: 7, backgroundPaddingX: 9, backgroundPaddingY: 4, fontWeight: 900 }),
   preset('white-gray-bg', 'White / Gray Background', { fontColor: '#ffffff', outline: 0, background: true, backgroundEnabled: true, backgroundColor: '#9c9c9c', backgroundOpacity: 1, backgroundRadius: 7, backgroundPaddingX: 9, backgroundPaddingY: 4, fontWeight: 900 }),
   preset('black-yellow-bg', 'Black / Yellow Background', { fontColor: '#000000', outline: 0, background: true, backgroundEnabled: true, backgroundColor: '#ffd900', backgroundOpacity: 1, backgroundRadius: 7, backgroundPaddingX: 9, backgroundPaddingY: 4, fontWeight: 900 }),

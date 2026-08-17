@@ -177,9 +177,7 @@ def render_project_timeline(
     if not active_items:
         raise RuntimeError("Timeline does not contain any active items.")
     
-    media_items = [item for item in active_items if _kind(item) in {"video", "audio", "image"}]
-    duration_items = media_items if media_items else active_items
-    duration = max(_start(item) + _duration(item) for item in duration_items)
+    duration = max(_start(item) + _duration(item) for item in active_items)
     output_path = unique_output_path(output_dir, settings.file_name)
     primary_video = storage.get_video(project.primary_video_id) if getattr(project, "primary_video_id", None) else None
 
@@ -710,15 +708,70 @@ def _project_canvas_height(ctx: RenderContext) -> float:
 
 
 def _primary_subtitle_style(ctx: RenderContext) -> dict[str, Any]:
-    metadata = ctx.primary_video.metadata if ctx.primary_video and ctx.primary_video.metadata else {}
-    return metadata.get("subtitle_style") if isinstance(metadata.get("subtitle_style"), dict) else {}
+    if ctx.project and isinstance(getattr(ctx.project, "metadata", None), dict):
+        meta = ctx.project.metadata
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = meta.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+        ts = meta.get("timeline_state")
+        if isinstance(ts, dict):
+            for key in ("subtitle_style", "subtitleStyle", "style"):
+                val = ts.get(key)
+                if isinstance(val, dict) and val:
+                    return dict(val)
+
+    if isinstance(ctx.timeline_state, dict):
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = ctx.timeline_state.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+
+    if ctx.primary_video and isinstance(getattr(ctx.primary_video, "metadata", None), dict):
+        meta = ctx.primary_video.metadata
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = meta.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+
+    return {}
 
 
 def _primary_subtitle_area(ctx: RenderContext) -> dict[str, float]:
-    metadata = ctx.primary_video.metadata if ctx.primary_video and ctx.primary_video.metadata else {}
-    area = metadata.get("area_ratio") if isinstance(metadata.get("area_ratio"), dict) else None
+    area = None
+    if ctx.project and isinstance(getattr(ctx.project, "metadata", None), dict):
+        meta = ctx.project.metadata
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = meta.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+        if not area and isinstance(meta.get("timeline_state"), dict):
+            ts = meta["timeline_state"]
+            for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+                val = ts.get(key)
+                if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                    area = val
+                    break
+
+    if not area and isinstance(ctx.timeline_state, dict):
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = ctx.timeline_state.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+
+    if not area and ctx.primary_video and isinstance(getattr(ctx.primary_video, "metadata", None), dict):
+        meta = ctx.primary_video.metadata
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = meta.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+
     if not area:
         return {"xmin": 0.04, "xmax": 0.96, "ymin": 0.60, "ymax": 0.98}
+
     return {
         "xmin": _clamp_float(area.get("xmin"), 0.04, 0.0, 1.0),
         "xmax": _clamp_float(area.get("xmax"), 0.96, 0.0, 1.0),

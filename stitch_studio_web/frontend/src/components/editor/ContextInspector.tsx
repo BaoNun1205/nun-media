@@ -224,6 +224,9 @@ function AudioClipInspector({ editor, item }: { editor: EditorController; item: 
       <InspectorRangeField label="Fade Out" value={fadeOut} min={0} max={Math.max(0, duration - fadeIn)} step={0.1} suffix="s" onChange={(value, finish) => update({ audioFadeOut: value }, finish)} />
       <button className="inspector-reset-button" type="button" onClick={() => update({ volumeDb: 0, audioFadeIn: 0, audioFadeOut: 0 }, true)}><RotateCcw size={14} /> Reset</button>
     </Section>
+    <button className="danger full" type="button" onClick={() => void editor.deleteTimelineItems([item.id])}>
+      <Trash2 size={14} /> Xóa đoạn audio (Delete)
+    </button>
   </>;
 }
 

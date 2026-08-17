@@ -950,10 +950,15 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const previous = cloneTimeline(timelineItems);
     const removedItems = timelineItems.filter((item) => remove.has(item.id));
     const removedSrtAssetIds = new Set(removedItems.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
-    const next = timelineItems.filter((item) => !remove.has(item.id) && !(item.kind === 'audio' && item.linkedVideoItemId && remove.has(item.linkedVideoItemId)))
-      .map((item) => item.kind === 'video' && keys.some((key) => timelineItems.some((clip) => clip.id === key && clip.kind === 'audio' && clip.linkedVideoItemId === item.id))
-        ? { ...item, sourceAudioMuted: false }
-        : item);
+    const linkedVideoIdsToRestore = new Set(removedItems
+      .filter((item) => item.kind === 'audio' && item.linkedVideoItemId)
+      .map((item) => item.linkedVideoItemId!));
+    const filtered = timelineItems.filter((item) => !remove.has(item.id) && !(item.kind === 'audio' && item.linkedVideoItemId && remove.has(item.linkedVideoItemId)));
+    const next = filtered.map((item) => {
+      if (item.kind !== 'video' || !linkedVideoIdsToRestore.has(item.id)) return item;
+      const stillHasLinkedAudio = filtered.some((clip) => clip.kind === 'audio' && clip.linkedVideoItemId === item.id);
+      return stillHasLinkedAudio ? item : { ...item, sourceAudioMuted: false };
+    });
     const remainingSrtAssetIds = new Set(next.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
     const shouldClearLoadedSrt = Boolean(srt.asset?.id && removedSrtAssetIds.has(srt.asset.id) && !remainingSrtAssetIds.has(srt.asset.id));
     setSelection({ type: 'project' });
@@ -988,7 +993,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
     const ok = await commitTimelineState(state, created.length ? `Split ${keys.length} clip${keys.length === 1 ? '' : 's'}.` : 'Timeline split updated.', previous);
     if (ok && created.length) {
-      setSelection({ type: 'timeline-items', keys: [...keys, ...created.map((item) => item.id)], track: created[0].track });
+      setSelection({ type: 'timeline-items', keys: created.map((item) => item.id), track: created[0].track });
     }
     return ok;
   }
