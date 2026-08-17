@@ -92,8 +92,7 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
             (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
         ]
         best_match_path = None
-        best_score = -1
-
+        sys_candidates = []
         for root_key, sub_key in font_keys:
             try:
                 with winreg.OpenKey(root_key, sub_key) as k:
@@ -101,28 +100,22 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
                         try:
                             name, data, _type = winreg.EnumValue(k, i)
                             name_lower = name.lower()
-                            if family_lower in name_lower:
-                                score = 0
-                                if family_lower == name_lower.split(" (truetype)")[0].strip():
-                                    score += 10
-                                is_bold = "bold" in name_lower or " bd " in name_lower
-                                is_black = "black" in name_lower
-                                is_light = "light" in name_lower
-                                if weight >= 700 and is_bold:
-                                    score += 5
-                                elif weight >= 900 and is_black:
-                                    score += 5
-                                elif weight <= 300 and is_light:
-                                    score += 5
-                                elif 400 <= weight < 700 and not is_bold and not is_black and not is_light:
-                                    score += 5
-                                if score > best_score:
-                                    best_score = score
-                                    best_match_path = data
+                            # e.g., "Arial (TrueType)" or "Arial Bold (TrueType)"
+                            actual_name = name_lower.split(" (truetype)")[0].strip()
+                            if actual_name.startswith(family_lower):
+                                # Determine weight from name
+                                suffix = actual_name[len(family_lower):].strip()
+                                sys_weight = _font_weight_value(suffix, 400) if suffix else 400
+                                sys_candidates.append((sys_weight, data, actual_name))
                         except OSError:
                             break
             except OSError:
                 continue
+
+        if sys_candidates:
+            # Prefer exact family name first, then nearest weight
+            sys_candidates.sort(key=lambda c: (0 if c[2] == family_lower else 1, abs(c[0] - weight)))
+            best_match_path = sys_candidates[0][1]
 
         if best_match_path:
             if not os.path.isabs(best_match_path):
