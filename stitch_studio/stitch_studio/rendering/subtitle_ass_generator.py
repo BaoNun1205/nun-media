@@ -296,6 +296,7 @@ def _style_line(
     margin_r: int = 0,
     margin_v: int = 0,
     alignment: int = 5,
+    is_bg_layer: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     merged = {**fallback_style, **(style or {})}
     font_family = str(merged.get("fontFamily") or "Inter")
@@ -304,20 +305,30 @@ def _style_line(
     font_size = max(8.0, _clamp_float(merged.get("fontSize"), 50.0, 1.0, 1000.0) * font_scale)
     letter_spacing = _clamp_float(merged.get("letterSpacing"), 0.0, -100.0, 100.0) * font_scale
     opacity = _clamp_float(merged.get("opacity", 1.0), 1.0, 0.0, 1.0)
-    primary_color = format_ass_color(str(merged.get("fontColor") or merged.get("color") or "0xFFFFFF"), opacity)
-    outline_color = format_ass_color(str(merged.get("outlineColor") or "0x000000"), opacity)
+    
     background_enabled = bool(merged.get("backgroundEnabled") or merged.get("background"))
-    background_color = format_ass_color(
-        str(merged.get("backgroundColor") or "0x000000"),
-        _clamp_float(merged.get("backgroundOpacity"), 0.55, 0.0, 1.0),
-    ) if background_enabled else format_ass_color("FFFFFF", 0.0)
-    outline_width = _clamp_float(merged.get("outlineWidth") if merged.get("outlineWidth") is not None else merged.get("outline"), 0.0, 0.0, 100.0) * font_scale
-    shadow_x = _clamp_float(merged.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
-    shadow_y = _clamp_float(merged.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
-    shadow_blur = _clamp_float(merged.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
-    glow_blur = _clamp_float(merged.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if merged.get("glowEnabled") else 0.0
-    shadow_depth = max(abs(shadow_x), abs(shadow_y), shadow_blur, glow_blur)
-    border_style = 3 if background_enabled else 1
+    outline_width_raw = _clamp_float(merged.get("outlineWidth") if merged.get("outlineWidth") is not None else merged.get("outline"), 0.0, 0.0, 100.0)
+    
+    if is_bg_layer and background_enabled:
+        primary_color = "&HFFFFFFFF"  # Transparent text
+        bg_opacity = _clamp_float(merged.get("backgroundOpacity"), 0.55, 0.0, 1.0)
+        outline_color = format_ass_color(str(merged.get("backgroundColor") or "0x000000"), bg_opacity)
+        background_color = outline_color
+        outline_width = _clamp_float(merged.get("backgroundPaddingX"), 8.0, 0.0, 100.0) * font_scale
+        border_style = 3
+        shadow_depth = 0.0
+    else:
+        primary_color = format_ass_color(str(merged.get("fontColor") or merged.get("color") or "0xFFFFFF"), opacity)
+        outline_color = format_ass_color(str(merged.get("outlineColor") or "0x000000"), opacity)
+        background_color = format_ass_color("FFFFFF", 0.0)
+        outline_width = outline_width_raw * font_scale
+        border_style = 1
+        shadow_x = _clamp_float(merged.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
+        shadow_y = _clamp_float(merged.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
+        shadow_blur = _clamp_float(merged.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
+        glow_blur = _clamp_float(merged.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if merged.get("glowEnabled") else 0.0
+        shadow_depth = max(abs(shadow_x), abs(shadow_y), shadow_blur, glow_blur)
+
     safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:40] or "Text"
     line = (
         f"Style: {safe_name},{actual_font},{font_size:.2f},{primary_color},&H000000FF,{outline_color},{background_color},"
@@ -364,7 +375,6 @@ def build_text_dialogues(
     area: Optional[Dict[str, Any]] = None,
     position: Optional[Dict[str, Any]] = None,
     style_metrics: Optional[Dict[str, Any]] = None,
-    base_layer: int = 0,
 ) -> List[str]:
     """
     Build one or more ASS Dialogue lines for an event (SRT or regular text),
@@ -441,6 +451,9 @@ def build_text_dialogues(
 
     # Visual effects
     effect = str(merged_style.get("staticEffect") or "none").lower()
+    
+    bg_enabled = bool(merged_style.get("backgroundEnabled") or merged_style.get("background"))
+    
     glow_enabled = bool(merged_style.get("glowEnabled"))
     glow_blur = _clamp_float(merged_style.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if glow_enabled else 0.0
     glow_color = merged_style.get("glowColor") or merged_style.get("outlineColor") or "#ffffff"
@@ -450,6 +463,20 @@ def build_text_dialogues(
     sec_outline_c = merged_style.get("secondaryOutlineColor") or "#000000"
 
     outline_w = _clamp_float(merged_style.get("outlineWidth") if merged_style.get("outlineWidth") is not None else merged_style.get("outline"), 0.0, 0.0, 100.0) * font_scale
+
+    shadow_enabled = bool(merged_style.get("shadowEnabled"))
+    shadow_x = _clamp_float(merged_style.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
+    shadow_y = _clamp_float(merged_style.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
+    shadow_blur = _clamp_float(merged_style.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
+    shadow_color = _ass_color_override(merged_style.get("shadowColor") or "#000000")
+
+    base_layer = 0
+    
+    # 0. Background Layer
+    if bg_enabled:
+        bg_override = fr"{{{align_tag}\pos({pos_x},{pos_y})}}"
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name}_bg,,0,0,0,,{bg_override}{ass_text_content}")
+        base_layer += 1
 
     # 1. Glitch Effect
     if effect == "glitch":
@@ -461,12 +488,13 @@ def build_text_dialogues(
         # Top cyan slice
         top_clip = fr"\clip(0,0,{timeline_width},{int(timeline_height * 0.52)})"
         top_override = fr"{{{align_tag}\pos({pos_x - dx},{pos_y}){top_clip}\c{cyan_color}\bord0\shad0}}"
-        dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},{style_name},,0,0,0,,{top_override}{ass_text_content}")
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{top_override}{ass_text_content}")
 
         # Bottom pink slice
         bot_clip = fr"\clip(0,{int(timeline_height * 0.46)},{timeline_width},{timeline_height})"
         bot_override = fr"{{{align_tag}\pos({pos_x + dx},{pos_y + dy}){bot_clip}\c{pink_color}\bord0\shad0}}"
-        dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},{style_name},,0,0,0,,{bot_override}{ass_text_content}")
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{bot_override}{ass_text_content}")
+        base_layer += 1
 
     # 2. Duotone Effect
     elif effect == "duotone":
@@ -474,27 +502,50 @@ def build_text_dialogues(
         dy = max(1, int(round(2 * font_scale)))
         dt_color = _ass_color_override(sec_outline_c if sec_outline_c != "#000000" else merged_style.get("shadowColor") or "#e02a34")
         dt_override = fr"{{{align_tag}\pos({pos_x + dx},{pos_y + dy})\c{dt_color}\bord0\shad0}}"
-        dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},{style_name},,0,0,0,,{dt_override}{ass_text_content}")
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{dt_override}{ass_text_content}")
+        base_layer += 1
 
     # 3. Glow Layer (if enabled and no glitch/duotone)
-    elif glow_enabled and glow_blur > 0:
-        g_color = _ass_color_override(glow_color, opacity=min(1.0, 0.75 * glow_strength))
-        g_bord = max(1.0, outline_w + glow_blur)
-        g_blur = max(1.0, glow_blur * 1.5)
-        glow_override = fr"{{{align_tag}\pos({pos_x},{pos_y})\c{g_color}\3c{g_color}\bord{g_bord:.2f}\blur{g_blur:.2f}\shad0}}"
-        dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},{style_name},,0,0,0,,{glow_override}{ass_text_content}")
+    if effect not in ("glitch", "duotone"):
+        if glow_enabled and glow_blur > 0:
+            # Layer 0 for glow: large blur, lower alpha
+            g_color_large = _ass_color_override(glow_color, opacity=min(1.0, 0.4 * glow_strength))
+            g_bord_large = max(1.0, outline_w + glow_blur * 1.5)
+            g_blur_large = max(1.0, glow_blur * 2.0)
+            glow_over_large = fr"{{{align_tag}\pos({pos_x},{pos_y})\c{g_color_large}\3c{g_color_large}\bord{g_bord_large:.2f}\blur{g_blur_large:.2f}\shad0}}"
+            dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{glow_over_large}{ass_text_content}")
+            base_layer += 1
+            
+            # Layer 1 for glow: tighter blur, higher alpha
+            g_color_tight = _ass_color_override(glow_color, opacity=min(1.0, 0.8 * glow_strength))
+            g_bord_tight = max(1.0, outline_w + glow_blur * 0.7)
+            g_blur_tight = max(1.0, glow_blur)
+            glow_over_tight = fr"{{{align_tag}\pos({pos_x},{pos_y})\c{g_color_tight}\3c{g_color_tight}\bord{g_bord_tight:.2f}\blur{g_blur_tight:.2f}\shad0}}"
+            dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{glow_over_tight}{ass_text_content}")
+            base_layer += 1
 
-    # 4. Secondary Outline Layer
-    elif sec_outline_w > 0:
+    # 4. Shadow Layer
+    if shadow_enabled and (abs(shadow_x) > 0 or abs(shadow_y) > 0 or shadow_blur > 0):
+        s_pos_x = pos_x + shadow_x
+        s_pos_y = pos_y + shadow_y
+        s_color = _ass_color_override(shadow_color)
+        s_bord = max(1.0, outline_w)
+        s_blur_tag = fr"\blur{shadow_blur:.2f}" if shadow_blur > 0 else ""
+        shadow_override = fr"{{{align_tag}\pos({s_pos_x},{s_pos_y})\c{s_color}\3c{s_color}\bord{s_bord:.2f}{s_blur_tag}\shad0}}"
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{shadow_override}{ass_text_content}")
+        base_layer += 1
+
+    # 5. Secondary Outline Layer
+    if sec_outline_w > 0:
         sec_color = _ass_color_override(sec_outline_c)
         sec_bord = outline_w + sec_outline_w
         sec_override = fr"{{{align_tag}\pos({pos_x},{pos_y})\3c{sec_color}\bord{sec_bord:.2f}\shad0}}"
-        dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},{style_name},,0,0,0,,{sec_override}{ass_text_content}")
+        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{sec_override}{ass_text_content}")
+        base_layer += 1
 
     # Main text layer
     main_override = fr"{{{align_tag}\pos({pos_x},{pos_y})}}"
-    layer = base_layer if len(dialogue_lines) == 0 else max(1, base_layer)
-    dialogue_lines.append(f"Dialogue: {layer},{start_str},{end_str},{style_name},,0,0,0,,{main_override}{ass_text_content}")
+    dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{main_override}{ass_text_content}")
 
     return dialogue_lines
 
@@ -504,12 +555,14 @@ def generate_ass_file(
     timeline_width: int,
     timeline_height: int,
     project_canvas_height: float,
-    srt_events: Union[List[Tuple[float, float, str]], List[Dict[str, Any]]],
-    text_events: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
     global_style: Dict[str, Any],
     subtitle_area: Dict[str, Any],
 ) -> None:
     """Generate a single .ass file for all subtitle and text events."""
+    import json
+    import hashlib
+    
     scale_factor = timeline_height / project_canvas_height if project_canvas_height > 0 else 1.0
     ass_font_scale = scale_factor
 
@@ -526,122 +579,77 @@ def generate_ass_file(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ]
 
-    # 1. Default Subtitle Style
-    xmin = _clamp_float(subtitle_area.get("xmin"), 0.04, 0.0, 1.0)
-    xmax = _clamp_float(subtitle_area.get("xmax"), 0.96, 0.0, 1.0)
-    ymin = _clamp_float(subtitle_area.get("ymin"), 0.60, 0.0, 1.0)
-    ymax = _clamp_float(subtitle_area.get("ymax"), 0.98, 0.0, 1.0)
-
-    xmin_px = xmin * timeline_width
-    xmax_px = xmax * timeline_width
-    ymin_px = ymin * timeline_height
-    ymax_px = ymax * timeline_height
-
-    v_align = str(global_style.get("verticalAlign") or "bottom").lower()
-    t_align = str(global_style.get("textAlign") or "center").lower()
-    align_code = get_ass_alignment_code(t_align, v_align)
-
-    if v_align == "top":
-        margin_v = int(ymin_px)
-    elif v_align == "middle":
-        margin_v = 0
-    else:
-        margin_v = int(timeline_height - ymax_px)
-
-    margin_l = int(xmin_px)
-    margin_r = int(timeline_width - xmax_px)
-
-    default_style_line, default_metrics = _style_line(
-        name="Default",
-        style=global_style,
-        fallback_style={},
-        font_scale=ass_font_scale,
-        timeline_width=timeline_width,
-        timeline_height=timeline_height,
-        margin_l=margin_l,
-        margin_r=margin_r,
-        margin_v=margin_v,
-        alignment=align_code,
-    )
-    ass_lines.append(default_style_line)
-
-    # 2. Styles for regular text events and distinct subtitle events
-    text_style_metrics: List[Dict[str, Any]] = []
-    for index, text_event in enumerate(text_events):
-        t_style = text_event.get("style", {})
-        style_line, metrics = _style_line(
-            name=f"Text{index + 1}",
-            style=t_style if isinstance(t_style, dict) else {},
-            fallback_style={},
-            font_scale=ass_font_scale,
-            timeline_width=timeline_width,
-            timeline_height=timeline_height,
-            alignment=5,
-        )
-        ass_lines.append(style_line)
-        text_style_metrics.append(metrics)
+    styles_cache: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    
+    # Pre-process events to deduplicate styles
+    for event in events:
+        ev_style = event.get("style") or global_style
+        # Stable hash of the style dict
+        style_hash = hashlib.md5(json.dumps(ev_style, sort_keys=True).encode("utf-8")).hexdigest()
+        
+        if style_hash not in styles_cache:
+            style_name = f"Style_{len(styles_cache)}"
+            
+            # Generate the primary style line
+            style_line, metrics = _style_line(
+                name=style_name,
+                style=ev_style,
+                fallback_style=global_style,
+                font_scale=ass_font_scale,
+                timeline_width=timeline_width,
+                timeline_height=timeline_height,
+                alignment=5, # Overridden per event via \\an
+                is_bg_layer=False,
+            )
+            ass_lines.append(style_line)
+            
+            # If background is enabled, generate the bg style line
+            if bool(ev_style.get("backgroundEnabled") or ev_style.get("background")):
+                bg_style_line, _ = _style_line(
+                    name=f"{style_name}_bg",
+                    style=ev_style,
+                    fallback_style=global_style,
+                    font_scale=ass_font_scale,
+                    timeline_width=timeline_width,
+                    timeline_height=timeline_height,
+                    alignment=5,
+                    is_bg_layer=True,
+                )
+                ass_lines.append(bg_style_line)
+                
+            styles_cache[style_hash] = (style_name, metrics)
+            
+        event["_style_name"] = styles_cache[style_hash][0]
+        event["_style_metrics"] = styles_cache[style_hash][1]
 
     ass_lines.append("")
     ass_lines.append("[Events]")
     ass_lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
 
-    # Process SRT events
-    for item in srt_events:
-        if isinstance(item, (tuple, list)):
-            start = float(item[0])
-            end = float(item[1])
-            text = str(item[2] if len(item) > 2 else "")
-            ev_style = global_style
-            ev_area = subtitle_area
-            ev_pos = None
-        elif isinstance(item, dict):
-            start = float(item.get("start") or 0.0)
-            end = float(item.get("end") or 0.0)
-            text = str(item.get("text") or "")
-            ev_style = {**global_style, **(item.get("style") or {})}
-            ev_area = item.get("area") or subtitle_area
-            ev_pos = item.get("position")
-        else:
-            continue
+    # Generate dialogues for unified events
+    for event in events:
+        start = float(event.get("start") or 0.0)
+        end = float(event.get("end") or 0.0)
+        text = str(event.get("text") or "")
+        ev_style = event.get("style") or global_style
+        ev_area = event.get("area") or subtitle_area
+        ev_pos = event.get("position")
+        
+        style_name = event["_style_name"]
+        style_metrics = event["_style_metrics"]
 
         dialogues = build_text_dialogues(
             start=start,
             end=end,
             text=text,
             style=ev_style,
-            style_name="Default",
+            style_name=style_name,
             timeline_width=timeline_width,
             timeline_height=timeline_height,
             font_scale=ass_font_scale,
             area=ev_area,
             position=ev_pos,
-            style_metrics=default_metrics,
-            base_layer=0,
-        )
-        ass_lines.extend(dialogues)
-
-    # Process regular Text events
-    for index, text_event in enumerate(text_events):
-        t_start = float(text_event.get("start") or 0.0)
-        t_end = float(text_event.get("end") or 0.0)
-        t_text = str(text_event.get("text") or "")
-        t_style_meta = text_style_metrics[index] if index < len(text_style_metrics) else {}
-        t_style = t_style_meta.get("style", {}) if isinstance(t_style_meta.get("style"), dict) else text_event.get("style", {})
-        t_x = text_event.get("x", 0.5)
-        t_y = text_event.get("y", 0.45)
-
-        dialogues = build_text_dialogues(
-            start=t_start,
-            end=t_end,
-            text=t_text,
-            style=t_style,
-            style_name=str(t_style_meta.get("name") or f"Text{index + 1}"),
-            timeline_width=timeline_width,
-            timeline_height=timeline_height,
-            font_scale=ass_font_scale,
-            position={"x": t_x, "y": t_y},
-            style_metrics=t_style_meta,
-            base_layer=1,
+            style_metrics=style_metrics,
         )
         ass_lines.extend(dialogues)
 

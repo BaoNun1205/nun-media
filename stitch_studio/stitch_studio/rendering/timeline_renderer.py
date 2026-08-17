@@ -403,8 +403,7 @@ def _add_image_layer(ctx: RenderContext, registry: InputRegistry, filters: list[
 def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], current: str) -> str:
     label = _add_canvas_effects(ctx, filters, current)
     
-    srt_events: list[dict[str, Any]] = []
-    text_events: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     
     global_style = _primary_subtitle_style(ctx)
     global_area = _primary_subtitle_area(ctx)
@@ -427,7 +426,7 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
                 start = max(item_start, start)
                 end = min(item_end, end)
                 if end > start:
-                    srt_events.append({
+                    events.append({
                         "start": start,
                         "end": end,
                         "text": segment.text,
@@ -443,17 +442,15 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
             text = str(params.get("text") or item.get("name") or "Text")
             x = _clamp_float(position.get("x"), 0.5, 0.0, 1.0)
             y = _clamp_float(position.get("y"), 0.45, 0.0, 1.0)
-            text_events.append({
+            events.append({
                 "start": _start(item),
                 "end": _end(item),
                 "text": text,
                 "style": style,
-                "x": x,
-                "y": y,
                 "position": {"x": x, "y": y},
             })
             
-    if not srt_events and not text_events:
+    if not events:
         if label == current:
             out = "[vout]"
             filters.append(f"{current}format=yuv420p{out}")
@@ -468,8 +465,7 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
         timeline_width=ctx.width,
         timeline_height=ctx.height,
         project_canvas_height=_project_canvas_height(ctx),
-        srt_events=srt_events,
-        text_events=text_events,
+        events=events,
         global_style=global_style,
         subtitle_area=global_area,
     )
