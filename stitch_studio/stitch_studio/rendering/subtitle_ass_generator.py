@@ -113,8 +113,8 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
                 continue
 
         if sys_candidates:
-            # Prefer exact family name first, then nearest weight
-            sys_candidates.sort(key=lambda c: (0 if c[2] == family_lower else 1, abs(c[0] - weight)))
+            # Prefer nearest weight, then exact family name, then alphabetically
+            sys_candidates.sort(key=lambda c: (abs(c[0] - weight), 0 if c[2] == family_lower else 1, c[2]))
             best_match_path = sys_candidates[0][1]
 
         if best_match_path:
@@ -405,7 +405,7 @@ def normalize_text_position(position: Optional[Dict[str, Any]], area: Optional[D
     return {
         "mode": "default",
         "x": 0.5,
-        "y": 0.9 if default_v_align == "bottom" else 0.5,
+        "y": 0.9 if default_v_align == "bottom" else 0.45,
     }
 
 
@@ -544,6 +544,9 @@ def build_text_dialogues(
 
     # Calculate coordinates and max width
     pos = normalize_text_position(position, area, default_v_align=v_align)
+    bg_enabled = merged_style["backgroundEnabled"]
+    pad_x = merged_style["backgroundPaddingX"] * font_scale if bg_enabled else 11.0 * font_scale
+    pad_y = merged_style["backgroundPaddingY"] * font_scale
     
     if pos["mode"] == "exact":
         pos_x = int(round(pos["x"] * timeline_width))
@@ -556,8 +559,6 @@ def build_text_dialogues(
         ymax_px = pos["ymax"] * timeline_height
 
         box_w = max(1.0, xmax_px - xmin_px)
-        bg_enabled = merged_style["backgroundEnabled"]
-        pad_x = merged_style["backgroundPaddingX"] * font_scale if bg_enabled else 11.0 * font_scale
         max_wrap_width = max(1.0, box_w - (pad_x * 2))
 
         if t_align == "left":

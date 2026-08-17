@@ -445,14 +445,12 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
             style = params.get("textStyle") if isinstance(params.get("textStyle"), dict) else {}
             position = params.get("textPosition") if isinstance(params.get("textPosition"), dict) else {}
             text = str(params.get("text") or item.get("name") or "Text")
-            x = _clamp_float(position.get("x"), 0.5, 0.0, 1.0)
-            y = _clamp_float(position.get("y"), 0.45, 0.0, 1.0)
             events.append({
                 "start": _start(item),
                 "end": _end(item),
                 "text": text,
                 "style": style,
-                "position": {"x": x, "y": y},
+                "position": position,
             })
             
     if not events:
