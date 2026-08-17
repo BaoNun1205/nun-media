@@ -247,21 +247,37 @@ def _get_rounded_rect_vector(w: float, h: float, r: float) -> str:
     )
 
 def format_ass_color(color_hex: str, opacity: float = 1.0) -> str:
-    """Convert #RRGGBB or 0xRRGGBB + opacity to ASS color format &H<AA><BB><GG><RR>"""
+    """Convert #RRGGBB, #RRGGBBAA, or 0xRRGGBB + opacity to ASS color format &H<AA><BB><GG><RR>"""
     color_hex = str(color_hex).strip()
     if color_hex.startswith("#"):
         color_hex = color_hex[1:]
     elif color_hex.startswith("0x"):
         color_hex = color_hex[2:]
+
+    # If short hex, expand it
+    if len(color_hex) == 3 or len(color_hex) == 4:
+        color_hex = "".join(c + c for c in color_hex)
+
+    if len(color_hex) >= 8:
+        r = color_hex[0:2]
+        g = color_hex[2:4]
+        b = color_hex[4:6]
+        # Only use parsed alpha if opacity is not overridden from default 1.0
+        if abs(opacity - 1.0) < 0.001:
+            # hex alpha is 00=transparent, FF=opaque. ASS alpha is 00=opaque, FF=transparent
+            alpha_hex = color_hex[6:8]
+            try:
+                alpha_val = int(alpha_hex, 16)
+                ass_alpha = 255 - alpha_val
+                return f"&H{ass_alpha:02X}{b}{g}{r}"
+            except ValueError:
+                pass
+    elif len(color_hex) >= 6:
+        r = color_hex[0:2]
+        g = color_hex[2:4]
+        b = color_hex[4:6]
     else:
-        color_hex = "FFFFFF"
-
-    if len(color_hex) != 6:
-        color_hex = "FFFFFF"
-
-    r = color_hex[0:2]
-    g = color_hex[2:4]
-    b = color_hex[4:6]
+        r, g, b = "FF", "FF", "FF"
 
     alpha = int((1.0 - opacity) * 255)
     alpha = max(0, min(255, alpha))
@@ -339,12 +355,15 @@ def normalize_text_style(raw_style: Optional[Dict[str, Any]], fallback_style: Op
     s = dict(fallback_style or {})
     s.update(raw_style or {})
     
+    bg_enabled_raw = s.get("backgroundEnabled")
+    bg_enabled = bool(bg_enabled_raw) if bg_enabled_raw is not None else bool(s.get("background"))
+
     return {
         "fontFamily": str(s.get("fontFamily") or "Inter"),
         "fontSize": _clamp_float(s.get("fontSize"), 42.0, 1.0, 1000.0),
         "fontWeight": _font_weight_value(s.get("fontWeight"), 800),
         "fontStyle": str(s.get("fontStyle") or "normal").lower(),
-        "color": _ass_color_override(s.get("color") or "#ffffff"),
+        "color": _ass_color_override(s.get("fontColor") if s.get("fontColor") is not None else s.get("color") or "#ffffff"),
         
         "outlineWidth": _clamp_float(s.get("outlineWidth") if s.get("outlineWidth") is not None else s.get("outline"), 0.0, 0.0, 100.0),
         "outlineColor": _ass_color_override(s.get("outlineColor") or "#000000"),
@@ -363,7 +382,7 @@ def normalize_text_style(raw_style: Optional[Dict[str, Any]], fallback_style: Op
         "glowStrength": _clamp_float(s.get("glowStrength"), 1.0, 0.0, 5.0),
         "glowBlur": _clamp_float(s.get("glowBlur"), 0.0, 0.0, 100.0),
         
-        "backgroundEnabled": bool(s.get("backgroundEnabled") or s.get("background")),
+        "backgroundEnabled": bg_enabled,
         "backgroundColor": _ass_color_override(s.get("backgroundColor") or "#000000"),
         "backgroundOpacity": _clamp_float(s.get("backgroundOpacity"), 0.5, 0.0, 1.0),
         "backgroundPaddingX": _clamp_float(s.get("backgroundPaddingX"), 8.0, 0.0, 100.0),
@@ -470,7 +489,7 @@ def _style_line(
     safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:40] or "Text"
     line = (
         f"Style: {safe_name},{actual_font},{font_size:.2f},{primary_color},&H000000FF,{outline_color},{background_color},"
-        f"{_ass_flag(font_weight >= 700)},{_ass_flag(merged['fontStyle'] == 'italic')},"
+        f"{font_weight},{_ass_flag(merged['fontStyle'] == 'italic')},"
         f"{_ass_flag(merged['textDecoration'] == 'underline')},0,100,100,{letter_spacing:.2f},0,"
         f"{border_style},{outline_width:.2f},{shadow_depth:.2f},{alignment},10,10,10,1"
     )

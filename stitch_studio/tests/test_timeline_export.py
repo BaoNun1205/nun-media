@@ -149,7 +149,7 @@ class TimelineExportSettingsTest(unittest.TestCase):
             )
             content = ass_path.read_text(encoding="utf-8")
             self.assertIn("Style: Style_0,", content)
-            self.assertIn(",0,0,0,0,100,100,", content)
+            self.assertIn(",400,0,0,0,100,100,", content)
 
     def test_ass_file_exports_static_text_effect_layers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
