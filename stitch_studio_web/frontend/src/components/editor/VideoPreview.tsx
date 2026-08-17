@@ -557,7 +557,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
       : editor.area.ymax;
   const subtitleAnchorTransform = subtitleVerticalAlign === 'top' ? 'translateY(0)' : subtitleVerticalAlign === 'middle' ? 'translateY(-50%)' : 'translateY(-100%)';
   const subtitlePosition = { left: `${editor.area.xmin * 100}%`, top: `${subtitleTop * 100}%`, width: `${(editor.area.xmax - editor.area.xmin) * 100}%`, transform: subtitleAnchorTransform };
-  const sourcePixelHeight = videoSize.height > 120 ? videoSize.height : 1080;
+  const sourcePixelHeight = videoSize.height > 120 ? videoSize.height : (editor.timelineState.canvas?.height || 1080);
   const previewTextScale = Math.max(0.2, Math.min(4, frameHeight / sourcePixelHeight));
 
   return <section className="preview-stage">

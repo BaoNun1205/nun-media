@@ -697,7 +697,16 @@ def _write_text_file(ctx: RenderContext, index: int, text: str) -> Path:
 
 def _project_canvas_height(ctx: RenderContext) -> float:
     canvas = ctx.timeline_state.get("canvas") if isinstance(ctx.timeline_state.get("canvas"), dict) else {}
-    return max(16.0, float(canvas.get("height") or ctx.height))
+    mode = str(canvas.get("mode") or "").lower()
+    if (mode == "source" or not canvas.get("height")) and ctx.primary_video:
+        meta = ctx.primary_video.metadata if isinstance(ctx.primary_video.metadata, dict) else {}
+        pv_h = meta.get("height") or getattr(ctx.primary_video, "height", None)
+        if pv_h and float(pv_h) > 120:
+            return float(pv_h)
+    height_val = canvas.get("height")
+    if height_val and float(height_val) > 120:
+        return float(height_val)
+    return max(16.0, float(ctx.height))
 
 
 def _primary_subtitle_style(ctx: RenderContext) -> dict[str, Any]:

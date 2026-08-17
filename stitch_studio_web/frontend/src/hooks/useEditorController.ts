@@ -211,6 +211,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [model, setModel] = useState(defaults.whisperModel || 'small');
   const [device, setDevice] = useState(defaults.device || 'auto');
   const [language, setLanguage] = useState('auto');
+  const [maxWordsPerLine, setMaxWordsPerLine] = useState<number | null>(defaults.maxWordsPerLine ? Number(defaults.maxWordsPerLine) : null);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const [translationSourceLanguage, setTranslationSourceLanguage] = useState('auto');
   const [removeMethod, setRemoveMethod] = useState<'auto' | 'manual'>('auto');
@@ -1558,6 +1559,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       hardsubMode,
       ocrArea: subtitleSource === 'hardsub' && ocrAreaMode === 'custom' ? ocrArea : null,
       timelineSpeed: videoSpeed,
+      maxWordsPerLine: maxWordsPerLine ? Number(maxWordsPerLine) : null,
     };
     if (!project.workspaceId) {
       await queue(`/videos/${project.id}/srt/generate`, body, 'Subtitle job');
@@ -1828,7 +1830,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth, bottomView, setBottomView,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob, audioJobForVideo,
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
-    subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
+    subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage, maxWordsPerLine, setMaxWordsPerLine,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
     removeMethod, setRemoveMethod, removeMode, setRemoveMode,
     autoSrtAssetId, setAutoSrtAssetId,

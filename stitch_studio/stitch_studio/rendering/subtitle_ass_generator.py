@@ -181,6 +181,52 @@ def _clamp_float(val: Any, default: float, min_val: float, max_val: float) -> fl
     except (TypeError, ValueError):
         return default
 
+CSS_PX_TO_ASS_PT = 96.0 / 72.0  # 1.3333333333333333
+
+FONT_FALLBACK_MAP: Dict[str, str] = {
+    "inter": "Segoe UI",
+    "roboto": "Arial",
+    "open sans": "Segoe UI",
+    "lato": "Calibri",
+    "nunito": "Segoe UI",
+    "work sans": "Segoe UI",
+    "dm sans": "Segoe UI",
+    "ibm plex sans": "Segoe UI",
+    "noto sans": "Segoe UI",
+    "montserrat": "Segoe UI",
+    "poppins": "Segoe UI",
+    "oswald": "Impact",
+    "archivo black": "Arial Black",
+    "anton": "Impact",
+    "bebas neue": "Impact",
+    "outfit": "Segoe UI",
+    "raleway": "Segoe UI",
+    "manrope": "Segoe UI",
+    "urbanist": "Segoe UI",
+    "baloo 2": "Arial Rounded MT Bold",
+    "fredoka": "Arial Rounded MT Bold",
+    "rubik": "Segoe UI",
+    "bangers": "Impact",
+    "luckiest guy": "Arial Black",
+    "lilita one": "Arial Black",
+    "titan one": "Arial Black",
+    "jetbrains mono": "Consolas",
+    "fira code": "Consolas",
+}
+
+def resolve_font_family(family: str, weight: int = 400) -> str:
+    """Resolve font family to an installed Windows font name, falling back gracefully if needed."""
+    raw_family = str(family or "").strip().replace("'", "").replace('"', '')
+    if not raw_family:
+        return "Arial"
+    if get_font_file_path(raw_family, weight):
+        return raw_family
+    family_lower = raw_family.lower()
+    fallback = FONT_FALLBACK_MAP.get(family_lower)
+    if fallback and get_font_file_path(fallback, weight):
+        return fallback
+    return raw_family
+
 def generate_ass_file(
     out_path: Path,
     timeline_width: int,
@@ -193,7 +239,8 @@ def generate_ass_file(
 ) -> None:
     """Generate a single .ass file for all subtitle and text events."""
     
-    scale = timeline_height / project_canvas_height if project_canvas_height > 0 else 1.0
+    scale_factor = timeline_height / project_canvas_height if project_canvas_height > 0 else 1.0
+    ass_font_scale = scale_factor * CSS_PX_TO_ASS_PT
     
     ass_lines = [
         "[Script Info]",
@@ -213,19 +260,18 @@ def generate_ass_file(
     font_weight = int(font_weight_raw) if isinstance(font_weight_raw, (int, str)) and str(font_weight_raw).isdigit() else 800
     
     is_bold = -1 if font_weight >= 700 else 0
-    font_size = max(8.0, _clamp_float(global_style.get("fontSize"), 42.0, 1.0, 1000.0) * scale)
-    letter_spacing = _clamp_float(global_style.get("letterSpacing"), 0.0, -100.0, 100.0) * scale
+    actual_font_name = resolve_font_family(font_family, font_weight)
     
-    # We will pass the exact font name. libass relies on fontconfig, so passing 'Inter' should work if it is installed.
-    # However, to be safe, we will just use the family name directly.
-    actual_font_name = font_family
+    font_size = max(8.0, _clamp_float(global_style.get("fontSize"), 50.0, 1.0, 1000.0) * ass_font_scale)
+    pixel_font_size = max(8, int(round(_clamp_float(global_style.get("fontSize"), 50.0, 1.0, 1000.0) * scale_factor)))
+    letter_spacing = _clamp_float(global_style.get("letterSpacing"), 0.0, -100.0, 100.0) * ass_font_scale
     
     primary_color = format_ass_color(str(global_style.get("fontColor") or global_style.get("color") or "0xFFFFFF"), _clamp_float(global_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
     outline_color = format_ass_color(str(global_style.get("outlineColor") or "0x000000"), _clamp_float(global_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
     
-    outline_width = _clamp_float(global_style.get("outlineWidth") or global_style.get("outline"), 0.0, 0.0, 100.0) * scale
-    shadow_x = _clamp_float(global_style.get("shadowOffsetX"), 0.0, -100.0, 100.0) * scale
-    shadow_y = _clamp_float(global_style.get("shadowOffsetY"), 0.0, -100.0, 100.0) * scale
+    outline_width = _clamp_float(global_style.get("outlineWidth") or global_style.get("outline"), 0.0, 0.0, 100.0) * ass_font_scale
+    shadow_x = _clamp_float(global_style.get("shadowOffsetX"), 0.0, -100.0, 100.0) * ass_font_scale
+    shadow_y = _clamp_float(global_style.get("shadowOffsetY"), 0.0, -100.0, 100.0) * ass_font_scale
     shadow_depth = max(abs(shadow_x), abs(shadow_y))
     
     xmin = _clamp_float(subtitle_area.get("xmin"), 0.04, 0.0, 1.0)
@@ -242,8 +288,8 @@ def generate_ass_file(
     box_height_px = max(1.0, ymax_px - ymin_px)
     
     bg_enabled = global_style.get("backgroundEnabled") or global_style.get("background")
-    pad_x = _clamp_float(global_style.get("backgroundPaddingX"), 8.0, 0.0, 100.0) * scale if bg_enabled else 11.0 * scale
-    pad_y = _clamp_float(global_style.get("backgroundPaddingY"), 3.0, 0.0, 100.0) * scale if bg_enabled else 7.0 * scale
+    pad_x = _clamp_float(global_style.get("backgroundPaddingX"), 8.0, 0.0, 100.0) * scale_factor if bg_enabled else 11.0 * scale_factor
+    pad_y = _clamp_float(global_style.get("backgroundPaddingY"), 3.0, 0.0, 100.0) * scale_factor if bg_enabled else 7.0 * scale_factor
     
     effective_box_width = box_width_px - (pad_x * 2)
     
@@ -277,7 +323,7 @@ def generate_ass_file(
     ass_lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
     
     for start, end, text in srt_events:
-        wrapped_lines = wrap_text_deterministic(text, font_family, int(font_size), font_weight, letter_spacing, effective_box_width)
+        wrapped_lines = wrap_text_deterministic(text, actual_font_name, pixel_font_size, font_weight, letter_spacing / CSS_PX_TO_ASS_PT, effective_box_width)
         ass_text = r"\N".join(wrapped_lines)
         
         if v_align == "middle":
@@ -299,23 +345,27 @@ def generate_ass_file(
         t_x = text_event.get("x", 0.5)
         t_y = text_event.get("y", 0.45)
         
-        t_font_size = max(8.0, _clamp_float(t_style.get("fontSize"), 42.0, 1.0, 1000.0) * scale)
         t_font_family = str(t_style.get("fontFamily") or "Inter")
         t_font_weight = int(t_style.get("fontWeight") or 800)
-        t_letter_spacing = _clamp_float(t_style.get("letterSpacing"), 0.0, -100.0, 100.0) * scale
+        t_actual_font = resolve_font_family(t_font_family, t_font_weight)
+        t_is_bold = r"\b1" if t_font_weight >= 700 else r"\b0"
+        
+        t_font_size = max(8.0, _clamp_float(t_style.get("fontSize"), 50.0, 1.0, 1000.0) * ass_font_scale)
+        t_pixel_font_size = max(8, int(round(_clamp_float(t_style.get("fontSize"), 50.0, 1.0, 1000.0) * scale_factor)))
+        t_letter_spacing = _clamp_float(t_style.get("letterSpacing"), 0.0, -100.0, 100.0) * ass_font_scale
         
         t_color = format_ass_color(str(t_style.get("fontColor") or t_style.get("color") or "0xFFFFFF"), _clamp_float(t_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
         t_outline_color = format_ass_color(str(t_style.get("outlineColor") or "0x000000"), _clamp_float(t_style.get("opacity", 1.0), 1.0, 0.0, 1.0))
-        t_outline_width = _clamp_float(t_style.get("outlineWidth") or t_style.get("outline"), 0.0, 0.0, 100.0) * scale
+        t_outline_width = _clamp_float(t_style.get("outlineWidth") or t_style.get("outline"), 0.0, 0.0, 100.0) * ass_font_scale
         
-        # Free-form text usually wraps at the edges, we can wrap at timeline_width - 100
-        wrapped_lines = wrap_text_deterministic(t_text, t_font_family, int(t_font_size), t_font_weight, t_letter_spacing, timeline_width - 100)
+        # Free-form text wraps at timeline_width - 100
+        wrapped_lines = wrap_text_deterministic(t_text, t_actual_font, t_pixel_font_size, t_font_weight, t_letter_spacing / CSS_PX_TO_ASS_PT, timeline_width - 100)
         t_ass_text = r"\N".join(wrapped_lines)
         
         # Position mapping
         pos_x = int(t_x * timeline_width)
         pos_y = int(t_y * timeline_height)
-        t_ass_text = fr"{{\pos({pos_x},{pos_y})}}{{\fn{t_font_family}}}{{\fs{t_font_size}}}{{\c{t_color}}}{{\3c{t_outline_color}}}{{\bord{t_outline_width}}}{{\an5}}{t_ass_text}"
+        t_ass_text = fr"{{\pos({pos_x},{pos_y})}}{{\fn{t_actual_font}}}{t_is_bold}{{\fs{t_font_size:.2f}}}{{\c{t_color}}}{{\3c{t_outline_color}}}{{\bord{t_outline_width:.2f}}}{{\an5}}{t_ass_text}"
         
         ass_lines.append(f"Dialogue: 1,{format_ass_time(t_start)},{format_ass_time(t_end)},Default,,0,0,0,,{t_ass_text}")
 

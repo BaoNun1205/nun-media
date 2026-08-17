@@ -80,6 +80,7 @@ class SrtGenerateRequest(BaseModel):
     hardsubMode: str = "fast"
     ocrArea: Any = None
     timelineSpeed: float | None = None
+    maxWordsPerLine: int | None = None
 
 
 class SrtSaveRequest(BaseModel):
@@ -3738,6 +3739,7 @@ def _generate_workspace_timeline_srt(project, payload: SrtGenerateRequest, progr
         device=payload.device,
         language=payload.language,
         timeline_speed=1.0,
+        max_words_per_line=payload.maxWordsPerLine,
         progress=progress,
     )
     return _register_workspace_srt_asset(project, audio_video, srt_path, "timeline-audio")
@@ -4655,6 +4657,7 @@ def generate_srt(video_id: int, payload: SrtGenerateRequest) -> dict[str, Any]:
                     device=payload.device,
                     language=payload.language,
                     timeline_speed=1.0,
+                    max_words_per_line=payload.maxWordsPerLine,
                     progress=progress,
                 )
                 storage.add_asset(
@@ -4691,6 +4694,7 @@ def generate_srt(video_id: int, payload: SrtGenerateRequest) -> dict[str, Any]:
             device=payload.device,
             language=payload.language,
             timeline_speed=timeline_speed,
+            max_words_per_line=payload.maxWordsPerLine,
             progress=progress,
         ),
     )

@@ -1128,6 +1128,62 @@ class DownloaderService:
         return ids
 
 
+def _split_whisper_segment_by_words(
+    segment: Any,
+    max_words: int | None,
+    time_scale: float,
+) -> list[SubtitleSegment]:
+    if not max_words or max_words <= 0:
+        text = segment.text.strip() if getattr(segment, "text", None) else ""
+        if not text:
+            return []
+        c_start = float(segment.start) * time_scale
+        c_end = max(c_start + 0.08, float(segment.end) * time_scale)
+        return [SubtitleSegment(index=1, start=c_start, end=c_end, text=text)]
+
+    words = getattr(segment, "words", None)
+    if words:
+        valid_words = [w for w in words if getattr(w, "word", None) and str(w.word).strip()]
+        if valid_words:
+            chunks: list[SubtitleSegment] = []
+            for i in range(0, len(valid_words), max_words):
+                chunk_words = valid_words[i : i + max_words]
+                if not chunk_words:
+                    continue
+                raw_text = "".join(str(w.word) for w in chunk_words).strip()
+                clean_text = " ".join(raw_text.split()) if " " in raw_text else raw_text
+                if not clean_text:
+                    continue
+                c_start = float(chunk_words[0].start) * time_scale
+                c_end = max(c_start + 0.08, float(chunk_words[-1].end) * time_scale)
+                chunks.append(SubtitleSegment(index=1, start=c_start, end=c_end, text=clean_text))
+            if chunks:
+                return chunks
+
+    text = segment.text.strip() if getattr(segment, "text", None) else ""
+    if not text:
+        return []
+    raw_words = text.split()
+    if len(raw_words) <= max_words:
+        c_start = float(segment.start) * time_scale
+        c_end = max(c_start + 0.08, float(segment.end) * time_scale)
+        return [SubtitleSegment(index=1, start=c_start, end=c_end, text=text)]
+
+    chunks = []
+    total_w = len(raw_words)
+    seg_start = float(segment.start) * time_scale
+    seg_end = float(segment.end) * time_scale
+    seg_dur = max(0.2, seg_end - seg_start)
+    for i in range(0, total_w, max_words):
+        chunk_words = raw_words[i : i + max_words]
+        c_start = seg_start + seg_dur * (i / total_w)
+        c_end = seg_start + seg_dur * (min(total_w, i + len(chunk_words)) / total_w)
+        if c_end <= c_start:
+            c_end = c_start + 0.08
+        chunks.append(SubtitleSegment(index=1, start=c_start, end=c_end, text=" ".join(chunk_words)))
+    return chunks
+
+
 class TranscriptionService:
     def __init__(self, config: AppConfig, storage: Storage):
         self.config = config
@@ -1144,12 +1200,14 @@ class TranscriptionService:
         device: str = "auto",
         language: str = "vi",
         timeline_speed: float = 1.0,
+        max_words_per_line: int | None = None,
         progress: Optional[Progress] = None,
     ) -> Path:
         output_dir = self.config.outputs_dir / f"video_{video.id}"
         srt_path = output_dir / f"{video.path.stem}.{model_name}.srt"
         model = self._get_whisper_model(model_name=model_name, device=device, progress=progress)
         _emit(progress, "Transcribing...")
+        word_ts = bool(max_words_per_line and max_words_per_line > 0)
         segments_iter, info = model.transcribe(
             str(video.path),
             language=None if not language or language == "auto" else language,
@@ -1157,6 +1215,7 @@ class TranscriptionService:
             beam_size=5,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
+            word_timestamps=word_ts,
         )
         duration_seconds = float(getattr(info, "duration", 0) or 0)
         if duration_seconds <= 0 and video.duration_ms:
@@ -1169,11 +1228,10 @@ class TranscriptionService:
         segments: list[SubtitleSegment] = []
         last_percent = -1
         for index, segment in enumerate(segments_iter, start=1):
-            text = segment.text.strip()
-            if text:
-                segments.append(
-                    SubtitleSegment(index=len(segments) + 1, start=float(segment.start) * time_scale, end=float(segment.end) * time_scale, text=text)
-                )
+            sub_segments = _split_whisper_segment_by_words(segment, max_words_per_line, time_scale)
+            for sub in sub_segments:
+                sub.index = len(segments) + 1
+                segments.append(sub)
             if duration_seconds > 0:
                 percent = min(99, int((float(segment.end) / duration_seconds) * 100))
                 if percent > last_percent:
@@ -1197,6 +1255,7 @@ class TranscriptionService:
                 "timeline_speed": timeline_speed,
                 "timeline_time_scale": time_scale,
                 "segment_count": len(segments),
+                "max_words_per_line": max_words_per_line,
             },
         )
         _emit(progress, f"SRT exported: {srt_path}")
