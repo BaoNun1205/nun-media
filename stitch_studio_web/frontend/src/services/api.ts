@@ -37,7 +37,7 @@ export const studioApi = {
     request<{ fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }>(`/projects/${id}/export/defaults`),
   selectExportFolder: (initialDirectory?: string) =>
     request<{ path: string }>('/projects/export/select-folder', { method: 'POST', body: JSON.stringify({ initialDirectory }) }),
-  exportProject: (id: number, payload: { fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }) =>
+  exportProject: (id: number, payload: { fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number; timelineState?: TimelineState; sceneState?: CoreTimelineScene }) =>
     request<{ jobId: number; alreadyRunning?: boolean }>(`/projects/${id}/export`, { method: 'POST', body: JSON.stringify(payload) }),
   videoExportDefaults: (id: number) =>
     request<{ fileName: string; outputDirectory: string; resolution: string; aspectRatio: string; fps: number }>(`/videos/${id}/export/defaults`),

@@ -3188,7 +3188,31 @@ def export_project_timeline(project_id: int, payload: ProjectExportRequest) -> d
     def run(progress: Callable[[str], None]) -> dict[str, Any]:
         progress("Resolving assets")
         fresh_project = storage.get_project(project.id) or project
-        result = render_project_timeline(project=fresh_project, storage=storage, config=config, settings=settings, progress=progress)
+        meta = dict(fresh_project.metadata or {})
+        if isinstance(payload.timelineState, dict):
+            raw_state = payload.timelineState
+            track_kinds = {track["id"]: track["kind"] for track in DEFAULT_TIMELINE_TRACKS}
+            for track in (raw_state.get("tracks") or []):
+                if not isinstance(track, dict):
+                    continue
+                track_id = str(track.get("id") or "").strip()[:40]
+                kind = str(track.get("kind") or "").strip().lower()
+                if track_id and kind in {"video", "subtitle", "audio", "text", "effect"}:
+                    track_kinds[track_id] = kind
+            raw_items = raw_state.get("items") or meta.get("timeline") or []
+            clean_items = _clean_timeline_items(fresh_project, raw_items, track_kinds)
+            clean_state = _clean_timeline_state(raw_state, clean_items)
+            meta["timeline"] = clean_items
+            meta["timeline_state"] = clean_state
+        if isinstance(payload.sceneState, dict):
+            meta["scene_state"] = payload.sceneState
+        render_project = SimpleNamespace(
+            id=fresh_project.id,
+            title=fresh_project.title,
+            primary_video_id=getattr(fresh_project, "primary_video_id", None),
+            metadata=meta,
+        )
+        result = render_project_timeline(project=render_project, storage=storage, config=config, settings=settings, progress=progress)
         metadata = dict((storage.get_project(project.id) or fresh_project).metadata or {})
         metadata["last_export_directory"] = str(Path(result["path"]).parent)
         metadata["last_export"] = result
@@ -3293,6 +3317,8 @@ def export_video_timeline(video_id: int, payload: ProjectExportRequest) -> dict[
         timeline_state = _timeline_state_for_video_export(fresh_video, payload.timelineState)
         meta = dict(fresh_video.metadata or {})
         meta["timeline_state"] = timeline_state
+        if isinstance(payload.sceneState, dict):
+            meta["scene_state"] = payload.sceneState
         synthetic_project = SimpleNamespace(
             id=fresh_video.id,
             title=fresh_video.title,

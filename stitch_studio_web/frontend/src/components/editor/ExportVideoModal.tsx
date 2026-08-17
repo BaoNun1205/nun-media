@@ -67,7 +67,18 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
     try {
       setError('');
       const result = workspaceId
-        ? (await studioApi.saveWorkspaceTimeline(workspaceId, editor.timelineItems, editor.timelineState, editor.timelineScene), await studioApi.exportProject(workspaceId, { fileName, outputDirectory, resolution, aspectRatio, fps }))
+        ? (
+            await studioApi.saveWorkspaceTimeline(workspaceId, editor.timelineItems, editor.timelineState, editor.timelineScene),
+            await studioApi.exportProject(workspaceId, {
+              fileName,
+              outputDirectory,
+              resolution,
+              aspectRatio,
+              fps,
+              timelineState: editor.timelineState,
+              sceneState: editor.timelineScene,
+            })
+          )
         : await studioApi.exportVideo(editor.project.id, { fileName, outputDirectory, resolution, aspectRatio, fps, timelineState: editor.timelineState, sceneState: editor.timelineScene });
       setJobId(result.jobId);
       setState('EXPORTING');

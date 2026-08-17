@@ -403,8 +403,11 @@ def _add_image_layer(ctx: RenderContext, registry: InputRegistry, filters: list[
 def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], current: str) -> str:
     label = _add_canvas_effects(ctx, filters, current)
     
-    srt_events = []
-    text_events = []
+    srt_events: list[dict[str, Any]] = []
+    text_events: list[dict[str, Any]] = []
+    
+    global_style = _primary_subtitle_style(ctx)
+    global_area = _primary_subtitle_area(ctx)
     
     for item in _items_in_track_order(ctx):
         if _kind(item) == "srt" and _visual_enabled(ctx, item):
@@ -414,13 +417,24 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
             source_start = _source_start(item)
             item_start = _start(item)
             item_end = _end(item)
+            params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            item_style = params.get("subtitleStyle") or params.get("textStyle") or params.get("style") or global_style
+            item_area = params.get("subtitleArea") or params.get("area") or global_area
+            item_pos = params.get("subtitlePosition") or params.get("textPosition") or params.get("position")
             for segment in read_srt(source):
                 start = item_start + max(0.0, segment.start - source_start)
                 end = item_start + max(0.0, segment.end - source_start)
                 start = max(item_start, start)
                 end = min(item_end, end)
                 if end > start:
-                    srt_events.append((start, end, segment.text))
+                    srt_events.append({
+                        "start": start,
+                        "end": end,
+                        "text": segment.text,
+                        "style": dict(item_style) if isinstance(item_style, dict) else dict(global_style),
+                        "area": dict(item_area) if isinstance(item_area, dict) else dict(global_area),
+                        "position": dict(item_pos) if isinstance(item_pos, dict) else None,
+                    })
                     
         if _kind(item) == "text" and _visual_enabled(ctx, item):
             params = item.get("params") if isinstance(item.get("params"), dict) else {}
@@ -435,7 +449,8 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
                 "text": text,
                 "style": style,
                 "x": x,
-                "y": y
+                "y": y,
+                "position": {"x": x, "y": y},
             })
             
     if not srt_events and not text_events:
@@ -445,7 +460,7 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
             return out
         return label
         
-    from stitch_studio.rendering.subtitle_ass_generator import generate_ass_file
+    from stitch_studio.rendering.subtitle_ass_generator import generate_ass_file, get_bundled_fonts_dir
     
     ass_path = ctx.temp_dir / "subtitles.ass"
     generate_ass_file(
@@ -455,13 +470,18 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
         project_canvas_height=_project_canvas_height(ctx),
         srt_events=srt_events,
         text_events=text_events,
-        global_style=_primary_subtitle_style(ctx),
-        subtitle_area=_primary_subtitle_area(ctx)
+        global_style=global_style,
+        subtitle_area=global_area,
     )
     
     out = "[vsubs]"
     escaped_ass = _escape_filter_path(ass_path)
-    filters.append(f"{label}subtitles='{escaped_ass}'{out}")
+    fonts_dir = get_bundled_fonts_dir()
+    if fonts_dir and fonts_dir.exists():
+        escaped_fonts = _escape_filter_path(fonts_dir)
+        filters.append(f"{label}subtitles='{escaped_ass}':fontsdir='{escaped_fonts}'{out}")
+    else:
+        filters.append(f"{label}subtitles='{escaped_ass}'{out}")
     return out
 
 
