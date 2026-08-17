@@ -677,7 +677,7 @@ def _image_alpha_fades(item: dict[str, Any], start: float, duration: float) -> l
 def _drawtext_filter(ctx: RenderContext, style: dict[str, Any], text_path: Path, x: float, y: float, start: float, end: float, *, centered: bool, vertical: str = "middle") -> str:
     canvas_h = _project_canvas_height(ctx)
     font_size = max(8, int(round(_style_float(style, "fontSize", 42) * ctx.height / canvas_h)))
-    font = str(style.get("fontFamily") or "Segoe UI")
+    font = str(style.get("fontFamily") or "Inter")
     align_y = "y"
     if vertical == "top":
         y_expr = f"{ctx.height * y:.2f}"

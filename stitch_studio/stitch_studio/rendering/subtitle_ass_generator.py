@@ -263,13 +263,18 @@ def _font_weight_value(raw: Any, default: int = 800) -> int:
     value = str(raw or "").strip().lower()
     if value.isdigit():
         return int(value)
-    if value in {"bold", "bolder", "black", "heavy"}:
-        return 800
-    if value in {"normal", "regular", "book"}:
-        return 400
-    if value in {"light", "lighter"}:
-        return 300
-    return default
+    WEIGHT_MAP = {
+        "thin": 100, "hairline": 100,
+        "extralight": 200, "ultralight": 200,
+        "light": 300, "lighter": 300,
+        "normal": 400, "regular": 400, "book": 400,
+        "medium": 500,
+        "semibold": 600, "demibold": 600,
+        "bold": 700, "bolder": 700,
+        "extrabold": 800, "ultrabold": 800, "heavy": 800,
+        "black": 900,
+    }
+    return WEIGHT_MAP.get(value, default)
 
 
 def _ass_flag(enabled: bool) -> int:
