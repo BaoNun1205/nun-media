@@ -65,25 +65,25 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
     # 1. Check bundled fonts directory
     fonts_dir = get_bundled_fonts_dir()
     if fonts_dir.exists():
-        candidate_names = [
-            f"{slug}-black.ttf" if weight >= 900 else None,
-            f"{slug}-extrabold.ttf" if weight == 800 else None,
-            f"{slug}-bold.ttf" if weight >= 700 else None,
-            f"{slug}-semibold.ttf" if weight == 600 else None,
-            f"{slug}-medium.ttf" if weight == 500 else None,
-            f"{slug}-regular.ttf",
-            f"{slug}.ttf",
-            f"{slug}.otf",
-            f"{family_lower}.ttf",
-            f"{family_clean}.ttf",
-        ]
-        candidate_names = [c for c in candidate_names if c]
-        for cname in candidate_names:
-            cpath = fonts_dir / cname
-            if cpath.exists():
-                logger.debug(f"Using bundled font: {family_clean} (weight {weight}) -> {cpath.name}")
-                _FONT_FILE_CACHE[cache_key] = str(cpath)
-                return str(cpath)
+        candidates = []
+        for p in fonts_dir.iterdir():
+            if not p.is_file():
+                continue
+            name_lower = p.name.lower()
+            if name_lower == f"{slug}.ttf" or name_lower == f"{slug}.otf":
+                candidates.append((400, p))
+            elif name_lower.startswith(f"{slug}-") and name_lower.endswith(('.ttf', '.otf')):
+                stem = p.stem.lower()
+                suffix = stem[len(slug)+1:]
+                candidates.append((_font_weight_value(suffix, 400), p))
+
+        if candidates:
+            # Sort by distance to requested weight, then by name for stability
+            candidates.sort(key=lambda c: (abs(c[0] - weight), c[1].name))
+            best_match = candidates[0][1]
+            logger.debug(f"Using bundled font: {family_clean} (weight {weight}) -> {best_match.name}")
+            _FONT_FILE_CACHE[cache_key] = str(best_match)
+            return str(best_match)
 
     # 2. Check Windows Registry for system fonts
     if os.name == "nt":
@@ -207,6 +207,52 @@ def wrap_text_deterministic(text: str, family: str, size: int, weight: int, lett
     return lines or [text]
 
 
+def _measure_text_bounding_box(lines: List[str], family: str, size: int, weight: int, letter_spacing: float, line_height: float) -> Tuple[float, float]:
+    """Measure the exact width and height of a wrapped text block."""
+    metrics = _get_qfont_metrics(family, size, weight, letter_spacing)
+    if metrics:
+        max_w = 0.0
+        total_h = 0.0
+        for i, line in enumerate(lines):
+            rect = metrics.boundingRect(line)
+            w = rect.width()
+            max_w = max(max_w, float(w))
+            if i == 0:
+                total_h += float(metrics.height())
+            else:
+                total_h += float(metrics.height()) * line_height
+        return max_w, total_h
+    
+    # Headless fallback estimation
+    max_chars = max((len(line) for line in lines), default=0)
+    est_w = max_chars * size * 0.55
+    est_h = len(lines) * size * line_height if len(lines) > 1 else size * 1.15
+    return est_w, est_h
+
+
+def _get_rounded_rect_vector(w: float, h: float, r: float) -> str:
+    """Generate an ASS vector drawing for a rounded rectangle."""
+    r = min(r, w / 2, h / 2)
+    if r <= 0:
+        return f"m 0 0 l {int(round(w))} 0 l {int(round(w))} {int(round(h))} l 0 {int(round(h))}"
+        
+    k = r * 0.55228
+    
+    def ir(val: float) -> int:
+        return int(round(val))
+        
+    return (
+        f"m {ir(r)} 0 "
+        f"l {ir(w-r)} 0 "
+        f"b {ir(w-r+k)} 0 {ir(w)} {ir(r-k)} {ir(w)} {ir(r)} "
+        f"l {ir(w)} {ir(h-r)} "
+        f"b {ir(w)} {ir(h-r+k)} {ir(w-r+k)} {ir(h)} {ir(w-r)} {ir(h)} "
+        f"l {ir(r)} {ir(h)} "
+        f"b {ir(r-k)} {ir(h)} 0 {ir(h-r+k)} 0 {ir(h-r)} "
+        f"l 0 {ir(r)} "
+        f"b 0 {ir(r-k)} {ir(r-k)} 0 {ir(r)} 0"
+    )
+
 def format_ass_color(color_hex: str, opacity: float = 1.0) -> str:
     """Convert #RRGGBB or 0xRRGGBB + opacity to ASS color format &H<AA><BB><GG><RR>"""
     color_hex = str(color_hex).strip()
@@ -284,12 +330,90 @@ def _ass_flag(enabled: bool) -> int:
 def _normalized_text(style: Dict[str, Any], text: str) -> str:
     transform = str(style.get("textTransform") or "none").lower()
     if transform == "uppercase":
-        return text.upper()
-    if transform == "lowercase":
-        return text.lower()
-    if transform == "capitalize":
-        return text.title()
+        text = text.upper()
+    elif transform == "lowercase":
+        text = text.lower()
+    elif transform == "capitalize":
+        text = text.title()
     return text
+
+
+def normalize_text_style(raw_style: Optional[Dict[str, Any]], fallback_style: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Standardize text style providing sensible defaults for missing properties.
+    Ensures that both SRT and regular Text items share a common styling baseline.
+    """
+    s = dict(fallback_style or {})
+    s.update(raw_style or {})
+    
+    return {
+        "fontFamily": str(s.get("fontFamily") or "Inter"),
+        "fontSize": _clamp_float(s.get("fontSize"), 42.0, 1.0, 1000.0),
+        "fontWeight": _font_weight_value(s.get("fontWeight"), 800),
+        "fontStyle": str(s.get("fontStyle") or "normal").lower(),
+        "color": _ass_color_override(s.get("color") or "#ffffff"),
+        
+        "outlineWidth": _clamp_float(s.get("outlineWidth") if s.get("outlineWidth") is not None else s.get("outline"), 0.0, 0.0, 100.0),
+        "outlineColor": _ass_color_override(s.get("outlineColor") or "#000000"),
+        
+        "secondaryOutlineWidth": _clamp_float(s.get("secondaryOutlineWidth"), 0.0, 0.0, 100.0),
+        "secondaryOutlineColor": _ass_color_override(s.get("secondaryOutlineColor") or "#000000"),
+        
+        "shadowEnabled": bool(s.get("shadowEnabled")),
+        "shadowColor": _ass_color_override(s.get("shadowColor") or "#000000"),
+        "shadowOffsetX": _clamp_float(s.get("shadowOffsetX"), 0.0, -100.0, 100.0),
+        "shadowOffsetY": _clamp_float(s.get("shadowOffsetY"), 0.0, -100.0, 100.0),
+        "shadowBlur": _clamp_float(s.get("shadowBlur"), 0.0, 0.0, 100.0),
+        
+        "glowEnabled": bool(s.get("glowEnabled")),
+        "glowColor": _ass_color_override(s.get("glowColor") or s.get("outlineColor") or "#ffffff"),
+        "glowStrength": _clamp_float(s.get("glowStrength"), 1.0, 0.0, 5.0),
+        "glowBlur": _clamp_float(s.get("glowBlur"), 0.0, 0.0, 100.0),
+        
+        "backgroundEnabled": bool(s.get("backgroundEnabled") or s.get("background")),
+        "backgroundColor": _ass_color_override(s.get("backgroundColor") or "#000000"),
+        "backgroundOpacity": _clamp_float(s.get("backgroundOpacity"), 0.5, 0.0, 1.0),
+        "backgroundPaddingX": _clamp_float(s.get("backgroundPaddingX"), 8.0, 0.0, 100.0),
+        "backgroundPaddingY": _clamp_float(s.get("backgroundPaddingY"), 8.0, 0.0, 100.0),
+        "backgroundRadius": _clamp_float(s.get("backgroundRadius"), 0.0, 0.0, 100.0),
+        
+        "textAlign": str(s.get("textAlign") or "center").strip().lower(),
+        "verticalAlign": str(s.get("verticalAlign") or "middle").strip().lower(),
+        "lineHeight": _clamp_float(s.get("lineHeight"), 1.05, 0.5, 4.0),
+        "letterSpacing": _clamp_float(s.get("letterSpacing"), 0.0, -100.0, 100.0),
+        
+        "staticEffect": str(s.get("staticEffect") or "none").lower(),
+        "textTransform": str(s.get("textTransform") or "none").lower(),
+        "textDecoration": str(s.get("textDecoration") or "none").lower(),
+    }
+
+
+def normalize_text_position(position: Optional[Dict[str, Any]], area: Optional[Dict[str, Any]], default_v_align: str = "middle") -> Dict[str, Any]:
+    """
+    Standardize positioning for text and subtitles.
+    Supports legacy area bounds and exact (x, y) coordinates.
+    """
+    if position and isinstance(position, dict) and ("x" in position or "y" in position):
+        return {
+            "mode": "exact",
+            "x": _clamp_float(position.get("x"), 0.5, 0.0, 1.0),
+            "y": _clamp_float(position.get("y"), 0.45, 0.0, 1.0),
+        }
+    if area and isinstance(area, dict) and "xmin" in area and "ymin" in area:
+        return {
+            "mode": "area",
+            "xmin": _clamp_float(area.get("xmin"), 0.04, 0.0, 1.0),
+            "xmax": _clamp_float(area.get("xmax"), 0.96, 0.0, 1.0),
+            "ymin": _clamp_float(area.get("ymin"), 0.60, 0.0, 1.0),
+            "ymax": _clamp_float(area.get("ymax"), 0.98, 0.0, 1.0),
+        }
+    
+    # Fallback to bottom center (common for subtitles)
+    return {
+        "mode": "default",
+        "x": 0.5,
+        "y": 0.9 if default_v_align == "bottom" else 0.5,
+    }
 
 
 def get_ass_alignment_code(text_align: str = "center", vertical_align: str = "bottom") -> int:
@@ -305,56 +429,57 @@ def get_ass_alignment_code(text_align: str = "center", vertical_align: str = "bo
 
 
 def _style_line(
-    *,
     name: str,
     style: Dict[str, Any],
     fallback_style: Dict[str, Any],
     font_scale: float,
     timeline_width: int,
     timeline_height: int,
-    margin_l: int = 0,
-    margin_r: int = 0,
-    margin_v: int = 0,
-    alignment: int = 5,
+    alignment: int,
     is_bg_layer: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
-    merged = {**fallback_style, **(style or {})}
-    font_family = str(merged.get("fontFamily") or "Inter")
-    font_weight = _font_weight_value(merged.get("fontWeight"), 800)
-    actual_font = resolve_font_family(font_family, font_weight)
-    font_size = max(8.0, _clamp_float(merged.get("fontSize"), 50.0, 1.0, 1000.0) * font_scale)
-    letter_spacing = _clamp_float(merged.get("letterSpacing"), 0.0, -100.0, 100.0) * font_scale
-    opacity = _clamp_float(merged.get("opacity", 1.0), 1.0, 0.0, 1.0)
+    """Generate an ASS Style line and return metrics."""
+    merged = normalize_text_style(style, fallback_style)
     
-    background_enabled = bool(merged.get("backgroundEnabled") or merged.get("background"))
-    outline_width_raw = _clamp_float(merged.get("outlineWidth") if merged.get("outlineWidth") is not None else merged.get("outline"), 0.0, 0.0, 100.0)
+    font_family = merged["fontFamily"]
+    font_weight = merged["fontWeight"]
+    actual_font = resolve_font_family(font_family, font_weight)
+    font_size = merged["fontSize"] * font_scale
+    letter_spacing = merged["letterSpacing"] * font_scale
+    
+    # We ignore standard opacity here since ASS manages alpha in colors,
+    # but some old projects might rely on global opacity
+    opacity = _clamp_float(style.get("opacity", 1.0), 1.0, 0.0, 1.0)
+    
+    background_enabled = merged["backgroundEnabled"]
+    outline_width_raw = merged["outlineWidth"]
     
     if is_bg_layer and background_enabled:
         primary_color = "&HFFFFFFFF"  # Transparent text
-        bg_opacity = _clamp_float(merged.get("backgroundOpacity"), 0.55, 0.0, 1.0)
-        outline_color = format_ass_color(str(merged.get("backgroundColor") or "0x000000"), bg_opacity)
+        bg_opacity = merged["backgroundOpacity"]
+        outline_color = format_ass_color(merged["backgroundColor"], bg_opacity)
         background_color = outline_color
-        outline_width = _clamp_float(merged.get("backgroundPaddingX"), 8.0, 0.0, 100.0) * font_scale
+        outline_width = merged["backgroundPaddingX"] * font_scale
         border_style = 3
         shadow_depth = 0.0
     else:
-        primary_color = format_ass_color(str(merged.get("fontColor") or merged.get("color") or "0xFFFFFF"), opacity)
-        outline_color = format_ass_color(str(merged.get("outlineColor") or "0x000000"), opacity)
+        primary_color = format_ass_color(merged["color"], opacity)
+        outline_color = format_ass_color(merged["outlineColor"], opacity)
         background_color = format_ass_color("FFFFFF", 0.0)
         outline_width = outline_width_raw * font_scale
         border_style = 1
-        shadow_x = _clamp_float(merged.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
-        shadow_y = _clamp_float(merged.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
-        shadow_blur = _clamp_float(merged.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
-        glow_blur = _clamp_float(merged.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if merged.get("glowEnabled") else 0.0
+        shadow_x = merged["shadowOffsetX"] * font_scale
+        shadow_y = merged["shadowOffsetY"] * font_scale
+        shadow_blur = merged["shadowBlur"] * font_scale
+        glow_blur = merged["glowBlur"] * font_scale if merged["glowEnabled"] else 0.0
         shadow_depth = max(abs(shadow_x), abs(shadow_y), shadow_blur, glow_blur)
 
     safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:40] or "Text"
     line = (
         f"Style: {safe_name},{actual_font},{font_size:.2f},{primary_color},&H000000FF,{outline_color},{background_color},"
-        f"{_ass_flag(font_weight >= 700)},{_ass_flag(str(merged.get('fontStyle') or '').lower() == 'italic')},"
-        f"{_ass_flag(str(merged.get('textDecoration') or '').lower() == 'underline')},0,100,100,{letter_spacing:.2f},0,"
-        f"{border_style},{outline_width:.2f},{shadow_depth:.2f},{alignment},{margin_l},{margin_r},{margin_v},1"
+        f"{_ass_flag(font_weight >= 700)},{_ass_flag(merged['fontStyle'] == 'italic')},"
+        f"{_ass_flag(merged['textDecoration'] == 'underline')},0,100,100,{letter_spacing:.2f},0,"
+        f"{border_style},{outline_width:.2f},{shadow_depth:.2f},{alignment},10,10,10,1"
     )
     metrics = {
         "name": safe_name,
@@ -364,9 +489,9 @@ def _style_line(
         "font_weight": font_weight,
         "letter_spacing": letter_spacing,
         "max_width": max(1.0, timeline_width - 100),
-        "line_height": _clamp_float(merged.get("lineHeight"), 1.05, 0.5, 4.0),
-        "text_align": str(merged.get("textAlign") or "center"),
-        "vertical_align": str(merged.get("verticalAlign") or "middle"),
+        "line_height": merged["lineHeight"],
+        "text_align": merged["textAlign"],
+        "vertical_align": merged["verticalAlign"],
         "style": merged,
     }
     return line, metrics
@@ -407,41 +532,39 @@ def build_text_dialogues(
     start_str = format_ass_time(start)
     end_str = format_ass_time(end)
 
-    merged_style = dict(style or {})
+    merged_style = normalize_text_style(style)
     source_text = _normalized_text(merged_style, str(text or ""))
 
     # Determine font and size metrics
-    font_family = str(merged_style.get("fontFamily") or (style_metrics or {}).get("font") or "Inter")
-    actual_font = resolve_font_family(font_family)
-    font_size = max(8.0, _clamp_float(merged_style.get("fontSize"), 50.0, 1.0, 1000.0) * font_scale)
+    font_family = merged_style["fontFamily"]
+    font_weight = merged_style["fontWeight"]
+    actual_font = resolve_font_family(font_family, font_weight)
+    font_size = merged_style["fontSize"] * font_scale
     pixel_font_size = max(8, int(round(font_size)))
-    font_weight = _font_weight_value(merged_style.get("fontWeight"), 800)
-    letter_spacing = _clamp_float(merged_style.get("letterSpacing"), 0.0, -100.0, 100.0) * font_scale
+    letter_spacing = merged_style["letterSpacing"] * font_scale
 
     # Determine alignment and positioning
-    t_align = str(merged_style.get("textAlign") or "center").strip().lower()
-    v_align = str(merged_style.get("verticalAlign") or ("bottom" if area else "middle")).strip().lower()
+    t_align = merged_style["textAlign"]
+    v_align = merged_style["verticalAlign"]
     align_code = get_ass_alignment_code(t_align, v_align)
     align_tag = fr"\an{align_code}"
 
     # Calculate coordinates and max width
-    if position and isinstance(position, dict) and ("x" in position or "y" in position):
-        pos_x = int(round(_clamp_float(position.get("x"), 0.5, 0.0, 1.0) * timeline_width))
-        pos_y = int(round(_clamp_float(position.get("y"), 0.45, 0.0, 1.0) * timeline_height))
+    pos = normalize_text_position(position, area, default_v_align=v_align)
+    
+    if pos["mode"] == "exact":
+        pos_x = int(round(pos["x"] * timeline_width))
+        pos_y = int(round(pos["y"] * timeline_height))
         max_wrap_width = _clamp_float(merged_style.get("maxWidth"), timeline_width - 100, 1.0, float(timeline_width))
-    elif area and isinstance(area, dict) and "xmin" in area and "ymin" in area:
-        xmin = _clamp_float(area.get("xmin"), 0.04, 0.0, 1.0)
-        xmax = _clamp_float(area.get("xmax"), 0.96, 0.0, 1.0)
-        ymin = _clamp_float(area.get("ymin"), 0.60, 0.0, 1.0)
-        ymax = _clamp_float(area.get("ymax"), 0.98, 0.0, 1.0)
-        xmin_px = xmin * timeline_width
-        xmax_px = xmax * timeline_width
-        ymin_px = ymin * timeline_height
-        ymax_px = ymax * timeline_height
+    elif pos["mode"] == "area":
+        xmin_px = pos["xmin"] * timeline_width
+        xmax_px = pos["xmax"] * timeline_width
+        ymin_px = pos["ymin"] * timeline_height
+        ymax_px = pos["ymax"] * timeline_height
 
         box_w = max(1.0, xmax_px - xmin_px)
-        bg_enabled = bool(merged_style.get("backgroundEnabled") or merged_style.get("background"))
-        pad_x = _clamp_float(merged_style.get("backgroundPaddingX"), 8.0, 0.0, 100.0) * font_scale if bg_enabled else 11.0 * font_scale
+        bg_enabled = merged_style["backgroundEnabled"]
+        pad_x = merged_style["backgroundPaddingX"] * font_scale if bg_enabled else 11.0 * font_scale
         max_wrap_width = max(1.0, box_w - (pad_x * 2))
 
         if t_align == "left":
@@ -459,8 +582,8 @@ def build_text_dialogues(
             pos_y = int(round(ymax_px))
     else:
         # Default bottom-center position
-        pos_x = int(round(timeline_width * 0.5))
-        pos_y = int(round(timeline_height * 0.90))
+        pos_x = int(round(timeline_width * pos["x"]))
+        pos_y = int(round(timeline_height * pos["y"]))
         max_wrap_width = max(1.0, timeline_width * 0.92)
 
     wrapped_lines = wrap_text_deterministic(source_text, actual_font, pixel_font_size, font_weight, letter_spacing, max_wrap_width)
@@ -470,32 +593,57 @@ def build_text_dialogues(
     dialogue_lines: List[str] = []
 
     # Visual effects
-    effect = str(merged_style.get("staticEffect") or "none").lower()
+    effect = merged_style["staticEffect"]
     
-    bg_enabled = bool(merged_style.get("backgroundEnabled") or merged_style.get("background"))
+    bg_enabled = merged_style["backgroundEnabled"]
+    bg_radius = merged_style["backgroundRadius"] * font_scale
     
-    glow_enabled = bool(merged_style.get("glowEnabled"))
-    glow_blur = _clamp_float(merged_style.get("glowBlur"), 0.0, 0.0, 100.0) * font_scale if glow_enabled else 0.0
-    glow_color = merged_style.get("glowColor") or merged_style.get("outlineColor") or "#ffffff"
-    glow_strength = _clamp_float(merged_style.get("glowStrength"), 1.0, 0.0, 5.0)
+    glow_enabled = merged_style["glowEnabled"]
+    glow_blur = merged_style["glowBlur"] * font_scale if glow_enabled else 0.0
+    glow_color = merged_style["glowColor"]
+    glow_strength = merged_style["glowStrength"]
 
-    sec_outline_w = _clamp_float(merged_style.get("secondaryOutlineWidth"), 0.0, 0.0, 100.0) * font_scale
-    sec_outline_c = merged_style.get("secondaryOutlineColor") or "#000000"
+    sec_outline_w = merged_style["secondaryOutlineWidth"] * font_scale
+    sec_outline_c = merged_style["secondaryOutlineColor"]
 
-    outline_w = _clamp_float(merged_style.get("outlineWidth") if merged_style.get("outlineWidth") is not None else merged_style.get("outline"), 0.0, 0.0, 100.0) * font_scale
+    outline_w = merged_style["outlineWidth"] * font_scale
 
-    shadow_enabled = bool(merged_style.get("shadowEnabled"))
-    shadow_x = _clamp_float(merged_style.get("shadowOffsetX"), 0.0, -100.0, 100.0) * font_scale
-    shadow_y = _clamp_float(merged_style.get("shadowOffsetY"), 0.0, -100.0, 100.0) * font_scale
-    shadow_blur = _clamp_float(merged_style.get("shadowBlur"), 0.0, 0.0, 100.0) * font_scale
-    shadow_color = _ass_color_override(merged_style.get("shadowColor") or "#000000")
+    shadow_enabled = merged_style["shadowEnabled"]
+    shadow_x = merged_style["shadowOffsetX"] * font_scale
+    shadow_y = merged_style["shadowOffsetY"] * font_scale
+    shadow_blur = merged_style["shadowBlur"] * font_scale
+    shadow_color = merged_style["shadowColor"]
 
     base_layer = 0
     
     # 0. Background Layer
     if bg_enabled:
-        bg_override = fr"{{{align_tag}\pos({pos_x},{pos_y})}}"
-        dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name}_bg,,0,0,0,,{bg_override}{ass_text_content}")
+        if bg_radius > 0:
+            # Draw rounded rectangle using vector shapes
+            pad_y = merged_style["backgroundPaddingY"] * font_scale
+            w, h = _measure_text_bounding_box(wrapped_lines, actual_font, pixel_font_size, font_weight, letter_spacing, merged_style["lineHeight"])
+            w += pad_x * 2
+            h += pad_y * 2
+            
+            vec = _get_rounded_rect_vector(w, h, bg_radius)
+            bg_opacity = merged_style["backgroundOpacity"]
+            alpha_hex = f"{max(0, min(255, int((1.0 - bg_opacity) * 255))):02X}"
+            raw_c = format_ass_color(merged_style["backgroundColor"])
+            bgr = raw_c[4:] # skip &HAA
+            
+            bg_px, bg_py = pos_x, pos_y
+            if t_align == "left": bg_px -= pad_x
+            elif t_align == "right": bg_px += pad_x
+            
+            if v_align == "top": bg_py -= pad_y
+            elif v_align == "bottom": bg_py += pad_y
+            
+            bg_override = fr"{{{align_tag}\pos({int(round(bg_px))},{int(round(bg_py))})\1c&H{bgr}&\1a&H{alpha_hex}&\bord0\shad0\p1}}"
+            dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name},,0,0,0,,{bg_override}{vec}")
+        else:
+            # Standard BorderStyle=3 rectangle
+            bg_override = fr"{{{align_tag}\pos({pos_x},{pos_y})}}"
+            dialogue_lines.append(f"Dialogue: {base_layer},{start_str},{end_str},{style_name}_bg,,0,0,0,,{bg_override}{ass_text_content}")
         base_layer += 1
 
     # 1. Glitch Effect
@@ -624,7 +772,7 @@ def generate_ass_file(
             ass_lines.append(style_line)
             
             # If background is enabled, generate the bg style line
-            if bool(ev_style.get("backgroundEnabled") or ev_style.get("background")):
+            if metrics["style"]["backgroundEnabled"]:
                 bg_style_line, _ = _style_line(
                     name=f"{style_name}_bg",
                     style=ev_style,
