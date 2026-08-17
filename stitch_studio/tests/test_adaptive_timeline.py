@@ -284,7 +284,9 @@ class AdaptiveIntegrationTests(unittest.TestCase):
             def generate_content(self, *, model: str, contents: str):
                 del model
                 calls.append(contents)
-                return SimpleNamespace(text=json.dumps([{"id": item_id, "text": f"S{item_id}"} for item_id in requested_ids]))
+                marker = 'ID: '
+                item_id = int(contents.split(marker, 1)[1].splitlines()[0])
+                return SimpleNamespace(text=f"S{item_id}")
 
         service = TranslationService.__new__(TranslationService)
         service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
@@ -310,15 +312,17 @@ class AdaptiveIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(replacements[1], "S1")
         self.assertEqual(replacements[100], "S100")
-        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(calls), 100)
         
         # Check that it renders real values into the simplified Vietnamese retry prompt
-        self.assertIn("Rút gọn câu tiếng Việt sau còn tối đa 1 từ.", calls[0])
+        self.assertIn("Rút gọn câu này còn 1 từ.", calls[0])
         self.assertIn("Bắt buộc không vượt quá 1 từ.", calls[0])
         self.assertIn("Câu hiện tại:\ncurrent 1", calls[0])
-        self.assertIn('"id": 1', calls[0])
-        self.assertIn('"target_max_words": 1', calls[0])
-        self.assertIn('"current_translation": "current 1"', calls[0])
+        self.assertIn("ID: 1", calls[0])
+        self.assertIn("TARGET_MAX_WORDS: 1", calls[0])
+        self.assertIn("CURRENT_TRANSLATION:\ncurrent 1", calls[0])
+        self.assertNotIn("ID: 2", calls[0])
+        self.assertNotIn('"current_translation": "current 1"', calls[0])
         self.assertNotIn("{TARGET_MAX_WORDS}", calls[0])
         self.assertNotIn("{CURRENT_TRANSLATION}", calls[0])
         self.assertNotIn('"source_text":', calls[0])

@@ -159,7 +159,7 @@ class TestTimingOrchestrationState(unittest.TestCase):
 
         self.assertEqual(items[0]["TARGET_MAX_WORDS"], 7)
 
-    def test_vietnamese_timing_retry_includes_context_group(self):
+    def test_vietnamese_timing_retry_keeps_single_overlong_item(self):
         segments = [
             SubtitleSegment(index, float(index), float(index + 1), f"line {index}")
             for index in range(1, 6)
@@ -182,10 +182,9 @@ class TestTimingOrchestrationState(unittest.TestCase):
             rewrite_state_by_id={},
         )
 
-        self.assertEqual([item["id"] for item in items], [1, 2, 3, 4, 5])
+        self.assertEqual([item["id"] for item in items], [3])
         self.assertEqual([item["id"] for item in items if item["needs_timing_rewrite"]], [3])
-        self.assertEqual(items[2]["context_group_ids"], [1, 2, 3, 4, 5])
-        self.assertEqual(len(items[2]["context_group"]), 5)
+        self.assertNotIn("context_group", items[0])
 
     def test_english_timing_retry_keeps_single_overlong_item(self):
         segments = [

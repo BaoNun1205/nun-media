@@ -1,7 +1,10 @@
 import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from stitch_studio.services import TranslationService
+
+from stitch_studio.models import SubtitleSegment
+from stitch_studio.services import TranslationService, _apply_inline_timing_retry
 
 class TestTimingRecovery(unittest.TestCase):
     def setUp(self):
@@ -14,7 +17,8 @@ class TestTimingRecovery(unittest.TestCase):
                 self.calls.append(contents)
                 if not self.responses:
                     return SimpleNamespace(text="[]")
-                return SimpleNamespace(text=json.dumps(self.responses.pop(0)))
+                response = self.responses.pop(0)
+                return SimpleNamespace(text=response if isinstance(response, str) else json.dumps(response))
                 
         self.service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
 
@@ -22,7 +26,7 @@ class TestTimingRecovery(unittest.TestCase):
         return [
             {
                 "id": item_id,
-                "output_language": "vi",
+                "output_language": "en",
                 "source_text": f"src {item_id}",
                 "current_translation": f"current {item_id}",
                 "correction_round": 2,
@@ -177,7 +181,7 @@ class TestTimingRecovery(unittest.TestCase):
     def test_vietnamese_prompt_renders_real_target_and_translation(self):
         current = "Làm khán giả được một phen hú vía phải không nào?"
         self.responses = [
-            [{"id": 7, "text": "Khán giả hú vía."}],
+            "Khán giả hú vía.",
         ]
         items = [
             {
@@ -195,12 +199,109 @@ class TestTimingRecovery(unittest.TestCase):
         prompt = self.calls[0]
 
         self.assertEqual(replacements, {7: "Khán giả hú vía."})
-        self.assertIn("Rút gọn câu tiếng Việt sau còn tối đa 5 từ.", prompt)
+        self.assertIn("Rút gọn câu này còn 5 từ.", prompt)
         self.assertIn("Bắt buộc không vượt quá 5 từ.", prompt)
         self.assertIn(f"Câu hiện tại:\n{current}", prompt)
-        self.assertIn('"id": 7', prompt)
+        self.assertIn("ID: 7", prompt)
+        self.assertIn("TARGET_MAX_WORDS: 5", prompt)
+        self.assertIn("CURRENT_TRANSLATION:", prompt)
         self.assertNotIn("{TARGET_MAX_WORDS}", prompt)
         self.assertNotIn("{CURRENT_TRANSLATION}", prompt)
         self.assertNotIn('"available_seconds":', prompt)
         self.assertNotIn('"voice_seconds":', prompt)
         self.assertNotIn('"source_text":', prompt)
+
+    def test_vietnamese_timing_retry_sends_one_request_per_subtitle(self):
+        self.responses = ["Một", "Hai"]
+        items = [
+            {
+                "id": 1,
+                "output_language": "vi",
+                "current_translation": "một hai ba bốn năm sáu",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            },
+            {
+                "id": 2,
+                "output_language": "vi",
+                "current_translation": "bảy tám chín mười mười một",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            },
+            {
+                "id": 3,
+                "output_language": "vi",
+                "current_translation": "dòng này đã fit",
+                "available_seconds": 1.0,
+                "voice_seconds": 1.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": False,
+            },
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(replacements, {1: "Một", 2: "Hai"})
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("ID: 1", self.calls[0])
+        self.assertNotIn("ID: 2", self.calls[0])
+        self.assertIn("ID: 2", self.calls[1])
+        self.assertNotIn("ID: 1", self.calls[1])
+        self.assertNotIn("ID: 3", "\n".join(self.calls))
+
+    def test_vietnamese_rejects_rewrite_over_target_max_words(self):
+        self.responses = [
+            "một hai ba bốn",
+            "một hai ba",
+        ]
+        items = [
+            {
+                "id": 9,
+                "output_language": "vi",
+                "current_translation": "một hai ba bốn năm sáu",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(replacements, {9: "một hai ba"})
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("TARGET_MAX_WORDS: 3", self.calls[0])
+        self.assertIn("ID: 9", self.calls[1])
+
+    def test_inline_timing_retry_renders_each_rewrite_until_callback_passes(self):
+        callback_responses = ["one two three four five six seven", "one two three four five", None]
+        rendered_texts = []
+
+        def callback(segment, wav_path, sample_rate):
+            self.assertEqual(wav_path, Path("segment.wav") if not rendered_texts else Path(f"segment_{len(rendered_texts)}.wav"))
+            self.assertEqual(sample_rate, 48000)
+            return callback_responses.pop(0)
+
+        def render_segment(segment):
+            rendered_texts.append(segment.text)
+            return segment, Path(f"segment_{len(rendered_texts)}.wav"), {"text": segment.text}
+
+        segment, path, row = _apply_inline_timing_retry(
+            SubtitleSegment(1, 0.0, 1.0, "one two three four five six seven eight nine ten"),
+            Path("segment.wav"),
+            48000,
+            callback=callback,
+            render_segment=render_segment,
+        )
+
+        self.assertEqual(segment.text, "one two three four five")
+        self.assertEqual(path, Path("segment_2.wav"))
+        self.assertEqual(row, {"text": "one two three four five"})
+        self.assertEqual(
+            rendered_texts,
+            ["one two three four five six seven", "one two three four five"],
+        )

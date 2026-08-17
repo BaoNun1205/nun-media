@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
 from .config import AppConfig
@@ -23,6 +23,8 @@ from .storage import Storage
 from .subtitle_timeline_scaler import AdaptiveTimelineError, DEFAULT_SLOT_MAX_SPEED, process_adaptive_timeline, process_srt_slot_timeline
 
 Progress = Callable[[str], None]
+TimingRetryCallback = Callable[[SubtitleSegment, Path, int], Optional[str]]
+SegmentRenderer = Callable[[SubtitleSegment], Tuple[SubtitleSegment, Path, Dict[str, Any]]]
 
 HTTP_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", re.IGNORECASE)
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
@@ -125,6 +127,28 @@ def _timing_retry_is_vietnamese(language: str | None) -> bool:
     return _normalize_prompt_language(language) == "vi"
 
 
+def _apply_inline_timing_retry(
+    segment: SubtitleSegment,
+    wav_path: Path,
+    sample_rate: int,
+    *,
+    callback: TimingRetryCallback | None,
+    render_segment: SegmentRenderer,
+) -> tuple[SubtitleSegment, Path, dict[str, Any] | None]:
+    if not callable(callback):
+        return segment, wav_path, None
+    current_segment = segment
+    current_path = wav_path
+    latest_row: dict[str, Any] | None = None
+    while True:
+        replacement = callback(current_segment, current_path, sample_rate)
+        cleaned = str(replacement or "").strip()
+        if not cleaned or cleaned == current_segment.text.strip():
+            return current_segment, current_path, latest_row
+        current_segment = SubtitleSegment(current_segment.index, current_segment.start, current_segment.end, cleaned)
+        current_segment, current_path, latest_row = render_segment(current_segment)
+
+
 def _timing_retry_context_ranges(
     current_segments: list[SubtitleSegment],
     overlong_ids: set[int],
@@ -170,7 +194,7 @@ def build_timing_retry_optimizer_items(
     current_map = {segment.index: segment for segment in current_segments}
     row_by_id = {int(row.get("index") or 0): row for row in rows if int(row.get("index") or 0)}
     overlong_ids = {int(row.get("index") or 0) for row in still_too_long if int(row.get("index") or 0)}
-    use_context_groups = _timing_retry_is_vietnamese(output_language)
+    use_context_groups = False
 
     context_group_by_id: dict[int, tuple[str, list[int]]] = {}
     included_ids: set[int] = set(overlong_ids)
@@ -257,17 +281,27 @@ def build_timing_retry_optimizer_items(
     return optimizer_items
 
 
-
 # ---------------------------------------------------------------------------
 # Specialized English initial translation prompt (target = English)
 # ---------------------------------------------------------------------------
 _EN_INITIAL_SRT_PROMPT = """\
-Translate this SRT into natural spoken English for voiceover dubbing.
+Translate this SRT into natural spoken English for voiceover dubbing, strictly constrained by duration.
 
 Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, references, and story continuity.
 
-Translation quality and context are the top priority. Keep subtitles reasonably concise for dubbing, but do not over-compress the first translation because timing overflow will be handled later by the timing optimizer:
-- Prefer natural English that preserves meaning over the shortest possible wording.
+MANDATORY TIMING & DURATION CONSTRAINTS:
+- For EVERY subtitle block, calculate the available duration in seconds: Duration = End_Time - Start_Time.
+- The English word count MUST fit the duration when spoken at natural speed (~3.0 words per second).
+- Maximum word count guideline:
+  * 1.0s: maximum 3 words.
+  * 2.0s: maximum 6 words.
+  * 3.0s: maximum 9 words.
+  * Formula: Word_Count <= round(Duration_Seconds * 3.0).
+- If a source sentence is too dense to fit the timestamp duration, concisely rephrase, simplify clauses, or use contractions while keeping the core action, key plot/meaning, tone, and character relationships intact.
+- Never output English text that will take longer to speak than the subtitle block's duration.
+
+Translation and Dubbing Rules:
+- Prefer natural spoken English that preserves meaning over the shortest possible wording.
 - Preserve the core meaning, story event, tone, and important narrative information.
 - Do not add extra meaning, explanations, filler words, or repeated phrases.
 - Preserve the exact SRT numbering and timestamps.
@@ -275,7 +309,6 @@ Translation quality and context are the top priority. Keep subtitles reasonably 
 - Never merge, split, omit, reorder, or move content between subtitle blocks.
 - Keep line breaks inside each subtitle block simple and readable.
 - If a source line is very short, translate it naturally and briefly.
-- If a source line is dense, keep enough meaning for the line to sound complete and understandable.
 - Prefer direct, active constructions over long or passive ones.
 - Simplify long clauses when the same idea can be expressed naturally with fewer spoken words.
 - Remove only clearly redundant wording; do not remove plot, motive, relationship, cause, consequence, or emotional meaning just to make the line shorter.
@@ -287,13 +320,13 @@ Translation quality and context are the top priority. Keep subtitles reasonably 
 - Keep names, terminology, character references, and relationships consistent throughout the SRT.
 - Return only valid SRT content. No notes, explanations, or markdown.
 
-When a line is genuinely too dense:
+When a line is genuinely too dense for its duration:
 1. Remove repetition and unnecessary filler.
 2. Replace verbose phrases with shorter natural spoken English.
 3. Simplify clause structure.
 4. Use contractions and shorter grammatical forms.
 5. Remove nonessential modifiers.
-6. Compress secondary detail only when required for readability.
+6. Compress secondary detail only when required for duration fitting.
 7. Preserve the core event and intended meaning above everything that is optional.
 
 Target style:
@@ -312,23 +345,31 @@ Now translate this SRT:
 # Specialized Vietnamese initial translation prompt (target = Vietnamese)
 # ---------------------------------------------------------------------------
 _VI_INITIAL_SRT_PROMPT = """\
-Translate this SRT into natural spoken Vietnamese for voiceover dubbing.
+Translate this SRT into natural spoken Vietnamese for voiceover dubbing, strictly constrained by duration.
 
 Read and understand the full subtitle context before translating. Use surrounding subtitle blocks to understand incomplete sentences, omitted subjects, pronouns, character relationships, forms of address, references, and story continuity.
 
-Translation quality and context are the top priority. Keep subtitles reasonably concise for dubbing, but do not over-compress the first translation because timing overflow will be handled later by the timing optimizer:
-- Prefer natural spoken Vietnamese that preserves meaning over the shortest possible wording.
-- Preserve the core meaning, story event, tone, emotion, and important narrative information.
+MANDATORY TIMING & DURATION CONSTRAINTS:
+- For EVERY subtitle block, calculate the available duration in seconds: Duration = End_Time - Start_Time.
+- The Vietnamese word count MUST fit the duration when spoken at natural speed (~3.5 words per second).
+- Maximum word count guideline:
+  * 1.0s or less: maximum 3 to 4 words.
+  * 2.0s: maximum 7 words.
+  * 3.0s: maximum 10 to 11 words.
+  * 4.0s: maximum 14 words.
+  * Formula: Word_Count <= round(Duration_Seconds * 3.5).
+- If a source sentence is too dense to fit the timestamp duration, concisely rephrase, simplify clauses, or omit secondary descriptive fillers while keeping the core action, key plot/meaning, tone, and character relationships intact.
+- Never output Vietnamese text that will take longer to speak than the subtitle block's duration.
+
+Translation and Dubbing Rules:
+- Translate into natural spoken Vietnamese that preserves core meaning, story events, tone, emotion, and important narrative information.
 - Do not add explanations, unnecessary interpretation, filler, or repeated information.
 - Preserve the exact SRT numbering and timestamps.
 - Preserve the same number of subtitle blocks.
 - Never merge, split, omit, reorder, or move content between subtitle blocks.
 - Keep line breaks inside each subtitle block simple and readable.
-- If a source line is very short, translate it naturally and briefly.
-- If a source line is dense, keep enough meaning for the line to sound complete and understandable in Vietnamese.
-- Do not preserve source-language grammar or sentence structure when it sounds unnatural in Vietnamese.
-- Restructure long sentences into concise natural Vietnamese phrasing when necessary.
-- Prefer common spoken Vietnamese over formal, literary, overly Sino-Vietnamese, or machine-translated wording unless the story context specifically requires that register.
+- If a source line is very short, translate it naturally and briefly within its duration.
+- Restructure long sentences into concise natural Vietnamese phrasing.
 - Avoid unnecessary repetition of subjects and pronouns when the subject is already obvious from context and omitting it remains completely clear in Vietnamese.
 - Do not remove a pronoun, kinship term, title, or form of address when it is important for identifying the speaker, listener, relationship, social role, or emotional tone.
 - Remove only clearly redundant wording; do not remove plot, motive, relationship, cause, consequence, or emotional meaning just to make the line shorter.
@@ -339,24 +380,23 @@ Translation quality and context are the top priority. Keep subtitles reasonably 
 - Never remove information that changes the plot, action, identity, relationship, cause, consequence, warning, discovery, or important emotional meaning.
 - Return only valid SRT content. No notes, explanations, or markdown.
 
-When a line is genuinely too dense:
+When a line is too dense for its duration:
 1. Remove repeated or already-understood information.
 2. Replace verbose expressions with shorter natural spoken Vietnamese.
 3. Remove unnecessary repeated subjects or pronouns only when the meaning remains unmistakably clear.
 4. Simplify long clause structures.
 5. Remove nonessential descriptive wording or modifiers.
-6. Compress secondary detail only when required for readability.
+6. Compress secondary detail to strictly satisfy the duration limit.
 7. Preserve the core event, relationship, and intended meaning above everything optional.
 
 Target style:
 - Natural spoken Vietnamese.
-- Clear, modern, neutral Vietnamese suitable for narration.
-- Natural for text-to-speech.
+- Clear, modern, neutral Vietnamese suitable for voiceover narration and text-to-speech.
 - Easy to understand when heard once.
 - Concise without sounding clipped, unnatural, overly literal, or machine-translated.
-- Maintain natural storytelling rhythm even when the wording must be shortened.
+- Maintain natural storytelling rhythm within the required word limit.
 - Avoid fragment-like Vietnamese that sounds as if important context was cut away.
-- Do not copy the source subtitle text verbatim. If the source is already Vietnamese, rewrite it into natural spoken Vietnamese unless the line is only a name, number, sound, or fixed term.
+- Do not copy the source subtitle text verbatim. If the source is already Vietnamese, rewrite it into natural spoken Vietnamese within the word limit unless the line is only a name, number, sound, or fixed term.
 
 Now translate this SRT:
 
@@ -607,43 +647,38 @@ def _build_timing_retry_prompt(language: str | None = None) -> str:
     return GEMINI_TIMING_RETRY_PROMPT
 
 
-def _build_vietnamese_timing_retry_prompt(items: list[dict[str, Any]]) -> str:
-    blocks = [_VI_TIMING_RETRY_PROMPT, "ITEMS:"]
-    output_ids: list[int] = []
-    for item in items:
-        item_id = int(item.get("id", item.get("ID", 0)) or 0)
-        target_words = int(item.get("TARGET_MAX_WORDS") or item.get("target_max_words") or 1)
-        current_translation = str(item.get("current_translation", item.get("CURRENT", "")) or "").strip()
-        output_ids.append(item_id)
-        blocks.append(
-            "\n".join(
-                [
-                    f'{{"id": {item_id}, "target_max_words": {target_words}, "current_translation": {json.dumps(current_translation, ensure_ascii=False)}}}',
-                    "",
-                    f"Rút gọn câu tiếng Việt sau còn tối đa {target_words} từ.",
-                    "",
-                    "Giữ ý nghĩa chính và viết tự nhiên.",
-                    f"Bắt buộc không vượt quá {target_words} từ.",
-                    "",
-                    "Câu hiện tại:",
-                    current_translation,
-                    "",
-                    "Chỉ trả về câu đã rút gọn.",
-                ]
-            )
-        )
-    blocks.append(
-        "\n".join(
-            [
-                "Return only valid JSON:",
-                "Return exactly one object for every id listed here: "
-                + json.dumps(output_ids, ensure_ascii=False),
-                "Each object must have this shape:",
-                '[{"id": 123, "text": "Câu đã rút gọn."}]',
-            ]
-        )
+def _build_vietnamese_timing_retry_prompt(item: dict[str, Any]) -> str:
+    item_id = int(item.get("id", item.get("ID", 0)) or 0)
+    target_words = int(item.get("TARGET_MAX_WORDS") or item.get("target_max_words") or 1)
+    current_translation = str(item.get("current_translation", item.get("CURRENT", "")) or "").strip()
+    return "\n".join(
+        [
+            f"ID: {item_id}",
+            f"TARGET_MAX_WORDS: {target_words}",
+            "CURRENT_TRANSLATION:",
+            current_translation,
+            "",
+            f"Rút gọn câu này còn {target_words} từ.",
+            "",
+            "Giữ ý nghĩa chính và viết tự nhiên.",
+            f"Bắt buộc không vượt quá {target_words} từ.",
+            "",
+            "Câu hiện tại:",
+            current_translation,
+            "",
+            "Chỉ trả về câu đã rút gọn.",
+        ]
     )
-    return "\n\n".join(blocks)
+
+
+def _clean_vietnamese_timing_retry_text(raw: str) -> str:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return " ".join(text.split())
 
 
 def extract_video_url(text: str) -> str:
@@ -2601,6 +2636,43 @@ then the response MUST contain exactly:
 even if some rewritten text remains unchanged."""
         TIMING_RETRY_BATCH_SIZE = 10
         MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS = 2
+
+        if normalized_lang == "vi":
+            replacements: dict[int, str] = {}
+            for item in enriched_items:
+                if item.get("needs_timing_rewrite") is False:
+                    continue
+                item_id = int(item.get("id", item.get("ID", 0)) or 0)
+                target_words = int(item.get("TARGET_MAX_WORDS") or item.get("target_max_words") or 1)
+                accepted = ""
+                for attempt in range(1, MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS + 2):
+                    prompt = _build_vietnamese_timing_retry_prompt(item)
+                    msg = f"Sending Vietnamese subtitle #{item_id} to Gemini with TARGET_MAX_WORDS={target_words}"
+                    if attempt > 1:
+                        msg = (
+                            f"Vietnamese timing retry response recovery "
+                            f"(attempt {attempt - 1}/{MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS}) "
+                            f"for subtitle #{item_id}"
+                        )
+                    _emit(progress, msg)
+                    try:
+                        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+                    except Exception as exc:
+                        raise RuntimeError(self._friendly_gemini_error(exc)) from exc
+                    text = _clean_vietnamese_timing_retry_text(response.text or "")
+                    if not text:
+                        _emit(progress, f"Warning: Gemini returned empty Vietnamese timing rewrite for ID {item_id}.")
+                        continue
+                    if _count_timing_retry_words(text) > target_words:
+                        _emit(progress, f"Warning: Gemini exceeded TARGET_MAX_WORDS for ID {item_id}; retrying.")
+                        continue
+                    accepted = text
+                    break
+                if accepted:
+                    replacements[item_id] = accepted
+                else:
+                    _emit(progress, f"Warning: Vietnamese subtitle #{item_id} remained unresolved after {MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS} recovery attempt(s).")
+            return replacements
         
         all_replacements = {}
         
@@ -2627,14 +2699,11 @@ even if some rewritten text remains unchanged."""
             
             while unresolved_items and attempt <= MAX_TIMING_RESPONSE_RECOVERY_ATTEMPTS:
                 attempt += 1
-                if normalized_lang == "vi":
-                    prompt = _build_vietnamese_timing_retry_prompt(unresolved_items)
-                else:
-                    prompt = (
-                        f"{_build_timing_retry_prompt(normalized_lang)}"
-                        f"\n\n{timing_guidance}"
-                        f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
-                    )
+                prompt = (
+                    f"{_build_timing_retry_prompt(normalized_lang)}"
+                    f"\n\n{timing_guidance}"
+                    f"\n\nSUBTITLES:\n{json.dumps(unresolved_items, ensure_ascii=False, indent=2)}"
+                )
                 
                 msg = f"Sending {len(unresolved_items)} overlong subtitle(s) to Gemini"
                 if attempt > 1:
@@ -2894,9 +2963,27 @@ class VieneuTtsService:
         manifest: list[dict] = []
         selected_voice = voice or None
         rendered: list[tuple[SubtitleSegment, Path]] = []
+        timing_retry_callback = None
+        if not _is_plain_tts_request(video, timing_mode):
+            raw_callback = (timeline_options or {}).get("timing_retry_callback")
+            timing_retry_callback = raw_callback if callable(raw_callback) else None
 
         def persist_manifest() -> None:
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def render_segment(segment_to_render: SubtitleSegment) -> tuple[SubtitleSegment, Path, dict[str, Any]]:
+            rendered_segment = SubtitleSegment(segment_to_render.index, segment_to_render.start, segment_to_render.end, segment_to_render.text.strip())
+            audio = engine.infer(rendered_segment.text, voice=selected_voice)
+            wav_path = output_dir / f"segment_{rendered_segment.index:04d}_original.wav"
+            engine.save(audio, wav_path)
+            return rendered_segment, wav_path, {
+                "index": rendered_segment.index,
+                "start": rendered_segment.start,
+                "end": rendered_segment.end,
+                "text": rendered_segment.text,
+                "path": str(wav_path),
+                "generation_signature": generation_signature,
+            }
 
         for segment in segments:
             if not segment.text.strip():
@@ -2904,26 +2991,29 @@ class VieneuTtsService:
             cached_row = cached.get(segment.index)
             cached_path = Path(str((cached_row or {}).get("path") or ""))
             if cached_row and cached_row.get("text") == segment.text and cached_path.exists():
-                rendered.append((segment, cached_path))
-                manifest.append(cached_row)
+                rendered_segment, rendered_path, retry_row = _apply_inline_timing_retry(
+                    segment,
+                    cached_path,
+                    int(getattr(engine, "sample_rate", 48_000)),
+                    callback=timing_retry_callback,
+                    render_segment=render_segment,
+                )
+                rendered.append((rendered_segment, rendered_path))
+                manifest.append(retry_row or cached_row)
                 persist_manifest()
                 _emit(progress, f"Reusing cached TTS segment {segment.index}/{len(segments)}...")
                 continue
             _emit(progress, f"TTS segment {segment.index}/{len(segments)}...")
-            audio = engine.infer(segment.text, voice=selected_voice)
-            wav_path = output_dir / f"segment_{segment.index:04d}_original.wav"
-            engine.save(audio, wav_path)
-            rendered.append((segment, wav_path))
-            manifest.append(
-                {
-                    "index": segment.index,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                    "path": str(wav_path),
-                    "generation_signature": generation_signature,
-                }
+            rendered_segment, wav_path, row = render_segment(segment)
+            rendered_segment, wav_path, retry_row = _apply_inline_timing_retry(
+                rendered_segment,
+                wav_path,
+                int(getattr(engine, "sample_rate", 48_000)),
+                callback=timing_retry_callback,
+                render_segment=render_segment,
             )
+            rendered.append((rendered_segment, wav_path))
+            manifest.append(retry_row or row)
             persist_manifest()
 
         persist_manifest()
@@ -3053,29 +3143,25 @@ class CapcutTtsService:
         cached = _load_tts_segment_cache(manifest_path, generation_signature)
         manifest: list[dict] = []
         rendered: list[tuple[SubtitleSegment, Path]] = []
+        timing_retry_callback = None
+        if not _is_plain_tts_request(video, timing_mode):
+            raw_callback = (timeline_options or {}).get("timing_retry_callback")
+            timing_retry_callback = raw_callback if callable(raw_callback) else None
 
         def persist_manifest() -> None:
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        for segment in segments:
-            cleaned_text = _clean_capcut_tts_text(segment.text)
+        def render_segment(segment_to_render: SubtitleSegment) -> tuple[SubtitleSegment, Path, dict[str, Any]]:
+            cleaned_text = _clean_capcut_tts_text(segment_to_render.text)
             if not cleaned_text:
-                continue
-            cached_row = cached.get(segment.index)
-            cached_path = Path(str((cached_row or {}).get("wav") or ""))
-            if cached_row and cached_row.get("text") == cleaned_text and cached_path.exists():
-                rendered.append((SubtitleSegment(segment.index, segment.start, segment.end, cleaned_text), cached_path))
-                manifest.append(cached_row)
-                _emit(progress, f"Reusing cached CapCut TTS segment {segment.index}/{len(segments)}...")
-                continue
-            _emit(progress, f"CapCut TTS segment {segment.index}/{len(segments)}...")
-            mp3_path = output_dir / f"segment_{segment.index:04d}_original.mp3"
-            wav_path = output_dir / f"segment_{segment.index:04d}_original.wav"
+                raise RuntimeError("CapCut TTS segment text is empty")
+            mp3_path = output_dir / f"segment_{segment_to_render.index:04d}_original.mp3"
+            wav_path = output_dir / f"segment_{segment_to_render.index:04d}_original.wav"
             try:
                 self._request_segment_mp3(cleaned_text, mp3_path, voice_type=voice_type, resource_id=resource_id, rate=rate)
             except RuntimeError as exc:
                 preview = cleaned_text[:160].replace("\n", " ")
-                raise RuntimeError(f"CapCut TTS failed at SRT segment {segment.index}: {preview}. {exc}") from exc
+                raise RuntimeError(f"CapCut TTS failed at SRT segment {segment_to_render.index}: {preview}. {exc}") from exc
             proc = subprocess.run(
                 [ffmpeg, "-y", "-i", str(mp3_path), "-ac", "1", "-ar", "48000", str(wav_path)],
                 capture_output=True,
@@ -3086,20 +3172,50 @@ class CapcutTtsService:
             )
             if proc.returncode != 0 or not wav_path.exists():
                 raise RuntimeError(f"Could not convert CapCut mp3 to wav: {proc.stderr[-800:]}")
-            rendered.append((SubtitleSegment(segment.index, segment.start, segment.end, cleaned_text), wav_path))
-            manifest.append(
-                {
-                    "index": segment.index,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": cleaned_text,
-                    "voice": voice_type,
-                    "resource_id": resource_id,
-                    "mp3": str(mp3_path),
-                    "wav": str(wav_path),
-                    "generation_signature": generation_signature,
-                }
+            rendered_segment = SubtitleSegment(segment_to_render.index, segment_to_render.start, segment_to_render.end, cleaned_text)
+            return rendered_segment, wav_path, {
+                "index": rendered_segment.index,
+                "start": rendered_segment.start,
+                "end": rendered_segment.end,
+                "text": cleaned_text,
+                "voice": voice_type,
+                "resource_id": resource_id,
+                "mp3": str(mp3_path),
+                "wav": str(wav_path),
+                "generation_signature": generation_signature,
+            }
+
+        for segment in segments:
+            cleaned_text = _clean_capcut_tts_text(segment.text)
+            if not cleaned_text:
+                continue
+            cached_row = cached.get(segment.index)
+            cached_path = Path(str((cached_row or {}).get("wav") or ""))
+            if cached_row and cached_row.get("text") == cleaned_text and cached_path.exists():
+                cached_segment = SubtitleSegment(segment.index, segment.start, segment.end, cleaned_text)
+                rendered_segment, rendered_path, retry_row = _apply_inline_timing_retry(
+                    cached_segment,
+                    cached_path,
+                    48_000,
+                    callback=timing_retry_callback,
+                    render_segment=render_segment,
+                )
+                rendered.append((rendered_segment, rendered_path))
+                manifest.append(retry_row or cached_row)
+                persist_manifest()
+                _emit(progress, f"Reusing cached CapCut TTS segment {segment.index}/{len(segments)}...")
+                continue
+            _emit(progress, f"CapCut TTS segment {segment.index}/{len(segments)}...")
+            rendered_segment, wav_path, row = render_segment(segment)
+            rendered_segment, wav_path, retry_row = _apply_inline_timing_retry(
+                rendered_segment,
+                wav_path,
+                48_000,
+                callback=timing_retry_callback,
+                render_segment=render_segment,
             )
+            rendered.append((rendered_segment, wav_path))
+            manifest.append(retry_row or row)
             persist_manifest()
 
         persist_manifest()
@@ -3434,35 +3550,56 @@ class PocketTtsService:
         cached = _load_tts_segment_cache(manifest_path, generation_signature)
         manifest: list[dict] = []
         rendered: list[tuple[SubtitleSegment, Path]] = []
+        timing_retry_callback = None
+        if not _is_plain_tts_request(video, timing_mode):
+            raw_callback = (timeline_options or {}).get("timing_retry_callback")
+            timing_retry_callback = raw_callback if callable(raw_callback) else None
 
         def persist_manifest() -> None:
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        def render_segment(segment_to_render: SubtitleSegment) -> tuple[SubtitleSegment, Path, dict[str, Any]]:
+            rendered_segment = SubtitleSegment(segment_to_render.index, segment_to_render.start, segment_to_render.end, segment_to_render.text.strip())
+            wav_path = output_dir / f"segment_{rendered_segment.index:04d}_original.wav"
+            self._write_segment_audio(model, voice_state, rendered_segment.text, wav_path)
+            return rendered_segment, wav_path, {
+                "index": rendered_segment.index,
+                "start": rendered_segment.start,
+                "end": rendered_segment.end,
+                "text": rendered_segment.text,
+                "path": str(wav_path),
+                "language": language,
+                "voice": voice,
+                "generation_signature": generation_signature,
+            }
 
         for segment in segments:
             cached_row = cached.get(segment.index)
             cached_path = Path(str((cached_row or {}).get("path") or ""))
             if cached_row and cached_row.get("text") == segment.text and cached_path.exists():
-                rendered.append((segment, cached_path))
-                manifest.append(cached_row)
+                rendered_segment, rendered_path, retry_row = _apply_inline_timing_retry(
+                    segment,
+                    cached_path,
+                    int(model.sample_rate),
+                    callback=timing_retry_callback,
+                    render_segment=render_segment,
+                )
+                rendered.append((rendered_segment, rendered_path))
+                manifest.append(retry_row or cached_row)
                 persist_manifest()
                 _emit(progress, f"Reusing cached Pocket TTS segment {segment.index}/{len(segments)}...")
                 continue
             _emit(progress, f"Pocket TTS segment {segment.index}/{len(segments)}...")
-            wav_path = output_dir / f"segment_{segment.index:04d}_original.wav"
-            self._write_segment_audio(model, voice_state, segment.text, wav_path)
-            rendered.append((segment, wav_path))
-            manifest.append(
-                {
-                    "index": segment.index,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                    "path": str(wav_path),
-                    "language": language,
-                    "voice": voice,
-                    "generation_signature": generation_signature,
-                }
+            rendered_segment, wav_path, row = render_segment(segment)
+            rendered_segment, wav_path, retry_row = _apply_inline_timing_retry(
+                rendered_segment,
+                wav_path,
+                int(model.sample_rate),
+                callback=timing_retry_callback,
+                render_segment=render_segment,
             )
+            rendered.append((rendered_segment, wav_path))
+            manifest.append(retry_row or row)
             persist_manifest()
 
         persist_manifest()

@@ -134,7 +134,21 @@ function VoiceLinesInspector({ editor }: { editor: EditorController }) {
           const currentText = editor.edits[segment.index] ?? segment.text;
           const voice = editor.voiceByIndex[segment.index];
           const issue = issueByIndex.get(segment.index);
-          const activeIssue = issue && currentText.trim() === issue.text.trim() ? issue : undefined;
+          const activeIssue = issue && currentText.trim() === issue.text.trim()
+            ? issue
+            : voice?.timingStatus === 'TEXT_TOO_LONG'
+              ? {
+                  index: segment.index,
+                  status: 'TEXT_TOO_LONG',
+                  text: currentText,
+                  startLabel: segment.startLabel,
+                  endLabel: segment.endLabel,
+                  ttsDuration: voice.duration,
+                  availableDuration: voice.availableDuration || voice.subtitleDuration,
+                  requiredLocalSpeed: voice.requiredLocalSpeed,
+                  needsReview: true,
+                }
+              : undefined;
           const currentAppliedSpeed = voice?.appliedLocalSpeed || voice?.speedMultiplier || 1;
           const minSpeed = Number(Math.max(1, currentAppliedSpeed).toFixed(2));
           const maxSpeed = Math.max(manualSpeedLimit, minSpeed);

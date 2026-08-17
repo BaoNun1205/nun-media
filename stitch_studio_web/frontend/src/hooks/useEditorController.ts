@@ -592,6 +592,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       const translatedAssetId = Number(latestJob.result?.assetId || 0);
       refresh().then(() => {
         if (translatedAssetId) {
+          if (project.workspaceId) {
+            void attachSrtToTimeline(translatedAssetId);
+          }
           studioApi.srtAsset(translatedAssetId).then((data) => {
             setSrt(data);
             setEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
@@ -1561,6 +1564,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       return;
     }
     try {
+      await studioApi.saveWorkspaceTimeline(project.workspaceId, timelineItems, timelineState, timelineScene);
+    } catch {
+      // Continue to dispatch subtitle generation even if timeline save was non-fatal
+    }
+    try {
       const result = await request<{ jobId: number; alreadyRunning?: boolean }>(
         `/projects/${project.workspaceId}/srt/generate`,
         { method: 'POST', body: JSON.stringify(body) },
@@ -1647,7 +1655,19 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const next = clampClipValue(value, .1, 80);
     setVoiceSpeed(next); saveClipSetting('voiceSpeed', next);
   }
-  const ttsPayload = () => ({ voice: ttsVoice, srtAssetId: srt.asset?.id, engine: ttsEngine, language: ttsLanguage, rate: ttsEngine === 'vieneu' ? ttsRate : '1.0', timingMode: 'srt_slot', ...TTS_FIT });
+  const ttsPayload = () => {
+    const timelineSrtItem = timelineItems.find((item) => item.track === 'S1' && item.kind === 'srt');
+    const activeSrtId = srt.asset?.id || timelineSrtItem?.sourceAssetId;
+    return {
+      voice: ttsVoice,
+      srtAssetId: activeSrtId,
+      engine: ttsEngine,
+      language: ttsLanguage,
+      rate: ttsEngine === 'vieneu' ? ttsRate : '1.0',
+      timingMode: 'srt_slot',
+      ...TTS_FIT,
+    };
+  };
   async function generateVoice(index?: number) {
     await saveSrt();
     const path = index ? `/videos/${project.id}/tts/segments/${index}` : `/videos/${project.id}/tts`;

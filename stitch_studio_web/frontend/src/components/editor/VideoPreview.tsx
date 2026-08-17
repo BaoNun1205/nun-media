@@ -213,7 +213,6 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   function togglePlayback() {
     if (editor.playhead >= editor.duration - 0.05) {
       editor.setPlayhead(0);
-      if (videoRef.current) videoRef.current.currentTime = 0;
     }
     if (timelineClockPlayback) {
       setPlaying((current) => {
@@ -253,7 +252,9 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   useEffect(() => {
     const video = videoRef.current;
     const mediaTime = previewTime * editor.videoSpeed;
-    if (video && Math.abs(video.currentTime - mediaTime) > .4) video.currentTime = mediaTime;
+    if (video && (video.paused ? Math.abs(video.currentTime - mediaTime) > .05 : Math.abs(video.currentTime - mediaTime) > .35)) {
+      video.currentTime = mediaTime;
+    }
     if (video) { syncVoice(video); syncSourceAudio(video); }
     else { syncVoiceAt(editor.playhead); syncSourceAudioAt(editor.playhead); }
   }, [previewTime, editor.playhead, editor.videoSpeed, sourceAudioUrl, voiceUrl, activeVoiceAudioClip, activeSourceAudioClip]);
@@ -624,14 +625,22 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
             }}
             onLoadedData={() => { setLoading(false); setError(''); }}
             onTimeUpdate={(event) => {
-              const localTime = event.currentTarget.currentTime / editor.videoSpeed;
-              const timelineTime = editor.activeTimelineItem ? editor.activeTimelineItem.start + localTime - (editor.activeTimelineItem.sourceStart || 0) : localTime;
-              syncSourceAudio(event.currentTarget);
-              if (editor.activeTimelineItem && localTime >= editor.activeTimelineItem.duration) {
-                editor.setPlayhead(Math.min(editor.duration, editor.activeTimelineItem.start + editor.activeTimelineItem.duration + 0.001));
-                return;
+              const video = event.currentTarget;
+              const sourceTime = video.currentTime / editor.videoSpeed;
+              const activeItem = editor.activeTimelineItem;
+              syncSourceAudio(video);
+              if (activeItem) {
+                const itemSourceStart = activeItem.sourceStart || 0;
+                const itemElapsed = Math.max(0, sourceTime - itemSourceStart);
+                const timelineTime = activeItem.start + itemElapsed;
+                if (itemElapsed >= activeItem.duration) {
+                  editor.setPlayhead(Math.min(editor.duration, activeItem.start + activeItem.duration));
+                  return;
+                }
+                editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
+              } else {
+                editor.setPlayhead(Math.max(0, Math.min(editor.duration, sourceTime)));
               }
-              editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
             }}
             onPlay={(event) => { setPlaying(true); audioContextRef.current?.resume().catch(() => undefined); syncVoice(event.currentTarget, true); syncSourceAudio(event.currentTarget, true); }}
             onPause={() => { setPlaying(false); voiceRef.current?.pause(); sourceAudioRef.current?.pause(); }}
