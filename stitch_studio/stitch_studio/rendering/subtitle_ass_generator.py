@@ -8,13 +8,15 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 logger = logging.getLogger(__name__)
 
 try:
-    from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication
+    from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QFontDatabase
     from PySide6.QtCore import QCoreApplication
 except ImportError:
     QGuiApplication = None
+    QFontDatabase = None
 
 _FONT_FILE_CACHE: Dict[str, str] = {}
 _FONT_METRICS_CACHE: Dict[tuple, Any] = {}
+_LOADED_QT_FONTS = set()
 
 
 def get_bundled_fonts_dir() -> Path:
@@ -64,18 +66,22 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
     fonts_dir = get_bundled_fonts_dir()
     if fonts_dir.exists():
         candidate_names = [
+            f"{slug}-black.ttf" if weight >= 900 else None,
+            f"{slug}-extrabold.ttf" if weight == 800 else None,
+            f"{slug}-bold.ttf" if weight >= 700 else None,
+            f"{slug}-semibold.ttf" if weight == 600 else None,
+            f"{slug}-medium.ttf" if weight == 500 else None,
+            f"{slug}-regular.ttf",
             f"{slug}.ttf",
             f"{slug}.otf",
             f"{family_lower}.ttf",
-            f"{family_lower}.otf",
             f"{family_clean}.ttf",
-            f"{family_clean}.otf",
-            f"{slug}-regular.ttf",
-            f"{slug}-bold.ttf" if weight >= 700 else f"{slug}-regular.ttf",
         ]
+        candidate_names = [c for c in candidate_names if c]
         for cname in candidate_names:
             cpath = fonts_dir / cname
             if cpath.exists():
+                logger.debug(f"Using bundled font: {family_clean} (weight {weight}) -> {cpath.name}")
                 _FONT_FILE_CACHE[cache_key] = str(cpath)
                 return str(cpath)
 
@@ -122,10 +128,11 @@ def get_font_file_path(family: str, weight: int = 400) -> Optional[str]:
             if not os.path.isabs(best_match_path):
                 best_match_path = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", best_match_path)
             if os.path.exists(best_match_path):
+                logger.debug(f"Using system font: {family_clean} (weight {weight}) -> {os.path.basename(best_match_path)}")
                 _FONT_FILE_CACHE[cache_key] = best_match_path
                 return best_match_path
 
-    logger.info(f"[FontResolver] Font '{family_clean}' will be located by libass fontsdir/system font matching.")
+    logger.warning(f"Requested font '{family_clean}' weight {weight} not found. Tried bundled fonts and system fonts. Libass/Qt will fallback.")
     _FONT_FILE_CACHE[cache_key] = ""
     return None
 
@@ -137,14 +144,22 @@ def _get_qfont_metrics(family: str, size: int, weight: int, letter_spacing: floa
     if not app:
         import sys
         app = QGuiApplication(sys.argv)
+    
+    font_path = get_font_file_path(family, weight)
+    if font_path and QFontDatabase and font_path not in _LOADED_QT_FONTS:
+        QFontDatabase.addApplicationFont(font_path)
+        _LOADED_QT_FONTS.add(font_path)
+
     key = (family, size, weight, letter_spacing)
     if key in _FONT_METRICS_CACHE:
         return _FONT_METRICS_CACHE[key]
+        
     font = QFont(family)
     font.setPixelSize(size)
     font.setWeight(QFont.Weight(weight) if hasattr(QFont.Weight, "Normal") else weight)
     if abs(letter_spacing) > 0.001:
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, letter_spacing)
+        
     metrics = QFontMetrics(font)
     _FONT_METRICS_CACHE[key] = metrics
     return metrics
