@@ -177,7 +177,12 @@ def render_project_timeline(
     if not active_items:
         raise RuntimeError("Timeline does not contain any active items.")
     
-    duration = max(_start(item) + _duration(item) for item in active_items)
+    media_items = [
+        item for item in active_items
+        if _kind(item) in {"video", "audio", "image"}
+    ]
+    duration_items = media_items if media_items else active_items
+    duration = max(_start(item) + _duration(item) for item in duration_items)
     output_path = unique_output_path(output_dir, settings.file_name)
     primary_video = storage.get_video(project.primary_video_id) if getattr(project, "primary_video_id", None) else None
 
