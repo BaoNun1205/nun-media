@@ -211,3 +211,21 @@ def test_background_radius_zero_dialogue():
     # Dialogues should NOT use \p1 if radius is 0
     assert not any("\\p1" in d for d in dialogues)
     assert any("TestStyle_bg" in d for d in dialogues)
+
+def test_format_ass_color():
+    from stitch_studio.rendering.subtitle_ass_generator import format_ass_color, _ass_color_override
+    # White #ffffff
+    c_white = format_ass_color("#ffffff")
+    assert c_white.upper() == "&H00FFFFFF"
+    assert format_ass_color(c_white).upper() == "&H00FFFFFF"
+
+    # Black #000000
+    c_black = format_ass_color("#000000")
+    assert c_black.upper() == "&H00000000"
+    assert format_ass_color(c_black).upper() == "&H00000000"
+
+    # Idempotent normalized style color conversion
+    style = normalize_text_style({"fontColor": "#ffffff", "outlineColor": "#000000"})
+    assert format_ass_color(style["color"]).upper() == "&H00FFFFFF"
+    assert format_ass_color(style["outlineColor"]).upper() == "&H00000000"
+

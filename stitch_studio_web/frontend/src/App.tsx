@@ -106,7 +106,7 @@ export default function App() {
     <AppSidebar view={view} onNavigate={setView} activeProjectJobs={activeProjectJobs} activeDownloadJobs={activeDownloadJobs} />
     <main className="app-content">
       {studio.error && <div className="connection-banner">{studio.error}</div>}
-      {view === 'projects' && <ProjectsPage projects={studio.workspaceProjects} onOpen={openWorkspaceEditor} onRefresh={studio.refresh} />}
+      {view === 'projects' && <ProjectsPage projects={studio.workspaceProjects} jobs={studio.jobs} onOpen={openWorkspaceEditor} onRefresh={studio.refresh} />}
       {view === 'templates' && <TemplatesPage onOpenWorkspace={openWorkspaceEditor} />}
       {view === 'downloads' && <DownloadsPage jobs={studio.jobs} projects={studio.projects} workspaceProjects={studio.workspaceProjects} onRefresh={studio.refresh} onOpenEditor={openEditor} onOpenWorkspace={openWorkspaceEditor} />}
       {view === 'tts' && <StandaloneTTSPage jobs={studio.jobs} workspaceProjects={studio.workspaceProjects} voices={studio.voices} loadVoices={studio.loadVoices} refresh={studio.refresh} />}

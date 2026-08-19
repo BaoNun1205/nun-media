@@ -247,11 +247,25 @@ def _get_rounded_rect_vector(w: float, h: float, r: float) -> str:
     )
 
 def format_ass_color(color_hex: str, opacity: float = 1.0) -> str:
-    """Convert #RRGGBB, #RRGGBBAA, or 0xRRGGBB + opacity to ASS color format &H<AA><BB><GG><RR>"""
+    """Convert #RRGGBB, #RRGGBBAA, 0xRRGGBB, or existing &H<AA><BB><GG><RR> + opacity to ASS color format &H<AA><BB><GG><RR>"""
     color_hex = str(color_hex).strip()
+    if color_hex.startswith("&H") or color_hex.startswith("&h"):
+        raw = color_hex[2:].rstrip("&")
+        if len(raw) >= 8:
+            aa, bb, gg, rr = raw[0:2], raw[2:4], raw[4:6], raw[6:8]
+        elif len(raw) >= 6:
+            aa, bb, gg, rr = "00", raw[0:2], raw[2:4], raw[4:6]
+        else:
+            aa, bb, gg, rr = "00", "FF", "FF", "FF"
+        if abs(opacity - 1.0) > 0.001:
+            alpha = int((1.0 - opacity) * 255)
+            alpha = max(0, min(255, alpha))
+            return f"&H{alpha:02X}{bb}{gg}{rr}"
+        return f"&H{aa}{bb}{gg}{rr}"
+
     if color_hex.startswith("#"):
         color_hex = color_hex[1:]
-    elif color_hex.startswith("0x"):
+    elif color_hex.startswith("0x") or color_hex.startswith("0X"):
         color_hex = color_hex[2:]
 
     # If short hex, expand it

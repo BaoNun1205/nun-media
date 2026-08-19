@@ -1,16 +1,17 @@
 import { useMemo, useState } from 'react';
-import { Captions, FileAudio, FileVideo2, FolderOpen, Grid2X2, List, Pencil, Play, Plus, Search, Trash2 } from 'lucide-react';
+import { Captions, FileAudio, FileVideo2, FolderOpen, Grid2X2, List, LoaderCircle, Pencil, Play, Plus, Search, Trash2 } from 'lucide-react';
 import { formatDuration, formatSize, projectStatus } from '../lib/studio';
 import { studioApi } from '../services/api';
-import type { WorkspaceProject } from '../types/studio';
+import type { Job, WorkspaceProject } from '../types/studio';
 
 interface Props {
   projects: WorkspaceProject[];
+  jobs: Job[];
   onOpen: (project: WorkspaceProject) => void;
   onRefresh: () => Promise<void>;
 }
 
-export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
+export function ProjectsPage({ projects, jobs, onOpen, onRefresh }: Props) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'recent' | 'name' | 'duration'>('recent');
@@ -100,8 +101,11 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
       </div>
       {message && <div className="inline-notice">{message}</div>}
       <div className={`project-collection ${layout}`}>
-        {visible.map((project) => (
-          <article className="project-card" key={project.id}>
+        {visible.map((project) => {
+          const exportJob = jobs.find((job) => job.kind === 'project-export' && job.videoId === -project.id && ['queued', 'running'].includes(job.status));
+          const exportProgress = exportJob ? progressPercent(exportJob.progress) : 0;
+
+          return <article className="project-card" key={project.id}>
             <button className="project-thumb" onClick={() => onOpen(project)}>
               {project.primaryVideoId && <img src={`/api/videos/${project.primaryVideoId}/thumbnail`} loading="lazy" alt="" />}
               <span className="thumb-shade" />
@@ -115,6 +119,10 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
                 <span className={project.assets.some((asset) => asset.kind === 'srt') ? 'ready' : ''}><Captions size={12} /> {project.assets.filter((asset) => asset.kind === 'srt').length} SRT</span>
                 <span className={project.assets.some((asset) => asset.kind === 'audio') ? 'voice' : ''}><FileAudio size={12} /> {project.assets.filter((asset) => asset.kind === 'audio').length} Audio</span>
               </div>
+              {exportJob && <div className="project-export-progress" title={exportJob.detail || 'Exporting video'}>
+                <div><span><LoaderCircle className="spin" size={13} /> {exportJob.status === 'queued' ? 'Chờ xuất video' : 'Đang xuất video'}</span><strong>{exportProgress}%</strong></div>
+                <i style={{ width: `${Math.max(2, exportProgress)}%` }} />
+              </div>}
               <div className="project-meta"><span>{formatSize(project.sizeBytes)}</span><span>{project.createdAt?.slice(0, 10) || 'Local'}</span></div>
               <div className="project-actions">
                 <button className="primary" onClick={() => onOpen(project)}><Play size={15} /> Open editor</button>
@@ -124,9 +132,14 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
               </div>
             </div>
           </article>
-        ))}
+        })}
         {!visible.length && <div className="empty-state"><Captions size={28} /><strong>No matching projects</strong><span>Create a project, then add video, subtitle, and audio assets inside the editor.</span></div>}
       </div>
     </section>
   );
+}
+
+function progressPercent(progress?: number) {
+  const value = Number(progress || 0);
+  return Math.round(Math.max(0, Math.min(100, value <= 1 ? value * 100 : value)));
 }

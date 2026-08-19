@@ -83,6 +83,9 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
       setJobId(result.jobId);
       setState('EXPORTING');
       await editor.refresh();
+      // Rendering is already owned by the backend job.  Close this editor-bound
+      // dialog so the user can immediately go back to Projects and work elsewhere.
+      onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to start export');
       setState('ERROR');
