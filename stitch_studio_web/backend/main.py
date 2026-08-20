@@ -36,6 +36,9 @@ from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: 
 from stitch_studio.storage import Storage  # noqa: E402
 from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
 from stitch_studio.template_timing import resolve_template_timing  # noqa: E402
+from .stock.providers.pexels import PexelsProvider  # noqa: E402
+from .stock.service import download_pexels_video, search_pexels  # noqa: E402
+from .stock.types import StockError  # noqa: E402
 
 
 app = FastAPI(title="Nun Studio API")
@@ -49,6 +52,17 @@ app.add_middleware(
 
 config = AppConfig()
 ensure_dirs(config)
+
+
+def _configured_pexels_api_key() -> str:
+    saved = config.pexels_api_key_path.read_text(encoding="utf-8").strip() if config.pexels_api_key_path.exists() else ""
+    return saved or config.pexels_api_key
+
+
+def _pexels_key_source() -> str:
+    return "settings" if config.pexels_api_key_path.exists() and config.pexels_api_key_path.read_text(encoding="utf-8").strip() else ("environment" if config.pexels_api_key else "")
+
+
 storage = Storage(config.db_path)
 downloader = DownloaderService(config, storage)
 transcriber = TranscriptionService(config, storage)
@@ -58,6 +72,7 @@ capcut_tts = CapcutTtsService(config, storage)
 pocket_tts = PocketTtsService(config, storage)
 subtitle_remover = SubtitleRemovalService(config, storage)
 audio_separator = AudioSeparationService(config, storage)
+pexels = PexelsProvider(_configured_pexels_api_key())
 
 jobs: dict[int, dict[str, Any]] = {}
 next_job_id = 1
@@ -140,6 +155,7 @@ class SrtTranslateRequest(BaseModel):
 class SettingsRequest(BaseModel):
     douyinCookie: str | None = None
     geminiApiKey: str | None = None
+    pexelsApiKey: str | None = None
 
 
 class YoutubeChannelUpdateRequest(BaseModel):
@@ -167,6 +183,10 @@ class ProjectAttachVideosRequest(BaseModel):
 
 class ProjectAttachAssetsRequest(BaseModel):
     assetIds: list[int] = []
+
+
+class PexelsImportRequest(BaseModel):
+    videoId: int
 
 
 class ProjectTimelineRequest(BaseModel):
@@ -1830,11 +1850,15 @@ def api_delete_youtube_prompt(prompt_id: int):
 def get_settings() -> dict[str, Any]:
     cookie = config.douyin_cookie_path.read_text(encoding="utf-8").strip() if config.douyin_cookie_path.exists() else ""
     gemini_key = config.gemini_api_key_path.read_text(encoding="utf-8").strip() if config.gemini_api_key_path.exists() else ""
+    pexels_key = _configured_pexels_api_key()
     return {
         "hasDouyinCookie": bool(cookie),
         "douyinCookieLength": len(cookie),
         "hasGeminiApiKey": bool(gemini_key),
         "geminiApiKeyLength": len(gemini_key),
+        "hasPexelsApiKey": bool(pexels_key),
+        "pexelsApiKeyLength": len(pexels_key),
+        "pexelsApiKeySource": _pexels_key_source() or None,
     }
 
 
@@ -1855,6 +1879,19 @@ def save_settings(payload: SettingsRequest) -> dict[str, Any]:
             config.gemini_api_key_path.write_text(gemini_key, encoding="utf-8")
         elif config.gemini_api_key_path.exists():
             config.gemini_api_key_path.unlink()
+
+    if payload.pexelsApiKey is not None:
+        # Users sometimes paste a complete HTTP header. Pexels requires the
+        # raw API key value, so normalize it before it ever reaches storage.
+        pexels_key = PexelsProvider.normalize_api_key(payload.pexelsApiKey)
+        if pexels_key:
+            config.pexels_api_key_path.parent.mkdir(parents=True, exist_ok=True)
+            config.pexels_api_key_path.write_text(pexels_key, encoding="utf-8")
+        elif config.pexels_api_key_path.exists():
+            config.pexels_api_key_path.unlink()
+        # The provider is long-lived, so update it immediately; no backend
+        # restart and no frontend-visible secret are needed.
+        pexels.api_key = PexelsProvider.normalize_api_key(_configured_pexels_api_key())
             
     return get_settings()
 
@@ -2070,6 +2107,7 @@ def _clean_timeline_state(raw: dict[str, Any] | None, clean_items: list[dict[str
         if bookmark.get("color") is not None:
             clean_bookmark["color"] = str(bookmark.get("color") or "")[:32]
         bookmarks.append(clean_bookmark)
+    clean_tracks, clean_items = _enforce_visual_track_layout(clean_tracks, clean_items)
     return {
         "version": 2,
         "fps": int(_timeline_number(raw.get("fps"), 30, 1, 240)),
@@ -2210,6 +2248,105 @@ def attach_project_assets(project_id: int, payload: ProjectAttachAssetsRequest) 
             },
         )
     return {"project": _workspace_project_payload(storage.get_project(project.id))}
+
+
+@app.get("/api/stock/pexels/videos")
+def search_pexels_videos(q: str, page: int = 1, perPage: int = 24) -> dict[str, Any]:
+    """Return a compact, provider-neutral Pexels result shape for the asset browser."""
+    try:
+        return search_pexels(pexels, q, page, perPage)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/stock/pexels/import")
+def import_pexels_video(project_id: int, payload: PexelsImportRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    video_id = int(payload.videoId)
+
+    # A Pexels ID is stable. Returning the existing ordinary ProjectAsset makes
+    # repeated Add clicks safe without creating special timeline item types.
+    for asset in storage.list_project_assets(project.id):
+        metadata = asset.metadata or {}
+        try:
+            imported_id = int(metadata.get("stock_video_id") or 0)
+        except (TypeError, ValueError):
+            imported_id = 0
+        if asset.kind == "video" and metadata.get("stock_provider") == "pexels" and imported_id == video_id:
+            return {"asset": _project_asset_payload(asset), "alreadyImported": True}
+
+    asset_dir = config.outputs_dir / f"project_{project.id}" / "assets" / "video"
+    destination = asset_dir / f"pexels_{video_id}.mp4"
+    if destination.exists():
+        destination = asset_dir / f"pexels_{video_id}_{time.time_ns() % 1_000_000}.mp4"
+    try:
+        stock_video = download_pexels_video(pexels, project, video_id, destination)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+    duration_ms = _probe_video_duration_ms(destination)
+    metadata = {
+        "source": "stock:pexels",
+        "stock_provider": "pexels",
+        "stock_video_id": video_id,
+        "stock_page_url": stock_video["pageUrl"],
+        "stock_thumbnail_url": stock_video["thumbnailUrl"],
+        "stock_creator": stock_video["creator"],
+        "stock_selected_file": stock_video["selectedFile"],
+        "duration_ms": duration_ms or int(stock_video["duration"] * 1000),
+        "size_bytes": destination.stat().st_size,
+    }
+
+
+def _enforce_visual_track_layout(tracks: list[dict[str, Any]], items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Persist the same invariant as the editor: no video/image overlap in one V lane."""
+    next_tracks = [dict(track) for track in tracks]
+    next_items = [dict(item) for item in items]
+    occupied: dict[str, list[dict[str, Any]]] = {}
+
+    def visual_tracks() -> list[dict[str, Any]]:
+        return [track for track in next_tracks if track.get("kind") == "video"]
+
+    def fits(track_id: str, item: dict[str, Any]) -> bool:
+        start = float(item.get("start") or 0)
+        end = start + float(item.get("duration") or 0.05)
+        return all(not (start < float(other.get("start") or 0) + float(other.get("duration") or 0.05) and end > float(other.get("start") or 0)) for other in occupied.get(track_id, []))
+
+    track_position = {str(track.get("id")): index for index, track in enumerate(next_tracks)}
+    visual_items = [(index, item) for index, item in enumerate(next_items) if item.get("kind") in {"video", "image"}]
+    visual_items.sort(key=lambda pair: (track_position.get(str(pair[1].get("track")), len(next_tracks)), float(pair[1].get("start") or 0), pair[0]))
+    for _, item in visual_items:
+        available = visual_tracks()
+        source_track = str(item.get("track") or "V1")
+        if not any(track.get("id") == source_track for track in available):
+            source_track = "V1"
+            item["track"] = source_track
+        target_track = source_track
+        if not fits(target_track, item):
+            available = visual_tracks()
+            source_index = next((index for index, track in enumerate(available) if track.get("id") == source_track), 0)
+            candidates = available[source_index + 1:] + available[:source_index]
+            target = next((track for track in candidates if not track.get("locked") and fits(str(track.get("id")), item)), None)
+            if target:
+                target_track = str(target["id"])
+            else:
+                existing = {str(track.get("id")) for track in next_tracks}
+                target_track = _next_timeline_track_id(existing, "video")
+                new_track = {"id": target_track, "kind": "video", "name": target_track, "muted": False, "hidden": False, "locked": False}
+                first_non_visual = next((index for index, track in enumerate(next_tracks) if track.get("kind") != "video"), len(next_tracks))
+                next_tracks.insert(first_non_visual, new_track)
+            item["track"] = target_track
+        occupied.setdefault(target_track, []).append(item)
+    return next_tracks, next_items
+    project_asset_id = storage.add_project_asset(
+        project_id=project.id,
+        kind="video",
+        path=destination,
+        name=f"Pexels - {stock_video['title']}",
+        metadata=metadata,
+    )
+    asset = storage.get_project_asset(project_asset_id)
+    return {"asset": _project_asset_payload(asset), "alreadyImported": False}
 
 
 @app.put("/api/projects/{project_id}/timeline")

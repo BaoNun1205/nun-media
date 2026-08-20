@@ -1,0 +1,2 @@
+"""Stock provider implementations."""
+

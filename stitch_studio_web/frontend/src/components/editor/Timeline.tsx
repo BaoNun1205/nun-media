@@ -2,21 +2,27 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Captions, Check, ChevronRight, Clipboard, Copy, Eye, EyeOff, FileAudio2, Film, Flag, Layers, Magnet, Minus, Music2, Plus, Redo2, Scissors, Trash2, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { formatClock, percent } from '../../lib/studio';
+import { normalizeTimelineState, projectAssetDurationSeconds, resolvePlacement } from '../../lib/timelineCore';
 import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { InspectorSelection, TimelineItem, TimelineTrack, TimelineTrackKind } from '../../types/studio';
 
 type Marquee = { left: number; top: number; width: number; height: number };
 type ContextMenuPoint = { x: number; y: number; videoId: number; timelineItemId?: string };
+type DragPlacementPreview = { trackId: string; start: number; createdTrack: boolean };
 type ClipDragMode = 'move' | 'trim-start' | 'trim-end';
 type ClipDragState = {
   pointerId: number;
   key: string;
   visualKeys: string[];
   clientX: number;
+  clientY: number;
+  sourceTrackId: string;
+  targetTrackId?: string;
   durationAtStart: number;
   baseItems: TimelineItem[];
   nextItems: TimelineItem[];
+  nextTracks: TimelineTrack[];
   visualElements: HTMLElement[];
   snapCandidates: number[];
   canvasWidth: number;
@@ -36,6 +42,8 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const [marquee, setMarquee] = useState<Marquee | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuPoint | null>(null);
   const [dragDisplayDuration, setDragDisplayDuration] = useState<number | null>(null);
+  const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
+  const [dragPlacementPreview, setDragPlacementPreview] = useState<DragPlacementPreview | null>(null);
   const minimumWidth = Math.max(260, Math.round(Math.max(0, timelineViewportWidth - 145) / 3));
   const maximumWidth = Math.max(5000, minimumWidth);
   const selectedKeys = new Set(editor.selection.type === 'timeline-items' ? editor.selection.keys : []);
@@ -136,6 +144,8 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const finishScrub = () => { scrubRef.current = false; };
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    setDragOverTrackId(null);
+    setDragPlacementPreview(null);
     const raw = event.dataTransfer.getData('application/x-stitch-asset');
     if (!raw) return;
     const placementOptions = { trackId: trackAtClientY(event.clientY), start: timelineTimeFromClientX(event.clientX) };
@@ -147,6 +157,31 @@ export function Timeline({ editor }: { editor: EditorController }) {
       } else if (data.kind === 'video' && data.id) void editor.addVideoToTimeline(Number(data.id), placementOptions);
     } catch {
       editor.setMessage('Unable to add this asset to the timeline.');
+    }
+  };
+  const previewExternalDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const raw = event.dataTransfer.getData('application/x-stitch-asset');
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw) as { type?: string; id?: number; kind?: string };
+      const asset = data.type === 'projectAsset' && data.id
+        ? (editor.project.projectAssets || []).find((item) => item.id === Number(data.id))
+        : undefined;
+      const kind = asset?.kind || data.kind;
+      if (kind !== 'video' && kind !== 'image') return;
+      const duration = kind === 'image' ? 10 : Math.max(.05, asset ? projectAssetDurationSeconds(asset) || 5 : 5);
+      const placement = resolvePlacement({
+        state: editor.timelineState,
+        kind,
+        preferredTrackId: trackAtClientY(event.clientY),
+        requestedStart: timelineTimeFromClientX(event.clientX),
+        duration,
+      });
+      setDragPlacementPreview({ trackId: placement.trackId, start: placement.start, createdTrack: Boolean(placement.createdTrack) });
+      setDragOverTrackId(placement.createdTrack ? null : placement.trackId);
+    } catch {
+      // Ignore malformed drag data; the drop handler will report a useful error.
     }
   };
   const deleteSelectedTimelineItem = (event: React.KeyboardEvent) => {
@@ -348,9 +383,12 @@ export function Timeline({ editor }: { editor: EditorController }) {
       key: item.id,
       visualKeys: visualKeyList,
       clientX: event.clientX,
+      clientY: event.clientY,
+      sourceTrackId: item.track,
       durationAtStart: displayDuration,
       baseItems,
       nextItems: baseItems.map((clip) => ({ ...clip })),
+      nextTracks: stateTracks.map((track) => ({ ...track })),
       visualElements: timelineElementsForKeys(visualKeyList),
       snapCandidates: snapCandidates(baseItems, movingKeys),
       canvasWidth,
@@ -374,9 +412,12 @@ export function Timeline({ editor }: { editor: EditorController }) {
       key: item.id,
       visualKeys: visualKeyList,
       clientX: event.clientX,
+      clientY: event.clientY,
+      sourceTrackId: item.track,
       durationAtStart: displayDuration,
       baseItems,
       nextItems: baseItems.map((clip) => ({ ...clip })),
+      nextTracks: stateTracks.map((track) => ({ ...track })),
       visualElements: timelineElementsForKeys(visualKeyList),
       snapCandidates: snapCandidates(baseItems, visualKeys),
       canvasWidth,
@@ -390,7 +431,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     const canvasWidth = Math.max(1, drag.canvasWidth);
     const deltaSeconds = ((event.clientX - drag.clientX) / canvasWidth) * drag.durationAtStart;
-    drag.moved = drag.moved || Math.abs(event.clientX - drag.clientX) > 2;
+    drag.moved = drag.moved || Math.abs(event.clientX - drag.clientX) > 2 || Math.abs(event.clientY - drag.clientY) > 2;
     const target = drag.baseItems.find((item) => item.id === drag.key);
     if (!target) return;
     const movingKeys = new Set(drag.visualKeys);
@@ -425,6 +466,24 @@ export function Timeline({ editor }: { editor: EditorController }) {
         if (movingKeys.has(item.id)) return { ...item, start: Math.max(0, item.start + linkedDelta) };
         return item;
       });
+      const sourceTrack = stateTracks.find((track) => track.id === drag.sourceTrackId);
+      const targetTrackId = trackAtClientY(event.clientY);
+      const targetTrack = stateTracks.find((track) => track.id === targetTrackId);
+      const canChangeTrack = Boolean(
+        sourceTrack
+        && targetTrack
+        && targetTrack.id !== sourceTrack.id
+        && !targetTrack.locked
+        && targetTrack.kind === sourceTrack.kind,
+      );
+      drag.targetTrackId = canChangeTrack ? targetTrack!.id : undefined;
+      setDragOverTrackId(drag.targetTrackId || null);
+      if (canChangeTrack) {
+        // Move clips from the dragged row only. A video clip's linked A1 audio
+        // keeps its own audio row while the visual layer changes from V1 to V2.
+        const transferableKeys = new Set(drag.visualKeys.filter((key) => drag.baseItems.some((clip) => clip.id === key && clip.track === drag.sourceTrackId)));
+        next = next.map((item) => transferableKeys.has(item.id) ? { ...item, track: targetTrack!.id } : item);
+      }
     } else if (drag.mode === 'trim-start') {
       const minLeftDelta = target.kind === 'image' ? -target.start : Math.max(-target.start, -(target.sourceStart || 0));
       linkedDelta = Math.max(minLeftDelta, Math.min(target.duration - minDuration, deltaSeconds));
@@ -473,6 +532,16 @@ export function Timeline({ editor }: { editor: EditorController }) {
     next = next.map((item) => movingKeys.has(item.id)
       ? { ...item, start: Math.round(item.start * fps) / fps, duration: Math.max(0.05, Math.round(item.duration * fps) / fps), sourceStart: Math.round((item.sourceStart || 0) * fps) / fps }
       : item);
+    const collisionFree = normalizeTimelineState({ ...editor.timelineState, items: next });
+    next = collisionFree.items;
+    drag.nextTracks = collisionFree.tracks;
+    if (drag.mode === 'move') {
+      const placedTarget = next.find((item) => item.id === drag.key);
+      if (placedTarget?.track) {
+        setDragPlacementPreview({ trackId: placedTarget.track, start: placedTarget.start, createdTrack: !stateTracks.some((track) => track.id === placedTarget.track) });
+        if (stateTracks.some((track) => track.id === placedTarget.track)) setDragOverTrackId(placedTarget.track);
+      }
+    }
     showSnapGuide(snappedTime);
     drag.nextItems = next;
     if (drag.moved && drag.mode === 'move') {
@@ -495,6 +564,8 @@ export function Timeline({ editor }: { editor: EditorController }) {
     if (!drag || drag.pointerId !== event.pointerId) return;
     clipMoveRef.current = null;
     showSnapGuide();
+    setDragOverTrackId(null);
+    setDragPlacementPreview(null);
     const clearVisuals = () => {
       if (drag.mode === 'move') clearClipDragVisual(drag.visualElements);
       else clearClipShapeVisual(drag.visualElements);
@@ -572,7 +643,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const trackIcon = (kind: TimelineTrackKind) => kind === 'audio' ? Music2 : kind === 'subtitle' || kind === 'text' ? Captions : kind === 'effect' ? Flag : Film;
   const renderTrackRow = (track: TimelineTrack) => {
     const rowItems = editor.timelineItems.filter((item) => item.track === track.id);
-    const rowClass = `timeline-track ${track.kind}-track ${track.hidden ? 'track-hidden' : ''} ${track.muted ? 'track-muted' : ''} ${isTrackSelected(track.id) ? 'track-selected' : ''}`;
+    const rowClass = `timeline-track ${track.kind}-track ${track.hidden ? 'track-hidden' : ''} ${track.muted ? 'track-muted' : ''} ${isTrackSelected(track.id) ? 'track-selected' : ''} ${dragOverTrackId === track.id ? 'track-drop-target' : ''}`;
     if (track.kind === 'video') {
       const mediaItems = rowItems.filter((item) => item.kind === 'video' || item.kind === 'image');
       return <div key={track.id} data-track-row={track.id} className={`${rowClass} video-track`}>
@@ -661,7 +732,12 @@ export function Timeline({ editor }: { editor: EditorController }) {
         onPointerMove={moveMarquee}
         onPointerUp={finishMarquee}
         onPointerCancel={() => { dragRef.current = null; setMarquee(null); }}
-        onDragOver={(event) => event.preventDefault()}
+        onDragOver={previewExternalDrop}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+          setDragOverTrackId(null);
+          setDragPlacementPreview(null);
+        }}
         onDrop={handleDrop}
         onClick={(event) => {
           if (suppressClickRef.current) {
@@ -703,6 +779,9 @@ export function Timeline({ editor }: { editor: EditorController }) {
         {!legacySingleVideo && !editor.timelineItems.length && <div className="timeline-empty-drop">
           <span><Film size={16} /> Drag media here to start editing</span>
           <button onClick={(event) => { event.stopPropagation(); editor.setAssetTab('assets'); editor.setMessage('Open the Download tab, then drag a video into V1.'); }}><Plus size={16} /> Add media to timeline</button>
+        </div>}
+        {dragPlacementPreview && <div className="timeline-drop-preview" style={{ left: percent(dragPlacementPreview.start, displayDuration) }}>
+          {dragPlacementPreview.createdTrack ? `${dragPlacementPreview.trackId} will be created` : `${dragPlacementPreview.trackId} · ${formatClock(dragPlacementPreview.start)}`}
         </div>}
         <div ref={snapGuideRef} className="timeline-snap-guide" hidden><span /></div>
         <div className="playhead" style={{ left: percent(editor.playhead, displayDuration) }} onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={finishScrub} onPointerCancel={finishScrub}><i /></div>

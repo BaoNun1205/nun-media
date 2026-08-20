@@ -11,6 +11,7 @@ import {
   defaultTrackForKind,
   duplicateItems,
   frameRound,
+  insertTimelineTrack,
   normalizeTimelineState,
   pasteItems,
   parseClipboardItems,
@@ -756,7 +757,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       };
       const nextState = normalizeTimelineState({
         ...timelineState,
-        tracks: placement.createdTrack ? [...timelineState.tracks, placement.createdTrack] : timelineState.tracks,
+        tracks: placement.createdTrack ? insertTimelineTrack(timelineState.tracks, placement.createdTrack) : timelineState.tracks,
         items: [...timelineState.items, item],
       });
       if (await commitTimelineState(nextState, `Added video clip to ${placement.trackId}.`, previous)) {
@@ -777,7 +778,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage('Open a workspace project before adding timeline clips.');
       return;
     }
-    const kind = asset.kind === 'image' ? 'image' : asset.kind === 'audio' ? 'audio' : asset.kind === 'srt' ? 'srt' : null;
+    // Project assets downloaded from Pexels (and uploaded video files) do not
+    // necessarily have a library Video record. They are still normal timeline
+    // video clips and must use the ProjectAsset download URL at preview/export.
+    const kind = asset.kind === 'video' ? 'video' : asset.kind === 'image' ? 'image' : asset.kind === 'audio' ? 'audio' : asset.kind === 'srt' ? 'srt' : null;
     if (!kind) {
       setMessage('This asset type cannot be placed on the timeline yet.');
       return;
@@ -813,11 +817,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       start: frameRound(placement.start, timelineState.fps),
       duration: frameRound(baseItem.duration, timelineState.fps),
     };
-    const nextTracks = [
-      ...timelineState.tracks,
-      ...(created.state.tracks.filter((candidate) => !timelineState.tracks.some((track) => track.id === candidate.id))),
-      ...(placement.createdTrack ? [placement.createdTrack] : []),
-    ];
+    const createdTracks = created.state.tracks.filter((candidate) => !timelineState.tracks.some((track) => track.id === candidate.id));
+    let nextTracks = createdTracks.reduce((tracks, candidate) => insertTimelineTrack(tracks, candidate), [...timelineState.tracks]);
+    if (placement.createdTrack && !nextTracks.some((candidate) => candidate.id === placement.createdTrack!.id)) {
+      nextTracks = insertTimelineTrack(nextTracks, placement.createdTrack);
+    }
     const nextState = normalizeTimelineState({ ...timelineState, tracks: nextTracks, items: [...timelineState.items, item] });
     try {
       if (await commitTimelineState(nextState, `${asset.kind.toUpperCase()} asset was placed on ${track}.`, previous)) {
@@ -938,7 +942,14 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
   async function addTimelineTrack(kind: TimelineTrackKind) {
     const previous = cloneTimelineState(timelineState);
-    const { state, track } = addTrackToTimelineState(timelineState, kind);
+    // Keep visual layers together at the top (V1, V2, â€¦) so a higher V
+    // track naturally reads as an overlay. Audio tracks stay together below.
+    const lastMatchingTrack = timelineState.tracks.reduce((last, track, index) => track.kind === kind ? index : last, -1);
+    const firstNonVideoTrack = timelineState.tracks.findIndex((track) => track.kind !== 'video');
+    const insertAt = kind === 'video'
+      ? (firstNonVideoTrack < 0 ? timelineState.tracks.length : firstNonVideoTrack)
+      : (lastMatchingTrack < 0 ? timelineState.tracks.length : lastMatchingTrack + 1);
+    const { state, track } = addTrackToTimelineState(timelineState, kind, undefined, insertAt);
     return commitTimelineState(state, `Added ${track.id}.`, previous);
   }
 

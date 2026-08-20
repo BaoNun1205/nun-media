@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Captions, ChevronLeft, ChevronRight, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Search, Settings2, Share2, Sparkles, Upload, Volume2, Trash2 } from 'lucide-react';
+import { Captions, ChevronLeft, ChevronRight, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Search, Settings2, Share2, Sparkles, Upload, Volume2, Trash2, X } from 'lucide-react';
 import { LANGUAGES, SOURCE_LANGUAGES, defaultTtsLanguage, formatDuration, getAssetGroup, isMediaFileAsset, ttsLanguageOptions } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
@@ -8,6 +8,7 @@ import { JobProgress } from '../common/JobProgress';
 import { SliderNumericField } from './NumericField';
 import { SPARKLE_EFFECT_CATEGORIES, SPARKLE_EFFECTS } from '../../config/sparkleEffects';
 import { SparkleEffectThumbnail } from './SparkleEffectThumbnail';
+import { PexelsSearchView } from './stock/PexelsSearchView';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
@@ -23,6 +24,7 @@ const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, str
 
 function projectAssetPreviewUrl(asset: ProjectAsset) {
   if (asset.kind === 'video' && asset.sourceVideoId) return `${API_BASE}/videos/${asset.sourceVideoId}/thumbnail`;
+  if (asset.kind === 'video' && typeof asset.metadata.stock_thumbnail_url === 'string') return asset.metadata.stock_thumbnail_url;
   if (asset.kind === 'image') return `${API_BASE}/project-assets/${asset.id}/download?preview=1`;
   return '';
 }
@@ -74,6 +76,7 @@ function AssetBin({ editor }: { editor: EditorController }) {
   const uploadRef = useRef<HTMLInputElement>(null);
   const [assetGroup, setAssetGroup] = useState<'media' | 'subs'>('media');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'video' | 'image' | 'audio'>('all');
+  const [isPexelsSearch, setIsPexelsSearch] = useState(false);
 
   const videoAssets = editor.project.assets.filter((asset) => asset.kind !== 'srt' && !asset.kind.includes('tts') && !asset.kind.includes('audio'));
   const audioAssets = editor.project.assets.filter((asset) => asset.kind.includes('tts') || asset.kind.includes('audio'));
@@ -150,22 +153,31 @@ function AssetBin({ editor }: { editor: EditorController }) {
     void upload(event.dataTransfer.files);
   }
 
+  const header = <div className="asset-bin-bar">
+    <span>{assetGroup === 'subs' ? 'Subs' : 'Media Files'}</span>
+    <div className="asset-bin-actions">
+      {assetGroup === 'media' && <button type="button" className="asset-search-toggle" title={isPexelsSearch ? 'Exit Pexels search' : 'Search Pexels videos'} onClick={() => setIsPexelsSearch((active) => !active)}>{isPexelsSearch ? <X size={15} /> : <Search size={15} />}</button>}
+      <button type="button" onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import{assetGroup === 'subs' ? ' SRT' : ''}</button>
+    </div>
+  </div>;
+
   return <div className="asset-bin">
     <div className="asset-index">
-      <button className={assetGroup === 'media' ? 'active' : ''} onClick={() => setAssetGroup('media')} title="Media Files">
+      <button className={assetGroup === 'media' ? 'active' : ''} onClick={() => { setAssetGroup('media'); }} title="Media Files">
         <span><FileVideo2 size={17} /></span>
         <span><strong>Media</strong></span>
       </button>
-      <button className={assetGroup === 'subs' ? 'active' : ''} onClick={() => setAssetGroup('subs')} title="Subs">
+      <button className={assetGroup === 'subs' ? 'active' : ''} onClick={() => { setAssetGroup('subs'); setIsPexelsSearch(false); }} title="Subs">
         <span><Captions size={17} /></span>
         <span><strong>Subs</strong></span>
       </button>
     </div>
     <div className="asset-kind-content">
       <input ref={uploadRef} className="visually-hidden" type="file" accept={accept} multiple onChange={(event) => upload(event.target.files || undefined)} />
-      {visibleCount === 0
-        ? <div className="asset-bin-list empty-asset-bin" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-          <div className="asset-bin-bar"><span>{assetGroup === 'subs' ? 'Subs' : 'Media Files'}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import{assetGroup === 'subs' ? ' SRT' : ''}</button></div>
+      {isPexelsSearch && assetGroup === 'media'
+        ? <div className="asset-bin-list pexels-asset-bin">{header}<PexelsSearchView projectId={editor.project.workspaceId || 0} projectAssets={projectAssets} onImported={editor.refresh} onMessage={editor.setMessage} /></div>
+        : <div className={`asset-bin-list ${visibleCount === 0 ? 'empty-asset-bin' : ''}`} onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+          {header}
           {assetGroup === 'media' && (
             <div className="style-segmented" style={{ marginBottom: '12px' }}>
               <button className={mediaFilter === 'all' ? 'active' : ''} onClick={() => setMediaFilter('all')}><span>All</span></button>
@@ -174,27 +186,17 @@ function AssetBin({ editor }: { editor: EditorController }) {
               <button className={mediaFilter === 'audio' ? 'active' : ''} onClick={() => setMediaFilter('audio')}><span>Audio</span></button>
             </div>
           )}
-          <div className="asset-drop-zone" onClick={() => uploadRef.current?.click()}>
-            <span><Plus size={18} /></span>
-            <strong>{assetGroup === 'subs' ? 'Import subtitles' : 'Import media'}</strong>
-            <small>Drag and drop {assetGroup === 'subs' ? 'subtitle files' : 'media files'} here</small>
-          </div>
-        </div>
-        : <div className="asset-bin-list" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-          <div className="asset-bin-bar"><span>{assetGroup === 'subs' ? 'Subs' : 'Media Files'}</span><button onClick={() => uploadRef.current?.click()}><Upload size={14} /> Import{assetGroup === 'subs' ? ' SRT' : ''}</button></div>
-          {assetGroup === 'media' && (
-            <div className="style-segmented" style={{ marginBottom: '12px' }}>
-              <button className={mediaFilter === 'all' ? 'active' : ''} onClick={() => setMediaFilter('all')}><span>All</span></button>
-              <button className={mediaFilter === 'video' ? 'active' : ''} onClick={() => setMediaFilter('video')}><span>Video</span></button>
-              <button className={mediaFilter === 'image' ? 'active' : ''} onClick={() => setMediaFilter('image')}><span>Image</span></button>
-              <button className={mediaFilter === 'audio' ? 'active' : ''} onClick={() => setMediaFilter('audio')}><span>Audio</span></button>
+          {visibleCount === 0
+            ? <div className="asset-drop-zone" onClick={() => uploadRef.current?.click()}>
+              <span><Plus size={18} /></span>
+              <strong>{assetGroup === 'subs' ? 'Import subtitles' : 'Import media'}</strong>
+              <small>Drag and drop {assetGroup === 'subs' ? 'subtitle files' : 'media files'} here</small>
             </div>
-          )}
-          <div className="asset-card-grid">
-            {showMainVideo && <button className="asset-card active" onClick={() => editor.setSelection({ type: 'video', id: editor.project.id })}><span className="asset-card-thumb video"><img src={`${API_BASE}/videos/${editor.project.id}/thumbnail`} alt="" /><em>{formatDuration(editor.project.durationMs)}</em></span><strong>{editor.project.name}</strong><small>Main</small><span className="asset-card-action"><Play size={13} /></span></button>}
-            {visibleProjectAssets.map((asset) => <ProjectAssetRow key={asset.id} asset={asset} editor={editor} />)}
-            {visibleLocalAssets.map((asset) => <AssetRow key={asset.id} asset={asset} editor={editor} />)}
-          </div>
+            : <div className="asset-card-grid">
+              {showMainVideo && <button className="asset-card active" onClick={() => editor.setSelection({ type: 'video', id: editor.project.id })}><span className="asset-card-thumb video"><img src={`${API_BASE}/videos/${editor.project.id}/thumbnail`} alt="" /><em>{formatDuration(editor.project.durationMs)}</em></span><strong>{editor.project.name}</strong><small>Main</small><span className="asset-card-action"><Play size={13} /></span></button>}
+              {visibleProjectAssets.map((asset) => <ProjectAssetRow key={asset.id} asset={asset} editor={editor} />)}
+              {visibleLocalAssets.map((asset) => <AssetRow key={asset.id} asset={asset} editor={editor} />)}
+            </div>}
         </div>}
     </div>
   </div>;

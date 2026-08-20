@@ -1,5 +1,5 @@
 import type { CoreTimelineScene } from '../editor-core/types';
-import type { Asset, AudioMode, Job, Project, SrtDocument, StudioSettings, SubtitleArea, Template, TemplateSummary, TemplateManifest, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
+import type { Asset, AudioMode, Job, PexelsVideo, Project, ProjectAsset, SrtDocument, StudioSettings, SubtitleArea, Template, TemplateSummary, TemplateManifest, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -14,7 +14,12 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   }
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Request failed (${response.status})`);
+    let apiMessage = '';
+    try {
+      const payload = JSON.parse(detail) as { detail?: unknown };
+      apiMessage = typeof payload.detail === 'string' ? payload.detail : '';
+    } catch { /* The endpoint returned plain text. */ }
+    throw new Error(apiMessage || detail || `Request failed (${response.status})`);
   }
   return response.json();
 }
@@ -56,10 +61,16 @@ export const studioApi = {
     body.append('file', file);
     return request<{ project: WorkspaceProject }>(`/projects/${id}/assets`, { method: 'POST', body });
   },
+  searchPexelsVideos: (query: string, page = 1) =>
+    request<{ videos: PexelsVideo[]; page: number; perPage: number; totalResults: number; hasMore: boolean }>(
+      `/stock/pexels/videos?${new URLSearchParams({ q: query, page: String(page), perPage: '24' })}`,
+    ),
+  importPexelsVideo: (projectId: number, videoId: number) =>
+    request<{ asset: ProjectAsset; alreadyImported: boolean }>(`/projects/${projectId}/stock/pexels/import`, { method: 'POST', body: JSON.stringify({ videoId }) }),
   projects: () => request<Project[]>('/videos'),
   jobs: () => request<Job[]>('/jobs'),
   settings: () => request<StudioSettings>('/settings'),
-  saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string }) =>
+  saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string; pexelsApiKey?: string }) =>
     request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   renameProject: (id: number, title: string) =>
     request<Project>(`/videos/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),

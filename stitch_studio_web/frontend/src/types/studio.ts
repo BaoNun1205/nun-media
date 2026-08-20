@@ -66,6 +66,18 @@ export interface ProjectAsset {
   asset?: Asset;
 }
 
+export interface PexelsVideo {
+  provider: 'pexels';
+  id: number;
+  title: string;
+  duration: number;
+  width: number;
+  height: number;
+  thumbnailUrl: string;
+  pageUrl: string;
+  creator: { name: string; url: string };
+}
+
 export type TimelineItemKind = 'video' | 'image' | 'audio' | 'srt' | 'text' | 'effect';
 export type TimelineTrackKind = 'video' | 'subtitle' | 'audio' | 'text' | 'effect';
 
@@ -287,6 +299,9 @@ export interface StudioSettings {
   douyinCookieLength: number;
   hasGeminiApiKey?: boolean;
   geminiApiKeyLength?: number;
+  hasPexelsApiKey?: boolean;
+  pexelsApiKeyLength?: number;
+  pexelsApiKeySource?: 'settings' | 'environment' | null;
   backendPath?: string;
   frontendPath?: string;
 }

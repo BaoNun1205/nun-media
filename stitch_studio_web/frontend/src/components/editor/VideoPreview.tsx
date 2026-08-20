@@ -71,7 +71,16 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     const track = trackById.get(item.track || '');
     return !track?.muted;
   };
-  const activeVideoId = editor.activeTimelineVideoId;
+  const activeVisualItems = editor.timelineItems
+    .filter((item) => (item.kind === 'video' || item.kind === 'image') && itemEnabled(item) && editor.playhead >= item.start && editor.playhead < item.start + Math.max(0.05, item.duration))
+    .sort((a, b) => (editor.timelineState.tracks.findIndex((track) => track.id === a.track) - editor.timelineState.tracks.findIndex((track) => track.id === b.track)));
+  const activeVideoIndex = activeVisualItems.map((item) => item.kind).lastIndexOf('video');
+  const activeVideoItem = activeVideoIndex >= 0 ? activeVisualItems[activeVideoIndex] : undefined;
+  // An opaque V3 video hides every image/video below it. Only image layers
+  // above the visible video are composited in the browser monitor, matching
+  // the FFmpeg renderer's V1 -> V2 -> V3 paint order.
+  const activeImageItems = activeVisualItems.filter((item, index) => item.kind === 'image' && index > activeVideoIndex);
+  const activeVideoId = activeVideoItem?.sourceVideoId ?? (!hasWorkspaceTimeline ? editor.activeTimelineVideoId : undefined);
   const activeVoiceAudioClip = editor.timelineItems.find((item) =>
     item.kind === 'audio'
     && item.track !== 'A1'
@@ -79,7 +88,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead >= item.start
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
-  const activeImageItem = editor.activeTimelineItem?.kind === 'image' && itemEnabled(editor.activeTimelineItem) ? editor.activeTimelineItem : undefined;
+  const activeImageItem = activeImageItems.at(-1);
   const activeImageBaseTransform = imageTransformValue(activeImageItem);
   const activeImageLocalTime = activeImageItem ? editor.playhead - activeImageItem.start : 0;
   const activeImageAnimationDelta = activeImageItem ? evaluateImageAnimation(activeImageItem, activeImageLocalTime) : getDefaultAnimationDelta();
@@ -89,7 +98,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     : activeImageItem?.sourceAssetId
       ? `${API_BASE}/assets/${activeImageItem.sourceAssetId}/download?preview=1`
       : '';
-  const sourceAudioMuted = Boolean(editor.activeTimelineItem?.kind === 'video' && (editor.activeTimelineItem.sourceAudioMuted || !itemAudible(editor.activeTimelineItem)));
+  const sourceAudioMuted = Boolean(activeVideoItem && (activeVideoItem.sourceAudioMuted || !itemAudible(activeVideoItem)));
   const activeSourceAudioClip = editor.timelineItems.find((item) =>
     item.kind === 'audio'
     && item.track === 'A1'
@@ -103,7 +112,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
       ? `${API_BASE}/assets/${activeSourceAudioClip.sourceAssetId}/download?preview=1`
       : '';
   const posterUrl = activeVideoId ? `${API_BASE}/videos/${activeVideoId}/thumbnail` : '';
-  const previewTime = editor.activeTimelineItem ? editor.activeTimelineLocalTime : editor.playhead;
+  const activePlaybackItem = activeVideoItem || activeImageItem || editor.activeTimelineItem;
+  const previewTime = activePlaybackItem ? Math.max(0, editor.playhead - activePlaybackItem.start + (activePlaybackItem.sourceStart || 0)) : editor.playhead;
   const activeSubtitle = editor.srt.segments.find((segment) => previewTime >= segment.start && previewTime <= segment.end);
   const activeTextItems = editor.timelineItems.filter((item) =>
     item.kind === 'text'
@@ -129,12 +139,17 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
       : '';
   const mergedVoiceMuted = Boolean(trackById.get('A2')?.muted || trackById.get('A2')?.hidden);
   const voiceUrl = timelineVoiceUrl || (editor.previewSource.startsWith('tts:') && mergedVoice && !mergedVoiceMuted ? `${API_BASE}/assets/${mergedVoice.id}/download?preview=1` : '');
+  // Uploaded and stock clips are ordinary ProjectAssets and deliberately do
+  // not need a hidden library Video record. Preview them from that same asset.
+  const activeProjectVideoUrl = activeVideoItem?.projectAssetId && !activeVideoItem.sourceVideoId
+    ? `${API_BASE}/project-assets/${activeVideoItem.projectAssetId}/download?preview=1`
+    : '';
   const sourceUrl = editor.previewSource.startsWith('asset:')
     ? `${API_BASE}/assets/${editor.previewSource.slice(6)}/download?preview=1`
     : editor.previewSource.startsWith('tts:')
       ? activeVideoId ? `${API_BASE}/videos/${activeVideoId}/preview?audioMode=${editor.effectivePreviewAudioMode}` : ''
-      : activeVideoId ? `${API_BASE}/videos/${activeVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}` : '';
-  const timelineClockPlayback = Boolean(forceTimelineClock || activeImageUrl || !sourceUrl);
+      : activeProjectVideoUrl || (activeVideoId ? `${API_BASE}/videos/${activeVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}` : '');
+  const timelineClockPlayback = Boolean(forceTimelineClock || !sourceUrl);
 
   function applyGainValue(media: HTMLMediaElement | null, gainValue: number, muted = false) {
     if (!media) return;
@@ -208,7 +223,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   }
   function videoTimelineTime(video: HTMLVideoElement) {
     const localTime = video.currentTime / editor.videoSpeed;
-    return editor.activeTimelineItem ? editor.activeTimelineItem.start + localTime - (editor.activeTimelineItem.sourceStart || 0) : localTime;
+    return activePlaybackItem ? activePlaybackItem.start + localTime - (activePlaybackItem.sourceStart || 0) : localTime;
   }
   function syncVoice(video: HTMLVideoElement, shouldPlay = false) {
     syncVoiceAt(videoTimelineTime(video), shouldPlay);
@@ -295,14 +310,14 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   useEffect(() => () => { voiceRef.current?.pause(); }, [voiceUrl]);
   useEffect(() => () => { sourceAudioRef.current?.pause(); }, [sourceAudioUrl]);
   useEffect(() => {
-    if (!activeImageUrl) return;
+    if (!activeImageUrl || sourceUrl) return;
     const image = imageRef.current;
     if (image?.complete && image.naturalWidth) {
       setVideoSize({ width: image.naturalWidth || 16, height: image.naturalHeight || 9 });
       setLoading(false);
       setError('');
     }
-  }, [activeImageUrl]);
+  }, [activeImageUrl, sourceUrl]);
   useEffect(() => {
     if (!playing || !timelineClockPlayback) return;
     let frame = 0;
@@ -347,7 +362,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   useEffect(() => {
     setError('');
     setForceTimelineClock(false);
-    if (activeImageUrl) {
+    if (!sourceUrl && activeImageUrl) {
       const image = imageRef.current;
       setLoading(!(image?.complete && image.naturalWidth));
       return;
@@ -591,31 +606,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     </div>
     <div className="preview-viewport" ref={viewportRef}>
       <div className="video-canvas" style={{ width: frameWidth, height: frameHeight, aspectRatio: frameAspect }} ref={canvasRef} onPointerDown={begin} onPointerMove={move} onPointerUp={() => { const wasEditingArea = Boolean(startRef.current && editor.editArea && !editingOcrArea); startRef.current = null; if (wasEditingArea) void editor.saveSubtitleArea(editableAreaRef.current); }} onPointerCancel={() => { startRef.current = null; }}>
-        <div className={`preview-media-layer ${activeImageUrl ? 'image-mode' : 'video-mode'}`} style={activeImageUrl ? undefined : { transform: `scale(${editor.videoScale})` }}>
-          {activeImageUrl ? <img
-            ref={imageRef}
-            className={`preview-image ${canDragActiveImage ? 'draggable' : ''} ${imageDragRef.current ? 'dragging' : ''}`}
-            style={{
-              objectFit: editor.fitMode,
-              left: `${activeImageTransform.x * 100}%`,
-              top: `${activeImageTransform.y * 100}%`,
-              transform: `translate(-50%, -50%) scale(${activeImageTransform.scale}) rotate(${activeImageTransform.rotation}deg)`,
-              opacity: activeImageTransform.opacity,
-              filter: activeImageTransform.blur > 0 ? `blur(${activeImageTransform.blur}px)` : undefined,
-            }}
-            src={activeImageUrl}
-            alt={editor.activeTimelineItem?.name || 'Timeline image'}
-            onPointerDown={beginImageDrag}
-            onPointerMove={moveImageDrag}
-            onPointerUp={finishImageDrag}
-            onPointerCancel={finishImageDrag}
-            onLoad={(event) => {
-              const image = event.currentTarget;
-              setVideoSize({ width: image.naturalWidth || 16, height: image.naturalHeight || 9 });
-              setLoading(false); setError('');
-            }}
-            onError={() => { setLoading(false); setError('This image cannot be loaded in the preview.'); }}
-          /> : sourceUrl ? <video
+        <div className="preview-media-layer video-mode" style={{ transform: `scale(${editor.videoScale})` }}>
+          {sourceUrl ? <video
             key={`${activeVideoId || editor.project.id}-${editor.previewSource}-${editor.effectivePreviewAudioMode}-${sourceAudioMuted ? 'muted-source' : 'source'}`}
             ref={videoRef}
             style={{ objectFit: editor.fitMode }}
@@ -631,10 +623,10 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
             onLoadedData={() => { setLoading(false); setError(''); }}
             onTimeUpdate={(event) => {
               const localTime = event.currentTarget.currentTime / editor.videoSpeed;
-              const timelineTime = editor.activeTimelineItem ? editor.activeTimelineItem.start + localTime - (editor.activeTimelineItem.sourceStart || 0) : localTime;
+              const timelineTime = activePlaybackItem ? activePlaybackItem.start + localTime - (activePlaybackItem.sourceStart || 0) : localTime;
               syncSourceAudio(event.currentTarget);
-              if (editor.activeTimelineItem && localTime >= editor.activeTimelineItem.duration) {
-                editor.setPlayhead(Math.min(editor.duration, editor.activeTimelineItem.start + editor.activeTimelineItem.duration + 0.001));
+              if (activePlaybackItem && localTime >= activePlaybackItem.duration) {
+                editor.setPlayhead(Math.min(editor.duration, activePlaybackItem.start + activePlaybackItem.duration + 0.001));
                 return;
               }
               editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
@@ -653,8 +645,46 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
               }
             }}
           /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
+          {activeImageItems.map((item, index) => {
+            const isTopImage = index === activeImageItems.length - 1;
+            const baseTransform = imageTransformValue(item);
+            const animation = evaluateImageAnimation(item, editor.playhead - item.start);
+            const transform = isTopImage ? activeImageTransform : composeImageTransform(baseTransform, animation);
+            const imageUrl = item.projectAssetId
+              ? `${API_BASE}/project-assets/${item.projectAssetId}/download?preview=1`
+              : item.sourceAssetId ? `${API_BASE}/assets/${item.sourceAssetId}/download?preview=1` : '';
+            if (!imageUrl) return null;
+            return <img
+              key={item.id}
+              ref={isTopImage ? imageRef : undefined}
+              className={`preview-image ${isTopImage && canDragActiveImage ? 'draggable' : ''} ${isTopImage && imageDragRef.current ? 'dragging' : ''}`}
+              style={{
+                zIndex: index + 1,
+                objectFit: editor.fitMode,
+                left: `${transform.x * 100}%`,
+                top: `${transform.y * 100}%`,
+                transform: `translate(-50%, -50%) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
+                opacity: transform.opacity,
+                filter: transform.blur > 0 ? `blur(${transform.blur}px)` : undefined,
+              }}
+              src={imageUrl}
+              alt={item.name || 'Timeline image'}
+              onPointerDown={isTopImage ? beginImageDrag : undefined}
+              onPointerMove={isTopImage ? moveImageDrag : undefined}
+              onPointerUp={isTopImage ? finishImageDrag : undefined}
+              onPointerCancel={isTopImage ? finishImageDrag : undefined}
+              onLoad={(event) => {
+                if (!sourceUrl && isTopImage) setVideoSize({ width: event.currentTarget.naturalWidth || 16, height: event.currentTarget.naturalHeight || 9 });
+                setLoading(false); setError('');
+              }}
+              onError={() => {
+                setLoading(false);
+                if (!sourceUrl && isTopImage) setError('This image cannot be loaded in the preview.');
+              }}
+            />;
+          })}
           <SparkleEffectCanvas effects={previewEffects} />
-          {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
+          {loading && posterUrl && !activeImageItems.length && !error && <img className="preview-poster" src={posterUrl} alt="" />}
           {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
           {(editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''}`} style={box}>
             <i className="handle tl" /><i className="handle tr" /><i className="handle bl" /><i className="handle br" />

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class AppConfig:
     models_dir: Path = MODELS_DIR
     douyin_cookie_path: Path = DOUYIN_COOKIE_PATH
     gemini_api_key_path: Path = WORKSPACE_ROOT / "gemini_api_key.txt"
+    pexels_api_key_path: Path = WORKSPACE_ROOT / "pexels_api_key.txt"
     douyin_downloader_config_path: Path = DOUYIN_DOWNLOADER_CONFIG_PATH
     douyin_downloader_root: Path = DOUYIN_DOWNLOADER_ROOT
     douyin_downloader_python: Path = DOUYIN_DOWNLOADER_PYTHON
@@ -54,6 +56,9 @@ class AppConfig:
     vsr_python: Path = VSR_PYTHON
     audio_separator_root: Path = AUDIO_SEPARATOR_ROOT
     audio_separator_exe: Path = AUDIO_SEPARATOR_EXE
+    # A deployment environment variable is the fallback; Settings can save an
+    # application-local key without ever returning it to the frontend.
+    pexels_api_key: str = os.getenv("PEXELS_API_KEY", "").strip()
 
 
 def ensure_dirs(config: AppConfig) -> None:
