@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
-import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Upload, Volume2, Trash2 } from 'lucide-react';
+import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Sparkles, Upload, Volume2, Trash2 } from 'lucide-react';
 import { LANGUAGES, SOURCE_LANGUAGES, defaultTtsLanguage, formatDuration, getAssetGroup, isMediaFileAsset, ttsLanguageOptions } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 import { JobProgress } from '../common/JobProgress';
 import { SliderNumericField } from './NumericField';
+import { VIDEO_EFFECTS } from '../../config/videoEffects';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
@@ -15,6 +16,7 @@ const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, str
   ['remove', Eraser, 'Remove / Hide', 'Clean source captions'],
   ['voiceover', Volume2, 'Voiceover', 'Generate and merge TTS'],
   ['audio', Music2, 'Audio', 'Source audio controls'],
+  ['effects', Sparkles, 'Effects', 'Native FFmpeg effects'],
   ['export', Share2, 'Export', 'Deliver versions and assets'],
 ];
 
@@ -218,6 +220,7 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
     remove: ['remove'],
     voiceover: ['tts', 'tts-segment', 'tts-mux'],
     audio: ['audio-separate'],
+    effects: [],
     export: ['project-export'],
   };
   const currentJobKinds = jobKinds[editor.activeTool] || [];
@@ -248,6 +251,15 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
         ? <><label>Active SRT<input value={editor.srt.asset?.name || 'No active SRT'} readOnly /></label><p className="form-help">The longest line in the active SRT is sampled once with OCR. Its text box becomes the blur area for the whole video.</p></>
        : <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}><button onClick={() => editor.setEditArea(!editor.editArea)}><Settings2 size={15} /> {editor.editArea ? 'Finish area' : 'Adjust blur area on preview'}</button><button onClick={() => void editor.saveSubtitleArea({ xmin: .04, xmax: .96, ymin: .60, ymax: .98 })}>Reset bottom area</button></div>}
       <button className="primary full" disabled={busy || (editor.removeMethod === 'auto' && !editor.srt.asset)} onClick={editor.remove}><Eraser size={16} /> {editor.activeBlurEffect ? 'Update blur effect' : 'Add blur effect'}</button>
+    </>}
+    {editor.activeTool === 'effects' && <>
+      <p className="form-help">Effects are timeline clips: stack them on FX tracks, trim or move them, and tune their parameters in Inspector. Preview is an approximation; export uses native FFmpeg filters.</p>
+      <div className="effect-library">
+        {VIDEO_EFFECTS.map((effect) => <button key={effect.id} className="effect-library-card" disabled={busy || !editor.project.workspaceId} onClick={() => void editor.addTimelineEffect(effect.id)}>
+          <Sparkles size={15} /><span><strong>{effect.label}</strong><small>{effect.description}</small></span><Plus size={14} />
+        </button>)}
+      </div>
+      {!editor.project.workspaceId && <p className="form-help">Open a workspace project to add effects to its timeline.</p>}
     </>}
     {editor.activeTool === 'voiceover' && <>
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>

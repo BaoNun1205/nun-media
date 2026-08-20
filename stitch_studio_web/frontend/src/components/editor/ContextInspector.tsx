@@ -6,6 +6,7 @@ import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, font
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import { NumericField as NumericControl, SliderNumericField } from './NumericField';
 import { ImageAnimationControls } from './ImageAnimationControls';
+import { clampEffectParam, effectDefinitionForItem } from '../../config/videoEffects';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 
@@ -17,6 +18,7 @@ export function ContextInspector({ editor }: { editor: EditorController }) {
       : editor.selection.type === 'timeline-items' && isMergedVoiceSelection(editor) ? <VoiceoverInspector editor={editor} />
       : editor.selection.type === 'timeline-items' && editor.selectedTimelineAudioItem ? <AudioClipInspector editor={editor} item={editor.selectedTimelineAudioItem} />
       : editor.selection.type === 'timeline-items' && editor.selectedTimelineImageItem ? <ImageClipInspector editor={editor} item={editor.selectedTimelineImageItem} />
+      : editor.selection.type === 'timeline-items' && selectedTimelineEffect(editor) ? <TimelineEffectInspector editor={editor} item={selectedTimelineEffect(editor)!} />
       : editor.selection.type === 'timeline-items' ? <MultiSelectionInspector editor={editor} />
       : editor.selection.type === 'video' ? <VideoInspectorControls editor={editor} />
       : editor.selection.type === 'subtitle-track' ? <TrackInspector editor={editor} />
@@ -32,6 +34,7 @@ function selectionName(editor: EditorController) {
   if (value.type === 'subtitle') return `Subtitle #${value.index}`;
   if (value.type === 'voice') return `Voice #${value.index}`;
   if (value.type === 'subtitle-track') return 'Subtitle track';
+  if (value.type === 'timeline-items' && selectedTimelineEffect(editor)) return selectedTimelineEffect(editor)?.name || 'Video effect';
   if (value.type === 'timeline-items') return value.track ? `${value.track} track` : `${value.keys.length} selected`;
   if (value.type === 'effect') return value.operation === 'blur' ? 'Blur effect' : 'Rendered operation';
   return value.type === 'project' ? 'Project' : value.type;
@@ -39,6 +42,12 @@ function selectionName(editor: EditorController) {
 
 function isMergedVoiceSelection(editor: EditorController) {
   return editor.selection.type === 'timeline-items' && editor.selection.keys.length === 1 && editor.selection.keys[0] === 'voice:merged';
+}
+
+function selectedTimelineEffect(editor: EditorController) {
+  const selection = editor.selection;
+  if (selection.type !== 'timeline-items' || selection.keys.length !== 1) return undefined;
+  return editor.timelineItems.find((item) => item.id === selection.keys[0] && item.kind === 'effect');
 }
 
 function MultiSelectionInspector({ editor }: { editor: EditorController }) {
@@ -134,6 +143,34 @@ function ImageClipInspector({ editor, item }: { editor: EditorController; item: 
 
     <Section title="Animation">
       <ImageAnimationControls editor={editor} item={item} />
+    </Section>
+  </>;
+}
+
+function TimelineEffectInspector({ editor, item }: { editor: EditorController; item: TimelineItem }) {
+  const definition = effectDefinitionForItem(item);
+  const commit = useTimelineItemDraft(editor, 'Updated video effect.');
+  if (!definition) return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{item.name}</h2><p>Unknown timeline effect</p></div></div><p className="inspector-help">This effect is preserved in the project but cannot be edited or exported until its registry entry is available.</p></>;
+  const update = (updates: Record<string, number>, finish = false) => commit.update(item.id, (clip) => ({
+    ...clip,
+    params: {
+      ...(clip.params || {}),
+      ...Object.fromEntries(Object.entries(updates).map(([key, value]) => [key, clampEffectParam(definition, key, value)])),
+    },
+  }), finish);
+  const updateTiming = (key: 'start' | 'duration', value: number, finish: boolean) => commit.update(item.id, (clip) => ({
+    ...clip,
+    [key]: key === 'start' ? clampNumber(value, 0, Math.max(0, editor.duration)) : clampNumber(value, .05, Math.max(.05, editor.duration - clip.start)),
+  }), finish);
+  return <>
+    <div className="inspector-hero"><span><Info size={18} /></span><div><h2>{definition.label}</h2><p>{definition.description}</p></div></div>
+    <Section title="Timing">
+      <InspectorRangeField label="Start" value={item.start} min={0} max={Math.max(0, editor.duration)} step={.05} suffix="s" onChange={(value, finish) => updateTiming('start', value, finish)} />
+      <InspectorRangeField label="Duration" value={item.duration} min={.05} max={Math.max(.05, editor.duration - item.start)} step={.05} suffix="s" onChange={(value, finish) => updateTiming('duration', value, finish)} />
+    </Section>
+    <Section title="Parameters">
+      {definition.params.map((parameter) => <InspectorRangeField key={parameter.key} label={parameter.label} value={Number(item.params?.[parameter.key] ?? parameter.default)} min={parameter.min} max={parameter.max} step={parameter.step} suffix="" onChange={(value, finish) => update({ [parameter.key]: value }, finish)} />)}
+      <button className="inspector-reset-button" type="button" onClick={() => update(Object.fromEntries(definition.params.map((parameter) => [parameter.key, parameter.default])), true)}><RotateCcw size={14} /> Reset effect</button>
     </Section>
   </>;
 }

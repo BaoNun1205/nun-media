@@ -1,0 +1,12 @@
+[
+  {"id":"film_grain","label":"Film Grain","description":"Animated analog grain","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.32,"min":0,"max":1,"step":0.01},{"key":"seed","label":"Seed","type":"number","default":17,"min":0,"max":9999,"step":1}]},
+  {"id":"vignette","label":"Vignette","description":"Soft darkened edges","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.45,"min":0,"max":1,"step":0.01}]},
+  {"id":"snow","label":"Snow","description":"Procedural falling snow","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.4,"min":0,"max":1,"step":0.01},{"key":"seed","label":"Seed","type":"number","default":23,"min":0,"max":9999,"step":1}]},
+  {"id":"rain","label":"Rain","description":"Procedural diagonal rain","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.35,"min":0,"max":1,"step":0.01},{"key":"speed","label":"Speed","type":"number","default":0.5,"min":0,"max":1,"step":0.01}]},
+  {"id":"dust","label":"Dust & Fog","description":"Atmospheric haze and dust","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.25,"min":0,"max":1,"step":0.01},{"key":"warmth","label":"Warmth","type":"number","default":0.5,"min":0,"max":1,"step":0.01}]},
+  {"id":"vhs","label":"VHS","description":"Tape noise and color drift","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.45,"min":0,"max":1,"step":0.01},{"key":"seed","label":"Seed","type":"number","default":37,"min":0,"max":9999,"step":1}]},
+  {"id":"scanlines","label":"Scanlines","description":"Retro CRT scanlines","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.35,"min":0,"max":1,"step":0.01},{"key":"spacing","label":"Spacing","type":"number","default":4,"min":2,"max":12,"step":1}]},
+  {"id":"rgb_split","label":"RGB Split","description":"Chromatic aberration","params":[{"key":"amount","label":"Amount","type":"number","default":0.35,"min":0,"max":1,"step":0.01}]},
+  {"id":"glitch","label":"Glitch","description":"Digital color glitch","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.4,"min":0,"max":1,"step":0.01},{"key":"seed","label":"Seed","type":"number","default":71,"min":0,"max":9999,"step":1}]},
+  {"id":"glow","label":"Glow","description":"Soft bright light bloom","params":[{"key":"intensity","label":"Intensity","type":"number","default":0.3,"min":0,"max":1,"step":0.01},{"key":"radius","label":"Radius","type":"number","default":0.35,"min":0,"max":1,"step":0.01}]}
+]

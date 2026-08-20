@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Camera, Expand, Maximize2, Pause, Play, RotateCcw, SkipBack, SkipForward, Volume2 } from 'lucide-react';
 import { API_BASE } from '../../services/api';
 import { formatClock } from '../../lib/studio';
@@ -9,6 +9,7 @@ import type { SubtitleArea, TimelineItem } from '../../types/studio';
 import type { TextStyle } from '../../types/textStyle';
 import { evaluateImageAnimation, composeImageTransform, type BaseImageTransform } from '../../utils/image-animation/evaluateImageAnimation';
 import { getDefaultAnimationDelta } from '../../utils/image-animation/presets';
+import { activeVideoEffects, effectIdForItem, previewFilterForEffects } from '../../config/videoEffects';
 
 type DragMode = 'draw' | 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type FrameFormat = 'original' | '16:9' | '9:16' | '1:1' | '4:5';
@@ -109,6 +110,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead >= item.start
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
+  const activeEffects = activeVideoEffects(editor.timelineItems, editor.playhead);
+  const previewEffectFilter = previewFilterForEffects(activeEffects);
   const editingOcrArea = editor.activeTool === 'subtitles' && editor.subtitleSource === 'hardsub' && editor.ocrAreaMode === 'custom';
   const activeImageSelected = Boolean(activeImageItem && editor.selection.type === 'timeline-items' && editor.selection.keys.length === 1 && editor.selection.keys[0] === activeImageItem.id);
   const canDragActiveImage = Boolean(activeImageItem && activeImageSelected && !editingOcrArea && !editor.editArea);
@@ -585,7 +588,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     </div>
     <div className="preview-viewport" ref={viewportRef}>
       <div className="video-canvas" style={{ width: frameWidth, height: frameHeight, aspectRatio: frameAspect }} ref={canvasRef} onPointerDown={begin} onPointerMove={move} onPointerUp={() => { const wasEditingArea = Boolean(startRef.current && editor.editArea && !editingOcrArea); startRef.current = null; if (wasEditingArea) void editor.saveSubtitleArea(editableAreaRef.current); }} onPointerCancel={() => { startRef.current = null; }}>
-        <div className={`preview-media-layer ${activeImageUrl ? 'image-mode' : 'video-mode'}`} style={activeImageUrl ? undefined : { transform: `scale(${editor.videoScale})` }}>
+        <div className={`preview-media-layer ${activeImageUrl ? 'image-mode' : 'video-mode'}`} style={activeImageUrl ? { filter: previewEffectFilter } : { transform: `scale(${editor.videoScale})`, filter: previewEffectFilter }}>
           {activeImageUrl ? <img
             ref={imageRef}
             className={`preview-image ${canDragActiveImage ? 'draggable' : ''} ${imageDragRef.current ? 'dragging' : ''}`}
@@ -648,6 +651,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
             }}
           /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
           {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
+          {activeEffects.map((effect) => <div key={effect.id} className={`preview-video-effect effect-${effectIdForItem(effect)}`} style={{ '--effect-intensity': Number(effect.params?.intensity ?? effect.params?.amount ?? .3) } as CSSProperties} aria-hidden="true" />)}
           {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
           {(editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''}`} style={box}>
             <i className="handle tl" /><i className="handle tr" /><i className="handle bl" /><i className="handle br" />

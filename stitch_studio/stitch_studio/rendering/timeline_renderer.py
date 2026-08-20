@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from stitch_studio.image_animation_expr import PRESETS_MAP, evaluate_channel_expr
+from stitch_studio.rendering.effects import add_timeline_effects
 from stitch_studio.srt import read_srt
 
 
@@ -258,10 +259,6 @@ def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any
         item for item in _items_in_track_order(ctx)
         if _kind(item) in {"video", "image"} and _visual_enabled(ctx, item)
     ]
-    unsupported_effects = [item for item in _items_in_track_order(ctx) if _kind(item) == "effect" and _visual_enabled(ctx, item)]
-    if unsupported_effects:
-        names = ", ".join(str(item.get("name") or item.get("id") or "effect") for item in unsupported_effects[:3])
-        raise RuntimeError(f"Unsupported timeline effect for export: {names}")
     for layer_index, item in enumerate(visual_items):
         source = resolve_timeline_item_source(ctx.project, ctx.storage, item)
         if not source:
@@ -403,7 +400,15 @@ def _add_image_layer(ctx: RenderContext, registry: InputRegistry, filters: list[
 
 
 def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], current: str) -> str:
-    label = _add_canvas_effects(ctx, filters, current)
+    timeline_effects = [
+        item for item in _items_in_track_order(ctx)
+        if _kind(item) == "effect" and _visual_enabled(ctx, item)
+    ]
+    try:
+        label = add_timeline_effects(filters, current, timeline_effects, width=ctx.width, height=ctx.height, fps=ctx.fps)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    label = _add_canvas_effects(ctx, filters, label)
     
     srt_events = []
     text_events = []
@@ -549,16 +554,19 @@ def _run_ffmpeg_with_progress(command: list[str], duration: float, progress: Cal
         raise RuntimeError(f"Failed to spawn FFmpeg (OSError: {exc}). Command length: {len(cmd_str)}") from exc
     output_lines: list[str] = []
     assert proc.stdout is not None
-    for line in proc.stdout:
-        output_lines.append(line)
-        if progress and line.startswith("out_time_ms="):
-            try:
-                current = float(line.split("=", 1)[1].strip()) / 1_000_000
-            except ValueError:
-                continue
-            percent = 15 + min(80, int((current / max(duration, 0.001)) * 80))
-            progress(f"ffmpeg progress: {percent}% Rendering video")
-    proc.wait()
+    try:
+        for line in proc.stdout:
+            output_lines.append(line)
+            if progress and line.startswith("out_time_ms="):
+                try:
+                    current = float(line.split("=", 1)[1].strip()) / 1_000_000
+                except ValueError:
+                    continue
+                percent = 15 + min(80, int((current / max(duration, 0.001)) * 80))
+                progress(f"ffmpeg progress: {percent}% Rendering video")
+        proc.wait()
+    finally:
+        proc.stdout.close()
     output = "".join(output_lines)
     return subprocess.CompletedProcess(command, proc.returncode, output, output)
 

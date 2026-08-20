@@ -608,7 +608,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       </div>;
     }
     return <div key={track.id} data-track-row={track.id} className={rowClass}>
-      {rowItems.map((item) => <button key={item.id} data-timeline-item={item.id} className={`effect-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>
+      {rowItems.map((item) => <button key={item.id} data-timeline-item={item.id} className={`effect-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>
         <Flag size={12} /> {item.name}
       </button>)}
     </div>;

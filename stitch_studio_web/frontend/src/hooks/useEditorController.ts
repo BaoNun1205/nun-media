@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_AREA, TTS_FIT, defaultTtsLanguage, isTranslatedAsset, isTtsLanguageSupported, serializeSrt } from '../lib/studio';
 import { DEFAULT_TEXT_STYLE, textStylePresetById } from '../config/textStylePresets';
+import { VIDEO_EFFECT_BY_ID, defaultEffectParams } from '../config/videoEffects';
 import { sceneFromProject, timelineStateFromSceneOrProject, timelineStateToScene } from '../editor-core/adapters';
 import {
   addTrack as addTrackToTimelineState,
@@ -900,6 +901,42 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     return commitTimelineState(state, `Added ${track.id}.`, previous);
   }
 
+  async function addTimelineEffect(effectId: string) {
+    if (!project.workspaceId) {
+      setMessage('Open a workspace project before adding effects.');
+      return false;
+    }
+    const effect = VIDEO_EFFECT_BY_ID.get(effectId);
+    if (!effect) {
+      setMessage('Unknown video effect.');
+      return false;
+    }
+    const previous = cloneTimelineState(timelineState);
+    const duration = Math.max(0.05, Math.min(5, Math.max(0.05, endOfTimeline(timelineState.items) - playhead || 5)));
+    const placement = resolvePlacement({ state: timelineState, kind: 'effect', requestedStart: playhead, duration });
+    const item: TimelineItem = {
+      id: nextTimelineClipId('effect'),
+      kind: 'effect',
+      track: placement.trackId,
+      name: effect.label,
+      start: frameRound(placement.start, timelineState.fps),
+      duration: frameRound(duration, timelineState.fps),
+      sourceStart: 0,
+      params: { effectId: effect.id, ...defaultEffectParams(effect) },
+    };
+    const next = normalizeTimelineState({
+      ...timelineState,
+      tracks: placement.createdTrack ? [...timelineState.tracks, placement.createdTrack] : timelineState.tracks,
+      items: [...timelineState.items, item],
+    });
+    const saved = await commitTimelineState(next, `Added ${effect.label}.`, previous);
+    if (saved) {
+      setSelection({ type: 'timeline-items', keys: [item.id], track: item.track });
+      setPlayhead(item.start);
+    }
+    return saved;
+  }
+
   async function removeTimelineTrack(trackId: string) {
     const previous = cloneTimelineState(timelineState);
     const state = removeTrackFromTimelineState(timelineState, trackId);
@@ -1630,7 +1667,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     ttsVoice, setTtsVoice, ttsRate, setTtsRate, voices,
     loadSrt, loadSegments, loadTimelineIssues, saveSrt, copySrt, pasteSrt, updateSegmentTime, deleteSegment, deleteSelectedSubtitles, moveSubtitleSegments, moveSelectedSubtitles, replaceWithTranslated, undoDraft: undoEditorAction, redoDraft: redoEditorAction, importSrt, generateSrt, translate, remove, deleteBlurEffect, insert, undo,
     generateVoice, mergeVoice, muxVoice, deleteVoiceover, remapTimeline, copyTimelineIssues, playVoice, cancelJob, refresh, openProjectVideo: onOpenVersion, addVideoToTimeline, addProjectAssetToTimeline, deleteTimelineItems, previewTimelineItems, commitTimelineItems, commitTimelineState,
-    splitSelectedTimelineItems, duplicateSelectedTimelineItems, copyTimelineItems, pasteTimelineItemsAt, addTimelineTrack, removeTimelineTrack, toggleTimelineTrackMute, toggleTimelineTrackVisibility, setTimelineOption, toggleTimelineBookmark, captureCurrentFrame,
+    splitSelectedTimelineItems, duplicateSelectedTimelineItems, copyTimelineItems, pasteTimelineItemsAt, addTimelineTrack, addTimelineEffect, removeTimelineTrack, toggleTimelineTrackMute, toggleTimelineTrackVisibility, setTimelineOption, toggleTimelineBookmark, captureCurrentFrame,
   };
 }
 

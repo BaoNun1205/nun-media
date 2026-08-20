@@ -3,7 +3,7 @@ import type { TextStyle } from './textStyle';
 import type { ImageAnimationConfig } from '../utils/image-animation/types';
 
 export type ViewKey = 'projects' | 'templates' | 'downloads' | 'tts' | 'settings' | 'editor' | 'youtube';
-export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'export';
+export type ToolKey = 'subtitles' | 'translate' | 'remove' | 'insert' | 'voiceover' | 'audio' | 'effects' | 'export';
 export type AudioMode = 'original' | 'remove_vocals' | 'remove_music';
 export type InspectorSelection =
   | { type: 'project' }
