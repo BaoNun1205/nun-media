@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
-import { Captions, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Settings2, Share2, Sparkles, Upload, Volume2, Trash2 } from 'lucide-react';
+import { Captions, ChevronLeft, ChevronRight, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Search, Settings2, Share2, Sparkles, Upload, Volume2, Trash2 } from 'lucide-react';
 import { LANGUAGES, SOURCE_LANGUAGES, defaultTtsLanguage, formatDuration, getAssetGroup, isMediaFileAsset, ttsLanguageOptions } from '../../lib/studio';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 import { JobProgress } from '../common/JobProgress';
 import { SliderNumericField } from './NumericField';
-import { VIDEO_EFFECTS } from '../../config/videoEffects';
+import { VIDEO_EFFECT_CATEGORIES, VIDEO_EFFECTS } from '../../config/videoEffects';
+import { EffectThumbnail } from './EffectThumbnail';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
@@ -16,7 +17,7 @@ const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, str
   ['remove', Eraser, 'Remove / Hide', 'Clean source captions'],
   ['voiceover', Volume2, 'Voiceover', 'Generate and merge TTS'],
   ['audio', Music2, 'Audio', 'Source audio controls'],
-  ['effects', Sparkles, 'Effects', 'Native FFmpeg effects'],
+  ['effects', Sparkles, 'Effects', 'Browse visual effects'],
   ['export', Share2, 'Export', 'Deliver versions and assets'],
 ];
 
@@ -211,6 +212,36 @@ export function AssetToolPanel({ editor, onOpenExport }: { editor: EditorControl
   );
 }
 
+function EffectsBrowser({ editor, busy }: { editor: EditorController; busy: boolean }) {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<(typeof VIDEO_EFFECT_CATEGORIES)[number]>('Trending');
+  const [selectedId, setSelectedId] = useState('');
+  const categoryRailRef = useRef<HTMLDivElement>(null);
+  const normalized = query.trim().toLowerCase();
+  const trending = new Set(['film_grain', 'vhs', 'glow', 'rgb_split', 'block_glitch', 'color_grade']);
+  const effects = VIDEO_EFFECTS.filter((effect) => {
+    const categoryMatch = category === 'Trending' ? trending.has(effect.id) : effect.category === category;
+    // Search intentionally spans every category; category chips are for browsing.
+    return normalized
+      ? `${effect.label} ${effect.description}`.toLowerCase().includes(normalized)
+      : categoryMatch;
+  });
+  // A previous selection must not look like a search result after filtering.
+  const selected = effects.find((effect) => effect.id === selectedId);
+  const add = (effectId: string) => void editor.addTimelineEffect(effectId);
+  const scrollCategories = (direction: -1 | 1) => categoryRailRef.current?.scrollBy({ left: direction * 150, behavior: 'smooth' });
+  return <div className="effects-browser">
+    <div className="effects-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search effects" aria-label="Search effects" /></div>
+    <div className="effects-category-row"><button className="effects-category-nav" type="button" onClick={() => scrollCategories(-1)} aria-label="Show previous effect categories"><ChevronLeft size={13} /></button><div ref={categoryRailRef} className="effects-categories" onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.currentTarget.scrollLeft += event.deltaY; event.preventDefault(); } }}>{VIDEO_EFFECT_CATEGORIES.map((item) => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><button className="effects-category-nav" type="button" onClick={() => scrollCategories(1)} aria-label="Show more effect categories"><ChevronRight size={13} /></button></div>
+    <div className="effects-grid">{effects.map((effect) => <button key={effect.id} className={`effect-tile ${selectedId === effect.id ? 'selected' : ''}`} disabled={busy || !editor.project.workspaceId} onClick={() => setSelectedId(effect.id)} onDoubleClick={() => add(effect.id)} title={`${effect.description} — double-click to add`}>
+      <span className="effect-tile-image"><EffectThumbnail effect={effect} /><i className="effect-tile-add" onClick={(event) => { event.preventDefault(); event.stopPropagation(); add(effect.id); }} title={`Add ${effect.label}`}><Plus size={13} /></i></span><strong>{effect.label}</strong>
+    </button>)}</div>
+    {effects.length === 0 && <p className="effects-empty">No effects match “{query.trim() || category}”. Snow, Rain, and Fog are not in this library.</p>}
+    {selected && <div className="effects-selection"><span><strong>{selected.label}</strong><small>{selected.description}</small></span><button className="primary" disabled={busy || !editor.project.workspaceId} onClick={() => add(selected.id)}><Plus size={14} /> Add</button></div>}
+    {!editor.project.workspaceId && <p className="form-help">Open a workspace project to add effects to its timeline.</p>}
+  </div>;
+}
+
 function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenExport: () => void }) {
   const importSrtRef = useRef<HTMLInputElement>(null);
   const busy = editor.activeJobs.length > 0;
@@ -252,15 +283,7 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
        : <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}><button onClick={() => editor.setEditArea(!editor.editArea)}><Settings2 size={15} /> {editor.editArea ? 'Finish area' : 'Adjust blur area on preview'}</button><button onClick={() => void editor.saveSubtitleArea({ xmin: .04, xmax: .96, ymin: .60, ymax: .98 })}>Reset bottom area</button></div>}
       <button className="primary full" disabled={busy || (editor.removeMethod === 'auto' && !editor.srt.asset)} onClick={editor.remove}><Eraser size={16} /> {editor.activeBlurEffect ? 'Update blur effect' : 'Add blur effect'}</button>
     </>}
-    {editor.activeTool === 'effects' && <>
-      <p className="form-help">Effects are timeline clips: stack them on FX tracks, trim or move them, and tune their parameters in Inspector. Preview is an approximation; export uses native FFmpeg filters.</p>
-      <div className="effect-library">
-        {VIDEO_EFFECTS.map((effect) => <button key={effect.id} className="effect-library-card" disabled={busy || !editor.project.workspaceId} onClick={() => void editor.addTimelineEffect(effect.id)}>
-          <Sparkles size={15} /><span><strong>{effect.label}</strong><small>{effect.description}</small></span><Plus size={14} />
-        </button>)}
-      </div>
-      {!editor.project.workspaceId && <p className="form-help">Open a workspace project to add effects to its timeline.</p>}
-    </>}
+    {editor.activeTool === 'effects' && <EffectsBrowser editor={editor} busy={busy} />}
     {editor.activeTool === 'voiceover' && <>
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label>Engine<select value={editor.ttsEngine} onChange={(e) => { const next = e.target.value; editor.setTtsEngine(next); editor.setTtsLanguage(defaultTtsLanguage(next)); }}><option value="vieneu">VieNeu Vietnamese</option><option value="capcut">CapCut Multi-language</option><option value="pocket">Pocket TTS</option></select></label>

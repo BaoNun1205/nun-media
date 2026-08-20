@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from stitch_studio.image_animation_expr import PRESETS_MAP, evaluate_channel_expr
-from stitch_studio.rendering.effects import add_timeline_effects
 from stitch_studio.srt import read_srt
 
 
@@ -404,10 +403,12 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
         item for item in _items_in_track_order(ctx)
         if _kind(item) == "effect" and _visual_enabled(ctx, item)
     ]
-    try:
-        label = add_timeline_effects(filters, current, timeline_effects, width=ctx.width, height=ctx.height, fps=ctx.fps)
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+    if timeline_effects:
+        raise RuntimeError(
+            "This timeline contains WebGPU effects. Server FFmpeg export cannot render WebGPU shaders; "
+            "use a WebGPU-enabled client render target."
+        )
+    label = current
     label = _add_canvas_effects(ctx, filters, label)
     
     srt_events = []
