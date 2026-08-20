@@ -58,6 +58,7 @@ export const studioApi = {
   },
   projects: () => request<Project[]>('/videos'),
   jobs: () => request<Job[]>('/jobs'),
+  cancelJob: (id: number) => request<{ jobId: number; status: string }>(`/jobs/${id}/cancel`, { method: 'POST' }),
   settings: () => request<StudioSettings>('/settings'),
   saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string }) =>
     request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
