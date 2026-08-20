@@ -6,7 +6,7 @@ import { DEFAULT_FONT_FAMILY, FONT_CATEGORIES, FONT_REGISTRY, fontByFamily, font
 import { TextStylePresetGrid } from './text-style/TextStylePresetGrid';
 import { NumericField as NumericControl, SliderNumericField } from './NumericField';
 import { ImageAnimationControls } from './ImageAnimationControls';
-import { clampEffectParam, effectDefinitionForItem } from '../../config/videoEffects';
+import { clampEffectParam, effectDefinitionForItem } from '../../config/sparkleEffects';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 

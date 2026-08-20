@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { TimelineItem } from '../../types/studio';
 import { Section, InspectorRangeField, useTimelineItemDraft } from './ContextInspector';
-import { IN_PRESETS, OUT_PRESETS, COMBO_PRESETS } from '../../utils/image-animation/presets';
+import { IN_PRESETS, OUT_PRESETS, COMBO_PRESETS, defaultComboLoopMode } from '../../utils/image-animation/presets';
 import type { ImageAnimationConfig } from '../../utils/image-animation/types';
 import { ImageAnimationPresetTile } from './image-animation/ImageAnimationPresetTile';
 
@@ -32,6 +32,22 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
   
   const inDur = config.in?.duration ?? 0.5;
   const outDur = config.out?.duration ?? 0.5;
+  const comboTiming = config.combo?.timing ?? 'fit';
+  const comboCycleSeconds = config.combo?.cycleSeconds ?? 1.2;
+  const comboIntensity = config.combo?.intensity ?? 1;
+  const comboLoopMode = config.combo?.loopMode ?? defaultComboLoopMode(currentCombo);
+  const updateCombo = (updates: Partial<NonNullable<ImageAnimationConfig['combo']>>, finish = false) => {
+    const combo = { presetId: currentCombo, timing: comboTiming, cycleSeconds: comboCycleSeconds, intensity: comboIntensity, loopMode: comboLoopMode, ...updates };
+    updateConfig({ combo }, finish);
+  };
+  const selectCombo = (presetId: string | null) => {
+    const loopMode = config.combo?.loopMode ?? defaultComboLoopMode(presetId);
+    updateConfig({ combo: { presetId, timing: comboTiming, cycleSeconds: comboCycleSeconds, intensity: comboIntensity, loopMode } }, true);
+    if (presetId) {
+      const sampleOffset = comboTiming === 'loop' ? comboCycleSeconds * .5 : duration * .5;
+      editor.setPlayhead(item.start + Math.max(.01, Math.min(Math.max(.01, duration - .01), sampleOffset)));
+    }
+  };
 
   return (
     <div className="animation-inspector">
@@ -113,13 +129,13 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
           </>
         )}
         
-        {activeTab === 'combo' && (
+        {activeTab === 'combo' && <>
           <div className="preset-grid">
             <ImageAnimationPresetTile
               presetId={null}
               type="combo"
               isActive={currentCombo === null}
-              onClick={() => updateConfig({ combo: { presetId: null } }, true)}
+              onClick={() => selectCombo(null)}
             />
             {COMBO_PRESETS.map(p => (
               <ImageAnimationPresetTile
@@ -127,11 +143,19 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
                 presetId={p.id}
                 type="combo"
                 isActive={currentCombo === p.id}
-                onClick={() => updateConfig({ combo: { presetId: p.id } }, true)}
+                onClick={() => selectCombo(p.id)}
               />
             ))}
           </div>
-        )}
+          {currentCombo && <Section title="Playback">
+            <label className="stack-label">Timing<select value={comboTiming} onChange={(event) => updateCombo({ timing: event.target.value as 'fit' | 'loop' }, true)}><option value="fit">Full clip</option><option value="loop">Loop</option></select></label>
+            {comboTiming === 'loop' && <>
+              <InspectorRangeField label="Cycle" value={comboCycleSeconds} min={.2} max={20} step={.1} suffix="s" onChange={(value, finish) => updateCombo({ cycleSeconds: value }, finish)} />
+              <label className="stack-label">Loop mode<select value={comboLoopMode} onChange={(event) => updateCombo({ loopMode: event.target.value as 'repeat' | 'pingPong' }, true)}><option value="repeat">Repeat</option><option value="pingPong">Ping-pong</option></select></label>
+            </>}
+            <InspectorRangeField label="Intensity" value={comboIntensity} min={0} max={2} step={.05} suffix="×" onChange={(value, finish) => updateCombo({ intensity: value }, finish)} />
+          </Section>}
+        </>}
       </div>
       
       <style>{`
@@ -263,4 +287,3 @@ export function ImageAnimationControls({ editor, item }: { editor: EditorControl
     </div>
   );
 }
-

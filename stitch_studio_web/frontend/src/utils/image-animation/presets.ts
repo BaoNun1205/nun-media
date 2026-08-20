@@ -450,7 +450,35 @@ export const COMBO_PRESETS: ImageAnimationPresetSpec[] = [
     channels: {
       scale: {
         type: 'keyframes',
-        points: [[0.0, 1.0], [0.25, 1.08], [0.5, 1.0], [0.75, 1.08], [1.0, 1.0]],
+        points: [[0.0, 1.0], [0.5, 1.08], [1.0, 1.0]],
+        easing: 'easeInOutSine',
+      }
+    }
+  },
+  {
+    id: 'zoom-in-out',
+    group: 'combo',
+    channels: {
+      scale: {
+        type: 'keyframes',
+        points: [[0.0, 1.0], [0.5, 1.16], [1.0, 1.0]],
+        easing: 'easeInOutSine',
+      }
+    }
+  },
+  {
+    id: 'elastic-wobble',
+    group: 'combo',
+    safeScale: 1.26,
+    channels: {
+      rotation: {
+        type: 'keyframes',
+        points: [[0.0, 0.0], [0.12, 7.0], [0.26, -5.5], [0.42, 3.5], [0.60, -2.0], [0.78, 0.8], [1.0, 0.0]],
+        easing: 'easeInOutSine',
+      },
+      translateX: {
+        type: 'keyframes',
+        points: [[0.0, 0.0], [0.12, 1.5], [0.26, -1.2], [0.42, 0.8], [0.60, -0.4], [0.78, 0.15], [1.0, 0.0]],
         easing: 'easeInOutSine',
       }
     }
@@ -471,6 +499,12 @@ export const COMBO_PRESETS: ImageAnimationPresetSpec[] = [
 
 export const PRESETS_MAP = new Map<string, ImageAnimationPresetSpec>();
 [...IN_PRESETS, ...OUT_PRESETS, ...COMBO_PRESETS].forEach(p => PRESETS_MAP.set(`${p.group}:${p.id}`, p));
+
+export function defaultComboLoopMode(presetId: string | null | undefined): 'repeat' | 'pingPong' {
+  return ['slow-zoom-in', 'slow-zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'ken-burns'].includes(presetId || '')
+    ? 'pingPong'
+    : 'repeat';
+}
 
 export function getPresetSpec(id?: string | null, group?: 'in' | 'out' | 'combo'): ImageAnimationPresetSpec | null {
   if (!id) return null;

@@ -1,7 +1,13 @@
 export interface ImageAnimationConfig {
   in?: { presetId: string | null; duration: number };
   out?: { presetId: string | null; duration: number };
-  combo?: { presetId: string | null; intensity?: number; speed?: number };
+  combo?: {
+    presetId: string | null;
+    timing?: 'fit' | 'loop';
+    cycleSeconds?: number;
+    intensity?: number;
+    loopMode?: 'repeat' | 'pingPong';
+  };
 }
 
 export interface AnimationDelta {

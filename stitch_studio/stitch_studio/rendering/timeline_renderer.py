@@ -405,8 +405,8 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
     ]
     if timeline_effects:
         raise RuntimeError(
-            "This timeline contains WebGPU effects. Server FFmpeg export cannot render WebGPU shaders; "
-            "use a WebGPU-enabled client render target."
+            "This timeline contains Sparkle canvas effects. Server FFmpeg export cannot reproduce a browser Sparkle scene; "
+            "remove the FX clips or use a future client-side Sparkle export target."
         )
     label = current
     label = _add_canvas_effects(ctx, filters, label)
@@ -608,39 +608,59 @@ def _animation_expressions(item: dict[str, Any], start: float, duration: float) 
     params = item.get("params") if isinstance(item.get("params"), dict) else {}
     animation = params.get("imageAnimation") if isinstance(params.get("imageAnimation"), dict) else {}
     current = f"(t-{start:.6f})"
-    combo_t = f"min(1,max(0,{current}/{max(duration, 0.001):.6f}))"
     in_cfg = animation.get("in") if isinstance(animation.get("in"), dict) else {}
     out_cfg = animation.get("out") if isinstance(animation.get("out"), dict) else {}
     combo_cfg = animation.get("combo") if isinstance(animation.get("combo"), dict) else {}
+    try:
+        combo_intensity = max(0.0, min(2.0, float(combo_cfg.get("intensity", 1))))
+    except (TypeError, ValueError):
+        combo_intensity = 1.0
+    try:
+        combo_cycle = max(0.1, min(20.0, float(combo_cfg.get("cycleSeconds", 1.2) or 1.2)))
+    except (TypeError, ValueError):
+        combo_cycle = 1.2
+    if combo_cfg.get("timing") == "loop":
+        combo_phase = f"(mod({current},{combo_cycle:.6f})/{combo_cycle:.6f})"
+        combo_t = f"if(lte({combo_phase},0.5),2*{combo_phase},2-2*{combo_phase})" if combo_cfg.get("loopMode") == "pingPong" else combo_phase
+    else:
+        combo_t = f"min(1,max(0,{current}/{max(duration, 0.001):.6f}))"
     in_dur = min(float(in_cfg.get("duration", 0.5) or 0.5), duration)
     out_dur = min(float(out_cfg.get("duration", 0.5) or 0.5), max(0.0, duration - in_dur))
     out_start = duration - out_dur
     in_t = f"min(1,max(0,{current}/{max(in_dur, 0.001):.6f}))"
     out_t = f"min(1,max(0,({current}-{out_start:.6f})/{max(out_dur, 0.001):.6f}))"
     specs = [
-        (PRESETS_MAP.get(f"combo:{combo_cfg.get('presetId')}"), combo_t, duration > 0),
-        (PRESETS_MAP.get(f"in:{in_cfg.get('presetId')}"), in_t, in_dur > 0),
-        (PRESETS_MAP.get(f"out:{out_cfg.get('presetId')}"), out_t, out_dur > 0),
+        (PRESETS_MAP.get(f"combo:{combo_cfg.get('presetId')}"), combo_t, duration > 0, combo_intensity),
+        (PRESETS_MAP.get(f"in:{in_cfg.get('presetId')}"), in_t, in_dur > 0, 1.0),
+        (PRESETS_MAP.get(f"out:{out_cfg.get('presetId')}"), out_t, out_dur > 0, 1.0),
     ]
     scale, tx, ty, rot, opacity, blur = [], [], [], [], [], []
     safe_scale = 1.0
-    for spec, t_expr, enabled in specs:
+    def with_intensity(expr: str, channel: str, amount: float) -> str:
+        if amount == 1.0:
+            return expr
+        if channel in {"scale", "opacity"}:
+            return f"(1+(({expr})-1)*{amount:.6f})"
+        return f"(({expr})*{amount:.6f})"
+
+    for spec, t_expr, enabled, intensity in specs:
         if not spec or not enabled:
             continue
         channels = spec.get("channels", {})
         if "scale" in channels:
-            scale.append(evaluate_channel_expr(channels["scale"], t_expr))
+            scale.append(with_intensity(evaluate_channel_expr(channels["scale"], t_expr), "scale", intensity))
         if "translateX" in channels:
-            tx.append(evaluate_channel_expr(channels["translateX"], t_expr))
+            tx.append(with_intensity(evaluate_channel_expr(channels["translateX"], t_expr), "translateX", intensity))
         if "translateY" in channels:
-            ty.append(evaluate_channel_expr(channels["translateY"], t_expr))
+            ty.append(with_intensity(evaluate_channel_expr(channels["translateY"], t_expr), "translateY", intensity))
         if "rotation" in channels:
-            rot.append(evaluate_channel_expr(channels["rotation"], t_expr))
+            rot.append(with_intensity(evaluate_channel_expr(channels["rotation"], t_expr), "rotation", intensity))
         if "opacity" in channels:
-            opacity.append(evaluate_channel_expr(channels["opacity"], t_expr))
+            opacity.append(with_intensity(evaluate_channel_expr(channels["opacity"], t_expr), "opacity", intensity))
         if "blur" in channels:
-            blur.append(evaluate_channel_expr(channels["blur"], t_expr))
-        safe_scale = max(safe_scale, float(spec.get("safeScale", 1.0) or 1.0))
+            blur.append(with_intensity(evaluate_channel_expr(channels["blur"], t_expr), "blur", intensity))
+        preset_safe_scale = float(spec.get("safeScale", 1.0) or 1.0)
+        safe_scale = max(safe_scale, 1 + (preset_safe_scale - 1) * intensity)
     return {
         "scale": "*".join(scale) if scale else "1.0",
         "translate_x": "+".join(tx) if tx else "0.0",

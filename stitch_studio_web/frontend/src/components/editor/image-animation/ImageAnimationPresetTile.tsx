@@ -42,7 +42,7 @@ export function ImageAnimationPresetTile({ presetId, type, isActive, onClick }: 
         imageAnimation: {
           in: type === 'in' ? { presetId, duration } : undefined,
           out: type === 'out' ? { presetId, duration } : undefined,
-          combo: type === 'combo' ? { presetId } : undefined,
+          combo: type === 'combo' ? { presetId, timing: 'loop', cycleSeconds: duration, intensity: 1, loopMode: 'pingPong' } : undefined,
         }
       }
     } as unknown as TimelineItem;
@@ -67,12 +67,7 @@ export function ImageAnimationPresetTile({ presetId, type, isActive, onClick }: 
     
     const loop = (time: number) => {
       const elapsed = (time - hoverStartTimeRef.current) / 1000;
-      // Loop duration + 0.5s pause
-      const loopDuration = duration + 0.5;
-      const localTime = elapsed % loopDuration;
-      const clampedTime = Math.min(localTime, duration);
-      
-      applyTransform(clampedTime);
+      applyTransform(type === 'combo' ? elapsed : Math.min(elapsed % (duration + .5), duration));
       reqRef.current = requestAnimationFrame(loop);
     };
     

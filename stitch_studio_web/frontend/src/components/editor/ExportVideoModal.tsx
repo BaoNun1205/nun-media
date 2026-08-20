@@ -24,7 +24,7 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
   const [error, setError] = useState('');
   const job = useMemo(() => editor.jobs.find((item) => item.id === jobId), [editor.jobs, jobId]);
   const completedPath = String(job?.result?.outputPath || job?.result?.path || '');
-  const hasWebGpuEffects = editor.timelineItems.some((item) => item.kind === 'effect' && !item.hidden);
+  const hasSparkleEffects = editor.timelineItems.some((item) => item.kind === 'effect' && !item.hidden);
 
   useEffect(() => {
     if (!open) return;
@@ -65,8 +65,8 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
   }
 
   async function startExport() {
-    if (hasWebGpuEffects) {
-      setError('This timeline uses WebGPU effects. Server FFmpeg export is disabled until the client WebGPU render target is available.');
+    if (hasSparkleEffects) {
+      setError('This timeline uses Sparkle canvas effects. Server export is disabled because it cannot reproduce the browser scene exactly.');
       return;
     }
     try {
@@ -124,7 +124,7 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
               <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}>{ASPECT_RATIOS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
             </label>
             {aspectRatio !== 'project' && <p className="export-warning">Changing aspect ratio may change the composition.</p>}
-            {hasWebGpuEffects && <p className="export-warning">WebGPU effects are rendered in Program Monitor. Server export will not substitute different FFmpeg effects.</p>}
+            {hasSparkleEffects && <p className="export-warning">Sparkle effects are rendered in Program Monitor. Server export will not substitute a different effect.</p>}
             <label>
               <span>Tốc độ khung hình</span>
               <select value={fps} onChange={(event) => setFps(Number(event.target.value))}>{FPS_OPTIONS.map((item) => <option key={item} value={item}>{item} FPS</option>)}</select>
@@ -157,7 +157,7 @@ export function ExportVideoModal({ editor, open, onClose }: { editor: EditorCont
         )}
 
         <footer className="export-modal-footer">
-          {state === 'CONFIG' && <><button onClick={onClose}>Hủy</button><button className="primary" disabled={hasWebGpuEffects} onClick={startExport}><Download size={16} /> Xuất video</button></>}
+          {state === 'CONFIG' && <><button onClick={onClose}>Hủy</button><button className="primary" disabled={hasSparkleEffects} onClick={startExport}><Download size={16} /> Xuất video</button></>}
           {state === 'EXPORTING' && <button disabled>Rendering...</button>}
           {state === 'DONE' && <><button onClick={openFolder}><FolderOpen size={16} /> Mở thư mục</button><button className="primary" onClick={onClose}>Xong</button></>}
           {state === 'ERROR' && <><button onClick={() => setState('CONFIG')}>Retry</button><button className="primary" onClick={onClose}>Close</button></>}

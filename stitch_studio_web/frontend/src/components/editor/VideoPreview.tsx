@@ -9,8 +9,8 @@ import type { SubtitleArea, TimelineItem } from '../../types/studio';
 import type { TextStyle } from '../../types/textStyle';
 import { evaluateImageAnimation, composeImageTransform, type BaseImageTransform } from '../../utils/image-animation/evaluateImageAnimation';
 import { getDefaultAnimationDelta } from '../../utils/image-animation/presets';
-import { activeVideoEffects } from '../../config/videoEffects';
-import { WebGpuEffectCanvas } from './WebGpuEffectCanvas';
+import { activeSparkleEffects, effectIdForItem } from '../../config/sparkleEffects';
+import { SparkleEffectCanvas } from './SparkleEffectCanvas';
 
 type DragMode = 'draw' | 'move' | 'tl' | 'tr' | 'bl' | 'br';
 type FrameFormat = 'original' | '16:9' | '9:16' | '1:1' | '4:5';
@@ -111,7 +111,10 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     && editor.playhead >= item.start
     && editor.playhead < item.start + Math.max(0.05, item.duration)
   );
-  const activeEffects = activeVideoEffects(editor.timelineItems, editor.playhead);
+  const activeEffects = activeSparkleEffects(editor.timelineItems, editor.playhead);
+  const previewEffects = editor.previewedEffect && !activeEffects.some((item) => effectIdForItem(item) === effectIdForItem(editor.previewedEffect))
+    ? [...activeEffects, editor.previewedEffect]
+    : activeEffects;
   const editingOcrArea = editor.activeTool === 'subtitles' && editor.subtitleSource === 'hardsub' && editor.ocrAreaMode === 'custom';
   const activeImageSelected = Boolean(activeImageItem && editor.selection.type === 'timeline-items' && editor.selection.keys.length === 1 && editor.selection.keys[0] === activeImageItem.id);
   const canDragActiveImage = Boolean(activeImageItem && activeImageSelected && !editingOcrArea && !editor.editArea);
@@ -650,7 +653,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
               }
             }}
           /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
-          <WebGpuEffectCanvas effects={activeEffects} time={editor.playhead} fitMode={editor.fitMode} getSource={() => activeImageUrl ? imageRef.current : videoRef.current} />
+          <SparkleEffectCanvas effects={previewEffects} />
           {loading && posterUrl && !activeImageUrl && !error && <img className="preview-poster" src={posterUrl} alt="" />}
           {blurEffectBox && <div className="subtitle-blur-effect" style={blurEffectBox} aria-hidden="true" />}
           {(editor.editArea || editingOcrArea) && <div ref={safeAreaRef} className={`subtitle-safe-area ${editor.editArea ? 'editing' : ''} ${editingOcrArea ? 'ocr-area' : ''}`} style={box}>

@@ -6,8 +6,8 @@ import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
 import { JobProgress } from '../common/JobProgress';
 import { SliderNumericField } from './NumericField';
-import { VIDEO_EFFECT_CATEGORIES, VIDEO_EFFECTS } from '../../config/videoEffects';
-import { EffectThumbnail } from './EffectThumbnail';
+import { SPARKLE_EFFECT_CATEGORIES, SPARKLE_EFFECTS } from '../../config/sparkleEffects';
+import { SparkleEffectThumbnail } from './SparkleEffectThumbnail';
 
 type AssetKind = 'video' | 'srt' | 'audio' | 'image';
 
@@ -214,12 +214,12 @@ export function AssetToolPanel({ editor, onOpenExport }: { editor: EditorControl
 
 function EffectsBrowser({ editor, busy }: { editor: EditorController; busy: boolean }) {
   const [query, setQuery] = useState('');
-  const [category, setCategory] = useState<(typeof VIDEO_EFFECT_CATEGORIES)[number]>('Trending');
+  const [category, setCategory] = useState<(typeof SPARKLE_EFFECT_CATEGORIES)[number]>('Trending');
   const [selectedId, setSelectedId] = useState('');
   const categoryRailRef = useRef<HTMLDivElement>(null);
   const normalized = query.trim().toLowerCase();
-  const trending = new Set(['film_grain', 'vhs', 'glow', 'rgb_split', 'block_glitch', 'color_grade']);
-  const effects = VIDEO_EFFECTS.filter((effect) => {
+  const trending = new Set(['snow', 'rain', 'aurora', 'fireflies', 'fireworks', 'glitch', 'hologram', 'kaleidoscope']);
+  const effects = SPARKLE_EFFECTS.filter((effect) => {
     const categoryMatch = category === 'Trending' ? trending.has(effect.id) : effect.category === category;
     // Search intentionally spans every category; category chips are for browsing.
     return normalized
@@ -229,15 +229,19 @@ function EffectsBrowser({ editor, busy }: { editor: EditorController; busy: bool
   // A previous selection must not look like a search result after filtering.
   const selected = effects.find((effect) => effect.id === selectedId);
   const add = (effectId: string) => void editor.addTimelineEffect(effectId);
+  const preview = (effectId: string) => {
+    setSelectedId(effectId);
+    editor.previewEffect(effectId);
+  };
   const scrollCategories = (direction: -1 | 1) => categoryRailRef.current?.scrollBy({ left: direction * 150, behavior: 'smooth' });
   return <div className="effects-browser">
     <div className="effects-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search effects" aria-label="Search effects" /></div>
-    <div className="effects-category-row"><button className="effects-category-nav" type="button" onClick={() => scrollCategories(-1)} aria-label="Show previous effect categories"><ChevronLeft size={13} /></button><div ref={categoryRailRef} className="effects-categories" onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.currentTarget.scrollLeft += event.deltaY; event.preventDefault(); } }}>{VIDEO_EFFECT_CATEGORIES.map((item) => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><button className="effects-category-nav" type="button" onClick={() => scrollCategories(1)} aria-label="Show more effect categories"><ChevronRight size={13} /></button></div>
-    <div className="effects-grid">{effects.map((effect) => <button key={effect.id} className={`effect-tile ${selectedId === effect.id ? 'selected' : ''}`} disabled={busy || !editor.project.workspaceId} onClick={() => setSelectedId(effect.id)} onDoubleClick={() => add(effect.id)} title={`${effect.description} — double-click to add`}>
-      <span className="effect-tile-image"><EffectThumbnail effect={effect} /><i className="effect-tile-add" onClick={(event) => { event.preventDefault(); event.stopPropagation(); add(effect.id); }} title={`Add ${effect.label}`}><Plus size={13} /></i></span><strong>{effect.label}</strong>
+    <div className="effects-category-row"><button className="effects-category-nav" type="button" onClick={() => scrollCategories(-1)} aria-label="Show previous effect categories"><ChevronLeft size={13} /></button><div ref={categoryRailRef} className="effects-categories" onWheel={(event) => { if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.currentTarget.scrollLeft += event.deltaY; event.preventDefault(); } }}>{SPARKLE_EFFECT_CATEGORIES.map((item) => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item}</button>)}</div><button className="effects-category-nav" type="button" onClick={() => scrollCategories(1)} aria-label="Show more effect categories"><ChevronRight size={13} /></button></div>
+    <div className="effects-grid">{effects.map((effect) => <button key={effect.id} className={`effect-tile ${selectedId === effect.id ? 'selected' : ''}`} disabled={busy || !editor.project.workspaceId} onClick={() => preview(effect.id)} onDoubleClick={() => add(effect.id)} title={`${effect.description} — click to preview, double-click to add`}>
+      <span className="effect-tile-image"><SparkleEffectThumbnail effect={effect} /><i className="effect-tile-add" onClick={(event) => { event.preventDefault(); event.stopPropagation(); add(effect.id); }} title={`Add ${effect.label}`}><Plus size={13} /></i></span><strong>{effect.label}</strong>
     </button>)}</div>
-    {effects.length === 0 && <p className="effects-empty">No effects match “{query.trim() || category}”. Snow, Rain, and Fog are not in this library.</p>}
-    {selected && <div className="effects-selection"><span><strong>{selected.label}</strong><small>{selected.description}</small></span><button className="primary" disabled={busy || !editor.project.workspaceId} onClick={() => add(selected.id)}><Plus size={14} /> Add</button></div>}
+    {effects.length === 0 && <p className="effects-empty">No Sparkle effects match “{query.trim() || category}”.</p>}
+    {selected && <div className="effects-selection"><span><strong>{selected.label}</strong><small>{selected.description} · Previewing in monitor</small></span><button className="primary" disabled={busy || !editor.project.workspaceId} onClick={() => add(selected.id)}><Plus size={14} /> Add</button></div>}
     {!editor.project.workspaceId && <p className="form-help">Open a workspace project to add effects to its timeline.</p>}
   </div>;
 }

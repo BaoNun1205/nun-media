@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_AREA, TTS_FIT, defaultTtsLanguage, isTranslatedAsset, isTtsLanguageSupported, serializeSrt } from '../lib/studio';
 import { DEFAULT_TEXT_STYLE, textStylePresetById } from '../config/textStylePresets';
-import { VIDEO_EFFECT_BY_ID, defaultEffectParams } from '../config/videoEffects';
+import { SPARKLE_EFFECT_BY_ID, defaultEffectParams } from '../config/sparkleEffects';
 import { sceneFromProject, timelineStateFromSceneOrProject, timelineStateToScene } from '../editor-core/adapters';
 import {
   addTrack as addTrackToTimelineState,
@@ -176,6 +176,8 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>(() => timelineStateFromSceneOrProject(project).items);
   const [timelineScene, setTimelineScene] = useState<CoreTimelineScene>(() => sceneFromProject(project));
   const [timelineHistory, setTimelineHistory] = useState<TimelineHistory>({ past: [], future: [] });
+  // Library selection remains transient so a preview never creates a timeline clip.
+  const [effectPreviewId, setEffectPreviewId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [editArea, setEditArea] = useState(false);
   const [area, setArea] = useState<SubtitleArea>(project.subtitleArea || DEFAULT_AREA);
@@ -200,6 +202,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [optimisticJobs, setOptimisticJobs] = useState<Job[]>([]);
   const autoMuxTtsJobRef = useRef<number | null>(null);
   const handledSrtJobRef = useRef<number | null>(null);
+  const srtLoadRequestRef = useRef(0);
   const isEmptyWorkspace = project.id < 0 || project.mediaType === 'workspace';
 
   const visibleJobs = useMemo(() => {
@@ -253,6 +256,12 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       : undefined;
     return projectAsset?.sourceAssetId || item.projectAssetId;
   }, [project.projectAssets]);
+  const persistedTimelineSrtAssetId = useMemo(() => timelineItems
+    .filter((item) => item.kind === 'srt')
+    .sort((a, b) => a.start - b.start)
+    .map(srtAssetIdForTimelineItem)
+    .find((assetId): assetId is number => typeof assetId === 'number' && allSrtAssets.some((asset) => asset.id === assetId)),
+  [timelineItems, srtAssetIdForTimelineItem, allSrtAssets]);
   const currentSegment = selection.type === 'subtitle' ? srt.segments.find((item) => item.index === selection.index) : undefined;
   const currentVoice = selection.type === 'voice' ? voiceSegments.find((item) => item.index === selection.index) : undefined;
   const voiceByIndex = useMemo(() => Object.fromEntries(voiceSegments.map((item) => [item.index, item])), [voiceSegments]);
@@ -329,12 +338,15 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }, [srt, edits]);
 
   const loadSrt = useCallback(async (assetId?: number) => {
+    const requestId = ++srtLoadRequestRef.current;
     if (isEmptyWorkspace && !assetId) {
-      setSrt(EMPTY_SRT); setEdits({}); setBaselineSrt(''); setDraftHistory({ past: [], future: [] }); return EMPTY_SRT;
+      if (requestId === srtLoadRequestRef.current) { setSrt(EMPTY_SRT); setEdits({}); setBaselineSrt(''); setDraftHistory({ past: [], future: [] }); }
+      return EMPTY_SRT;
     }
     try {
       const targetId = assetId ?? autoSrtAssetId;
       const data = targetId ? await studioApi.srtAsset(targetId) : await studioApi.srt(project.id);
+      if (requestId !== srtLoadRequestRef.current) return data;
       if (assetId !== undefined && assetId !== autoSrtAssetId) setAutoSrtAssetId(assetId);
       setSrt(data);
       setEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
@@ -342,7 +354,8 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setDraftHistory({ past: [], future: [] });
       return data;
     } catch {
-      setSrt(EMPTY_SRT); setEdits({}); setBaselineSrt(''); setDraftHistory({ past: [], future: [] }); return EMPTY_SRT;
+      if (requestId === srtLoadRequestRef.current) { setSrt(EMPTY_SRT); setEdits({}); setBaselineSrt(''); setDraftHistory({ past: [], future: [] }); }
+      return EMPTY_SRT;
     }
   }, [project.id, isEmptyWorkspace, autoSrtAssetId]);
 
@@ -375,6 +388,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     setTimelineItems(nextTimelineState.items);
     setTimelineScene(sceneFromProject(project));
     setTimelineHistory({ past: [], future: [] });
+    setEffectPreviewId(null);
   }, [project.id]);
   useEffect(() => {
     const nextTimelineState = timelineStateFromSceneOrProject(project);
@@ -439,6 +453,14 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     );
   }, [project.id, originalSrtAssets.map((item) => item.id).join(',')]);
   useEffect(() => {
+    // A persisted S1 clip is the source of truth on project reopen. Loading it
+    // here avoids requiring the user to re-select the asset merely to hydrate
+    // the subtitle preview.
+    if (persistedTimelineSrtAssetId && srt.asset?.id !== persistedTimelineSrtAssetId) {
+      void loadSrt(persistedTimelineSrtAssetId);
+    }
+  }, [project.id, persistedTimelineSrtAssetId, srt.asset?.id, loadSrt]);
+  useEffect(() => {
     function warnBeforeLeave(event: BeforeUnloadEvent) {
       if (!dirty) return;
       event.preventDefault();
@@ -495,7 +517,26 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
   function openTool(tool: ToolKey) {
     setActiveTool(tool); setAssetTab('tools');
+    if (tool !== 'effects') setEffectPreviewId(null);
     if (tool === 'remove' || tool === 'insert') setSelection({ type: 'effect', operation: tool === 'remove' ? 'blur' : 'insert' });
+  }
+
+  const previewedEffect = useMemo<TimelineItem | undefined>(() => {
+    const effect = effectPreviewId ? SPARKLE_EFFECT_BY_ID.get(effectPreviewId) : undefined;
+    return effect ? {
+      id: `library-preview:${effect.id}`,
+      kind: 'effect',
+      track: 'FX-preview',
+      name: effect.label,
+      start: 0,
+      duration: 0,
+      sourceStart: 0,
+      params: { effectId: effect.id, ...defaultEffectParams(effect) },
+    } : undefined;
+  }, [effectPreviewId]);
+
+  function previewEffect(effectId: string | null) {
+    setEffectPreviewId(effectId && SPARKLE_EFFECT_BY_ID.has(effectId) ? effectId : null);
   }
 
   async function queue(path: string, body?: unknown, label = 'Job') {
@@ -906,7 +947,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       setMessage('Open a workspace project before adding effects.');
       return false;
     }
-    const effect = VIDEO_EFFECT_BY_ID.get(effectId);
+    const effect = SPARKLE_EFFECT_BY_ID.get(effectId);
     if (!effect) {
       setMessage('Unknown video effect.');
       return false;
@@ -933,6 +974,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     if (saved) {
       setSelection({ type: 'timeline-items', keys: [item.id], track: item.track });
       setPlayhead(item.start);
+      setEffectPreviewId(null);
     }
     return saved;
   }
@@ -1668,6 +1710,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     loadSrt, loadSegments, loadTimelineIssues, saveSrt, copySrt, pasteSrt, updateSegmentTime, deleteSegment, deleteSelectedSubtitles, moveSubtitleSegments, moveSelectedSubtitles, replaceWithTranslated, undoDraft: undoEditorAction, redoDraft: redoEditorAction, importSrt, generateSrt, translate, remove, deleteBlurEffect, insert, undo,
     generateVoice, mergeVoice, muxVoice, deleteVoiceover, remapTimeline, copyTimelineIssues, playVoice, cancelJob, refresh, openProjectVideo: onOpenVersion, addVideoToTimeline, addProjectAssetToTimeline, deleteTimelineItems, previewTimelineItems, commitTimelineItems, commitTimelineState,
     splitSelectedTimelineItems, duplicateSelectedTimelineItems, copyTimelineItems, pasteTimelineItemsAt, addTimelineTrack, addTimelineEffect, removeTimelineTrack, toggleTimelineTrackMute, toggleTimelineTrackVisibility, setTimelineOption, toggleTimelineBookmark, captureCurrentFrame,
+    effectPreviewId, previewedEffect, previewEffect,
   };
 }
 

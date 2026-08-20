@@ -51,15 +51,15 @@ function evaluateChannel(channel: AnimationChannelSpec, t: number): number {
 /**
  * Evaluates a single preset at progress t (0.0 to 1.0) and applies it to the delta.
  */
-function applyPresetToDelta(spec: ImageAnimationPresetSpec, t: number, delta: AnimationDelta) {
+function applyPresetToDelta(spec: ImageAnimationPresetSpec, t: number, delta: AnimationDelta, intensity = 1) {
   const c = spec.channels;
-  if (c.scale) delta.scale *= evaluateChannel(c.scale, t);
-  if (c.translateX) delta.translateX += evaluateChannel(c.translateX, t);
-  if (c.translateY) delta.translateY += evaluateChannel(c.translateY, t);
-  if (c.rotation) delta.rotation += evaluateChannel(c.rotation, t);
-  if (c.opacity) delta.opacity *= evaluateChannel(c.opacity, t);
+  if (c.scale) delta.scale *= 1 + (evaluateChannel(c.scale, t) - 1) * intensity;
+  if (c.translateX) delta.translateX += evaluateChannel(c.translateX, t) * intensity;
+  if (c.translateY) delta.translateY += evaluateChannel(c.translateY, t) * intensity;
+  if (c.rotation) delta.rotation += evaluateChannel(c.rotation, t) * intensity;
+  if (c.opacity) delta.opacity *= 1 + (evaluateChannel(c.opacity, t) - 1) * intensity;
   if (c.blur) {
-    const b = evaluateChannel(c.blur, t);
+    const b = evaluateChannel(c.blur, t) * intensity;
     if (b > delta.blur) delta.blur = b; // Max semantic for blur
   }
 }
@@ -85,10 +85,16 @@ export function evaluateImageAnimation(item: TimelineItem, localTime: number): A
   
   // 1. Evaluate Combo
   if (comboSpec) {
-    const progress = Math.max(0, Math.min(1, timeInClip / duration));
-    applyPresetToDelta(comboSpec, progress, delta);
+    const combo = config.combo;
+    const intensity = Math.max(0, Math.min(2, Number(combo?.intensity ?? 1)));
+    const cycleSeconds = Math.max(.1, Math.min(20, Number(combo?.cycleSeconds ?? 1.2)));
+    const phase = combo?.timing === 'loop' ? (timeInClip % cycleSeconds) / cycleSeconds : timeInClip / duration;
+    const progress = combo?.timing === 'loop' && combo.loopMode === 'pingPong'
+      ? (phase <= .5 ? phase * 2 : 2 - phase * 2)
+      : Math.max(0, Math.min(1, phase));
+    applyPresetToDelta(comboSpec, progress, delta, intensity);
     if (comboSpec.safeScale) {
-      comboSafeScale = Math.max(comboSafeScale, comboSpec.safeScale);
+      comboSafeScale = Math.max(comboSafeScale, 1 + (comboSpec.safeScale - 1) * intensity);
     }
   }
 

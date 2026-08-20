@@ -86,7 +86,9 @@ COMBO_PRESETS = [
     {"id": "float", "group": "combo", "safeScale": 1.15, "channels": {"translateY": {"type": "keyframes", "points": [[0.0, 0.0], [0.25, -5.0], [0.5, 0.0], [0.75, 5.0], [1.0, 0.0]], "easing": "easeInOutSine"}}},
     {"id": "gentle-rotate", "group": "combo", "safeScale": 1.25, "channels": {"rotation": {"type": "keyframes", "points": [[0.0, -3.0], [0.5, 3.0], [1.0, -3.0]], "easing": "easeInOutSine"}}},
     {"id": "shake", "group": "combo", "safeScale": 1.10, "channels": {"translateX": {"type": "keyframes", "points": [[0.0, 0.0], [0.1, -2.0], [0.2, 2.0], [0.3, -2.0], [0.4, 2.0], [0.5, -2.0], [0.6, 2.0], [0.7, -2.0], [0.8, 2.0], [0.9, -2.0], [1.0, 0.0]], "easing": "linear"}}},
-    {"id": "pulse", "group": "combo", "channels": {"scale": {"type": "keyframes", "points": [[0.0, 1.0], [0.25, 1.08], [0.5, 1.0], [0.75, 1.08], [1.0, 1.0]], "easing": "easeInOutSine"}}},
+    {"id": "pulse", "group": "combo", "channels": {"scale": {"type": "keyframes", "points": [[0.0, 1.0], [0.5, 1.08], [1.0, 1.0]], "easing": "easeInOutSine"}}},
+    {"id": "zoom-in-out", "group": "combo", "channels": {"scale": {"type": "keyframes", "points": [[0.0, 1.0], [0.5, 1.16], [1.0, 1.0]], "easing": "easeInOutSine"}}},
+    {"id": "elastic-wobble", "group": "combo", "safeScale": 1.26, "channels": {"rotation": {"type": "keyframes", "points": [[0.0, 0.0], [0.12, 7.0], [0.26, -5.5], [0.42, 3.5], [0.60, -2.0], [0.78, 0.8], [1.0, 0.0]], "easing": "easeInOutSine"}, "translateX": {"type": "keyframes", "points": [[0.0, 0.0], [0.12, 1.5], [0.26, -1.2], [0.42, 0.8], [0.60, -0.4], [0.78, 0.15], [1.0, 0.0]], "easing": "easeInOutSine"}}},
     {"id": "swing", "group": "combo", "safeScale": 1.20, "channels": {"rotation": {"type": "keyframes", "points": [[0.0, -5.0], [0.5, 5.0], [1.0, -5.0]], "easing": "easeInOutSine"}}},
 ]
 

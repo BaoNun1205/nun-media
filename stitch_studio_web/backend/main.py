@@ -31,7 +31,6 @@ from stitch_studio.config import AppConfig, ensure_dirs  # noqa: E402
 from stitch_studio.audio_separation import AUDIO_MODE_ORIGINAL, AUDIO_MODE_REMOVE_MUSIC, AUDIO_MODE_REMOVE_VOCALS, AUDIO_MODES, AUDIO_SEPARATOR_MODEL, AudioSeparationService  # noqa: E402
 from stitch_studio.models import SubtitleSegment, VideoItem  # noqa: E402
 from stitch_studio.rendering.timeline_renderer import ExportSettings, render_project_timeline  # noqa: E402
-from stitch_studio.rendering.effects import normalized_effect_params  # noqa: E402
 from stitch_studio.services import CapcutTtsService, DownloaderService, PocketTtsService, SubtitleRemovalService, TranslationService, TranscriptionService, VieneuTtsService, _clean_capcut_tts_text, _probe_video_duration_ms, _probe_video_size, _tts_generation_signature, extract_video_url, process_and_register_adaptive_timeline, process_and_register_srt_slot_timeline  # noqa: E402
 from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: E402
 from stitch_studio.storage import Storage  # noqa: E402
@@ -2006,13 +2005,20 @@ def _clean_timeline_items(project, items: list[dict[str, Any]], track_kinds: dic
             if isinstance(item.get(key), (dict, list)):
                 clean[key] = item[key]
         if kind == "effect":
-            try:
-                effect_id, effect_params = normalized_effect_params(clean)
-            except ValueError:
-                # Unknown effects are not persisted: this keeps project state
-                # portable and prevents arbitrary FFmpeg expressions in params.
+            # Sparkle rendering is client-side and server export rejects FX
+            # clips explicitly. Persist the small declarative payload without
+            # duplicating the frontend Sparkle registry in Python.
+            raw_params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            effect_id = re.sub(r"[^a-z0-9_-]", "", str(raw_params.get("effectId") or "").lower())[:80]
+            if not effect_id:
                 continue
-            clean["params"] = {"effectId": effect_id, **effect_params}
+            clean_params: dict[str, Any] = {"effectId": effect_id}
+            for key, value in raw_params.items():
+                if key == "effectId" or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(key)):
+                    continue
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    clean_params[str(key)] = value
+            clean["params"] = clean_params
         if item.get("sourceVideoId") is not None:
             video_id = int(item["sourceVideoId"])
             if not storage.get_video(video_id):

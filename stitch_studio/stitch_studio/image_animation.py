@@ -60,7 +60,8 @@ def build_static_image_filters(context: RenderContext) -> Tuple[List[str], List[
         
         # Animation Logic
         animation = params.get("imageAnimation") or {}
-        combo_spec = PRESETS_MAP.get(f"combo:{(animation.get('combo') or {}).get('presetId')}") if (animation.get("combo") or {}).get("presetId") else None
+        combo_cfg = animation.get("combo") or {}
+        combo_spec = PRESETS_MAP.get(f"combo:{combo_cfg.get('presetId')}") if combo_cfg.get("presetId") else None
         in_spec = PRESETS_MAP.get(f"in:{(animation.get('in') or {}).get('presetId')}") if (animation.get("in") or {}).get("presetId") else None
         out_spec = PRESETS_MAP.get(f"out:{(animation.get('out') or {}).get('presetId')}") if (animation.get("out") or {}).get("presetId") else None
         
@@ -73,7 +74,19 @@ def build_static_image_filters(context: RenderContext) -> Tuple[List[str], List[
         in_t_expr = f"min(1, max(0, {t_current}/{in_dur}))" if in_dur > 0 else "1.0"
         out_start = duration_sec - out_dur
         out_t_expr = f"min(1, max(0, ({t_current}-{out_start})/{out_dur}))" if out_dur > 0 else "0.0"
-        combo_t_expr = f"min(1, max(0, {t_current}/{duration_sec}))" if duration_sec > 0 else "0.0"
+        try:
+            combo_intensity = max(0.0, min(2.0, float(combo_cfg.get("intensity", 1))))
+        except (TypeError, ValueError):
+            combo_intensity = 1.0
+        try:
+            combo_cycle = max(0.1, min(20.0, float(combo_cfg.get("cycleSeconds", 1.2) or 1.2)))
+        except (TypeError, ValueError):
+            combo_cycle = 1.2
+        if combo_cfg.get("timing") == "loop":
+            combo_phase = f"(mod({t_current},{combo_cycle:.6f})/{combo_cycle:.6f})"
+            combo_t_expr = f"if(lte({combo_phase},0.5),2*{combo_phase},2-2*{combo_phase})" if combo_cfg.get("loopMode") == "pingPong" else combo_phase
+        else:
+            combo_t_expr = f"min(1, max(0, {t_current}/{duration_sec}))" if duration_sec > 0 else "0.0"
 
         # Channels
         scale_exprs = []
@@ -87,13 +100,21 @@ def build_static_image_filters(context: RenderContext) -> Tuple[List[str], List[
 
         if combo_spec:
             c = combo_spec.get("channels", {})
-            if "scale" in c: scale_exprs.append(evaluate_channel_expr(c["scale"], combo_t_expr))
-            if "translateX" in c: trans_x_exprs.append(evaluate_channel_expr(c["translateX"], combo_t_expr))
-            if "translateY" in c: trans_y_exprs.append(evaluate_channel_expr(c["translateY"], combo_t_expr))
-            if "rotation" in c: rot_exprs.append(evaluate_channel_expr(c["rotation"], combo_t_expr))
-            if "opacity" in c: opac_exprs.append(evaluate_channel_expr(c["opacity"], combo_t_expr))
-            if "blur" in c: blur_exprs.append(evaluate_channel_expr(c["blur"], combo_t_expr))
-            combo_safe_scale = max(combo_safe_scale, combo_spec.get("safeScale", 1.0))
+            def combo_expression(channel: str) -> str:
+                expr = evaluate_channel_expr(c[channel], combo_t_expr)
+                if combo_intensity == 1.0:
+                    return expr
+                if channel in {"scale", "opacity"}:
+                    return f"(1+(({expr})-1)*{combo_intensity:.6f})"
+                return f"(({expr})*{combo_intensity:.6f})"
+            if "scale" in c: scale_exprs.append(combo_expression("scale"))
+            if "translateX" in c: trans_x_exprs.append(combo_expression("translateX"))
+            if "translateY" in c: trans_y_exprs.append(combo_expression("translateY"))
+            if "rotation" in c: rot_exprs.append(combo_expression("rotation"))
+            if "opacity" in c: opac_exprs.append(combo_expression("opacity"))
+            if "blur" in c: blur_exprs.append(combo_expression("blur"))
+            preset_safe_scale = combo_spec.get("safeScale", 1.0)
+            combo_safe_scale = max(combo_safe_scale, 1 + (preset_safe_scale - 1) * combo_intensity)
             
         if in_spec and in_dur > 0:
             c = in_spec.get("channels", {})
@@ -204,4 +225,3 @@ def build_static_image_filters(context: RenderContext) -> Tuple[List[str], List[
         current_base = out_label
         
     return inputs, filters, current_base
-
