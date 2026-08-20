@@ -1,16 +1,17 @@
 import { useMemo, useState } from 'react';
-import { Captions, FileAudio, FileVideo2, FolderOpen, Grid2X2, List, Pencil, Play, Plus, Search, Trash2 } from 'lucide-react';
+import { Captions, FileAudio, FileVideo2, FolderOpen, Grid2X2, List, LoaderCircle, Pencil, Play, Plus, Search, Trash2, X } from 'lucide-react';
 import { formatDuration, formatSize, projectStatus } from '../lib/studio';
 import { studioApi } from '../services/api';
-import type { WorkspaceProject } from '../types/studio';
+import type { Job, WorkspaceProject } from '../types/studio';
 
 interface Props {
   projects: WorkspaceProject[];
+  jobs: Job[];
   onOpen: (project: WorkspaceProject) => void;
   onRefresh: () => Promise<void>;
 }
 
-export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
+export function ProjectsPage({ projects, jobs, onOpen, onRefresh }: Props) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [sort, setSort] = useState<'recent' | 'name' | 'duration'>('recent');
@@ -18,6 +19,7 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
   const [message, setMessage] = useState('');
   const [creating, setCreating] = useState(false);
   const [openingLibrary, setOpeningLibrary] = useState(false);
+  const [cancellingJobId, setCancellingJobId] = useState<number | null>(null);
 
   const visible = useMemo(() => projects.filter((project) => {
     const matchesQuery = `${project.title} ${project.projectId}`.toLowerCase().includes(query.toLowerCase());
@@ -81,6 +83,20 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
     }
   }
 
+  async function cancelExport(job: Job) {
+    if (cancellingJobId === job.id) return;
+    setCancellingJobId(job.id);
+    try {
+      await studioApi.cancelJob(job.id);
+      setMessage(`Cancelled export for "${job.title.replace(/^Export\s+/, '')}".`);
+      await onRefresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to cancel export');
+    } finally {
+      setCancellingJobId(null);
+    }
+  }
+
   return (
     <section className="page projects-page">
       <header className="page-header">
@@ -100,9 +116,13 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
       </div>
       {message && <div className="inline-notice">{message}</div>}
       <div className={`project-collection ${layout}`}>
-        {visible.map((project) => (
-          <article className="project-card" key={project.id}>
-            <button className="project-thumb" onClick={() => onOpen(project)}>
+        {visible.map((project) => {
+          const exportJob = jobs.find((job) => job.kind === 'project-export' && job.videoId === -project.id && ['queued', 'running'].includes(job.status));
+          const exportProgress = exportJob ? progressPercent(exportJob.progress) : 0;
+          const isExporting = Boolean(exportJob);
+
+          return <article className="project-card" key={project.id}>
+            <button className="project-thumb" onClick={() => onOpen(project)} disabled={isExporting} title={isExporting ? 'Project is exporting' : undefined}>
               {project.primaryVideoId && <img src={`/api/videos/${project.primaryVideoId}/thumbnail`} loading="lazy" alt="" />}
               <span className="thumb-shade" />
               <span className="play-orb"><Play size={17} fill="currentColor" /></span>
@@ -115,18 +135,27 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
                 <span className={project.assets.some((asset) => asset.kind === 'srt') ? 'ready' : ''}><Captions size={12} /> {project.assets.filter((asset) => asset.kind === 'srt').length} SRT</span>
                 <span className={project.assets.some((asset) => asset.kind === 'audio') ? 'voice' : ''}><FileAudio size={12} /> {project.assets.filter((asset) => asset.kind === 'audio').length} Audio</span>
               </div>
+              {exportJob && <div className="project-export-progress" title={exportJob.detail || 'Exporting video'}>
+                <div><span><LoaderCircle className="spin" size={13} /> {exportJob.status === 'queued' ? 'Chờ xuất video' : 'Đang xuất video'}</span><span className="project-export-actions"><strong>{exportProgress}%</strong><button type="button" onClick={() => void cancelExport(exportJob)} disabled={cancellingJobId === exportJob.id} title="Cancel export"><X size={13} /></button></span></div>
+                <i style={{ width: `${Math.max(2, exportProgress)}%` }} />
+              </div>}
               <div className="project-meta"><span>{formatSize(project.sizeBytes)}</span><span>{project.createdAt?.slice(0, 10) || 'Local'}</span></div>
               <div className="project-actions">
-                <button className="primary" onClick={() => onOpen(project)}><Play size={15} /> Open editor</button>
+                <button className="primary" onClick={() => onOpen(project)} disabled={isExporting} title={isExporting ? 'Project is exporting' : undefined}><Play size={15} /> Open editor</button>
                 <button className="icon-button" onClick={() => rename(project)} title="Rename"><Pencil size={15} /></button>
                 <button className="icon-button" disabled={!project.primaryVideoId} onClick={() => reveal(project)} title="Reveal folder"><FolderOpen size={15} /></button>
                 <button className="icon-button danger" onClick={() => remove(project)} title="Delete project and files"><Trash2 size={15} /></button>
               </div>
             </div>
           </article>
-        ))}
+        })}
         {!visible.length && <div className="empty-state"><Captions size={28} /><strong>No matching projects</strong><span>Create a project, then add video, subtitle, and audio assets inside the editor.</span></div>}
       </div>
     </section>
   );
+}
+
+function progressPercent(progress?: number) {
+  const value = Number(progress || 0);
+  return Math.round(Math.max(0, Math.min(100, value <= 1 ? value * 100 : value)));
 }

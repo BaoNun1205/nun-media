@@ -31,6 +31,29 @@ const EMPTY_SRT: SrtDocument = { asset: null, content: '', segments: [] };
 const DEFAULT_STYLE: SubtitleStyle = DEFAULT_TEXT_STYLE as SubtitleStyle;
 const MAX_DRAFT_HISTORY = 60;
 
+function selectedSrtStorageKey(projectId: number) {
+  return `stitch-editor-selected-srt:${projectId}`;
+}
+
+function readStoredSelectedSrt(projectId: number): number | null {
+  try {
+    const value = Number(localStorage.getItem(selectedSrtStorageKey(projectId)) || 0);
+    return value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeSelectedSrt(projectId: number, assetId: number | null) {
+  try {
+    const key = selectedSrtStorageKey(projectId);
+    if (assetId && assetId > 0) localStorage.setItem(key, String(assetId));
+    else localStorage.removeItem(key);
+  } catch {
+    // Local storage is best-effort; the editor still works without it.
+  }
+}
+
 type DraftSnapshot = { srt: SrtDocument; edits: Record<number, string> };
 type DraftHistory = { past: DraftSnapshot[]; future: DraftSnapshot[] };
 type TimelineHistory = { past: TimelineState[]; future: TimelineState[] };
@@ -144,6 +167,8 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [srt, setSrt] = useState<SrtDocument>(EMPTY_SRT);
   const [sourceSrt, setSourceSrt] = useState<SrtDocument>(EMPTY_SRT);
   const [translatedSrt, setTranslatedSrt] = useState<SrtDocument>(EMPTY_SRT);
+  const [translatedEdits, setTranslatedEdits] = useState<Record<number, string>>({});
+  const [translatedBaselineSrt, setTranslatedBaselineSrt] = useState('');
   const [edits, setEdits] = useState<Record<number, string>>({});
   const [draftHistory, setDraftHistory] = useState<DraftHistory>({ past: [], future: [] });
   const [baselineSrt, setBaselineSrt] = useState('');
@@ -155,7 +180,6 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [subtitleBlurEffect, setSubtitleBlurEffect] = useState<Project['subtitleBlurEffect']>(project.subtitleBlurEffect);
   const [activeTool, setActiveTool] = useState<ToolKey>('subtitles');
   const [assetTab, setAssetTab] = useState<'assets' | 'tools'>('assets');
-  const [bottomView, setBottomView] = useState<'timeline' | 'script'>('timeline');
   const [playhead, setPlayhead] = useState(0);
   const [previewSource, setPreviewSource] = useState(initialVoiceAsset ? `tts:${initialVoiceAsset.id}` : 'preview');
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
@@ -169,6 +193,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [voiceVolumeDb, setVoiceVolumeDb] = useState(project.clipSettings?.voiceVolumeDb ?? 0);
   const [voiceSpeed, setVoiceSpeed] = useState(project.clipSettings?.voiceSpeed ?? 1);
   const [timelineWidth, setTimelineWidth] = useState(1200);
+  const [bottomView, setBottomView] = useState<'timeline' | 'script'>('timeline');
   const [timelineState, setTimelineState] = useState<TimelineState>(() => timelineStateFromSceneOrProject(project));
   const timelineStateRef = useRef(timelineState);
   useEffect(() => { timelineStateRef.current = timelineState; }, [timelineState]);
@@ -186,11 +211,12 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [model, setModel] = useState(defaults.whisperModel || 'small');
   const [device, setDevice] = useState(defaults.device || 'auto');
   const [language, setLanguage] = useState('auto');
+  const [maxWordsPerLine, setMaxWordsPerLine] = useState<number | null>(defaults.maxWordsPerLine ? Number(defaults.maxWordsPerLine) : null);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const [translationSourceLanguage, setTranslationSourceLanguage] = useState('auto');
   const [removeMethod, setRemoveMethod] = useState<'auto' | 'manual'>('auto');
   const [removeMode, setRemoveMode] = useState('blur');
-  const [autoSrtAssetId, setAutoSrtAssetId] = useState<number | null>(null);
+  const [autoSrtAssetId, setAutoSrtAssetId] = useState<number | null>(() => readStoredSelectedSrt(project.id));
   const [insertMode, setInsertMode] = useState('none');
   const [ttsEngine, setTtsEngine] = useState<string>(initialTtsEngine);
   const [ttsLanguage, setTtsLanguage] = useState<string>(() => defaultTtsLanguage(initialTtsEngine));
@@ -217,6 +243,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   ), [visibleJobs, project.id, project.workspaceId, timelineSourceVideoIds]);
   const activeJobs = videoJobs.filter((job) => ['queued', 'running'].includes(job.status));
   const activeAudioJob = activeJobs.find((job) => job.kind === 'audio-separate');
+  const activeVoiceJobKey = activeJobs
+    .filter((job) => ['tts', 'tts-segment'].includes(job.kind))
+    .map((job) => `${job.id}:${job.progress ?? ''}:${job.detail || ''}`)
+    .join('|');
   const audioJobForVideo = useCallback((videoId?: number) =>
     typeof videoId === 'number'
       ? activeJobs.find((job) => job.kind === 'audio-separate' && job.videoId === videoId)
@@ -237,13 +267,25 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       engine: String(asset.metadata?.engine || 'workspace'),
       status: asset.status,
       createdAt: asset.createdAt,
+      sourceAssetId: asset.sourceAssetId,
       metadata: asset.metadata || {},
     }));
   const allSrtAssets = [...project.assets, ...workspaceSrtAssets]
     .filter((asset, index, assets) => hasReadableSrtAsset(asset) && assets.findIndex((candidate) => candidate.id === asset.id) === index);
   const originalSrtAssets = allSrtAssets.filter((asset) => !isTranslatedAsset(asset));
-  const translatedSrtAssets = allSrtAssets.filter((asset) => isTranslatedAsset(asset));
-  const srtAssets = originalSrtAssets;
+  const originalSrtAssetIds = new Set(originalSrtAssets.map((asset) => asset.id));
+  const translatedSrtAssets = allSrtAssets.filter((asset) => {
+    if (!isTranslatedAsset(asset)) return false;
+    const sourceId = asset.sourceAssetId || Number(asset.metadata?.source_asset_id || 0);
+    return Boolean(sourceId && originalSrtAssetIds.has(sourceId));
+  });
+  const srtAssets = [...originalSrtAssets, ...translatedSrtAssets];
+  const activeSourceSrtId = useMemo(() => {
+    if (srt.asset && isTranslatedAsset(srt.asset)) {
+      return srt.asset.sourceAssetId || Number(srt.asset.metadata?.source_asset_id || 0) || originalSrtAssets[0]?.id;
+    }
+    return srt.asset?.id || originalSrtAssets[0]?.id;
+  }, [srt.asset, originalSrtAssets.map((item) => item.id).join(',')]);
   const srtAssetIdForTimelineItem = useCallback((item: TimelineItem) => {
     if (item.kind !== 'srt') return undefined;
     if (item.sourceAssetId) return item.sourceAssetId;
@@ -292,6 +334,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     : Math.max(((project.durationMs || 0) / 1000) / Math.max(.1, videoSpeed), srt.segments.at(-1)?.end || 0, 1);
   const latestJob = [...videoJobs].sort((a, b) => b.id - a.id)[0];
   const dirty = useMemo(() => Boolean(srt.asset) && serializeSrt(srt.segments, edits) !== baselineSrt, [srt.asset, srt.segments, edits, baselineSrt]);
+  const translatedDirty = useMemo(
+    () => Boolean(translatedSrt.asset) && serializeSrt(translatedSrt.segments, translatedEdits) !== translatedBaselineSrt,
+    [translatedSrt.asset, translatedSrt.segments, translatedEdits, translatedBaselineSrt],
+  );
 
   const commitDraft = useCallback((nextSrt: SrtDocument, nextEdits: Record<number, string>, nextMessage?: string) => {
     const previous = snapshotDraft(srt, edits);
@@ -334,7 +380,11 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     try {
       const targetId = assetId ?? autoSrtAssetId;
       const data = targetId ? await studioApi.srtAsset(targetId) : await studioApi.srt(project.id);
-      if (assetId !== undefined && assetId !== autoSrtAssetId) setAutoSrtAssetId(assetId);
+      const loadedAssetId = data.asset?.id || assetId || null;
+      if (loadedAssetId && loadedAssetId !== autoSrtAssetId) {
+        setAutoSrtAssetId(loadedAssetId);
+        storeSelectedSrt(project.id, loadedAssetId);
+      }
       setSrt(data);
       setEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
       setBaselineSrt(serializeSrt(data.segments || [], {}));
@@ -415,28 +465,87 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     setAudioModeState(project.audioMode || 'original');
   }, [project.audioMode]);
   useEffect(() => {
+    const validAssetIds = new Set(srtAssets.map((asset) => asset.id));
+    const storedAssetId = readStoredSelectedSrt(project.id);
+    setAutoSrtAssetId((current) => {
+      const next = current && validAssetIds.has(current)
+        ? current
+        : storedAssetId && validAssetIds.has(storedAssetId)
+          ? storedAssetId
+          : translatedSrtAssets.at(-1)?.id ?? originalSrtAssets[0]?.id ?? null;
+      storeSelectedSrt(project.id, next);
+      return next;
+    });
+  }, [project.id, srtAssets.map((item) => item.id).join(','), translatedSrtAssets.map((item) => item.id).join(','), originalSrtAssets.map((item) => item.id).join(',')]);
+  useEffect(() => {
+    const loadedAssetId = srt.asset?.id;
+    if (!loadedAssetId) {
+      if (!srtAssets.length) {
+        setSourceSrt(EMPTY_SRT);
+        setTranslatedSrt(EMPTY_SRT);
+        setTranslatedEdits({});
+        setTranslatedBaselineSrt('');
+      }
+      return;
+    }
+    if (srtAssets.some((asset) => asset.id === loadedAssetId)) return;
+    const storedAssetId = readStoredSelectedSrt(project.id);
+    const fallback = srtAssets.find((asset) => asset.id === storedAssetId)
+      || translatedSrtAssets.at(-1)
+      || originalSrtAssets[0];
+    if (fallback) {
+      void loadSrt(fallback.id);
+      setSelection({ type: 'subtitle-track', assetId: fallback.id });
+      return;
+    }
+    setSrt(EMPTY_SRT);
+    setSourceSrt(EMPTY_SRT);
+    setTranslatedSrt(EMPTY_SRT);
+    setEdits({});
+    setTranslatedEdits({});
+    setBaselineSrt('');
+    setTranslatedBaselineSrt('');
+    setDraftHistory({ past: [], future: [] });
+    setVoiceSegments([]);
+    setAutoSrtAssetId(null);
+    storeSelectedSrt(project.id, null);
+    if (selection.type === 'subtitle' || selection.type === 'subtitle-track') setSelection({ type: 'project' });
+  }, [project.id, srt.asset?.id, srtAssets.map((asset) => asset.id).join(','), originalSrtAssets.map((asset) => asset.id).join(','), loadSrt, selection.type]);
+  useEffect(() => {
     if (!optimisticJobs.length) return;
     const realJobIds = new Set(jobs.map((job) => job.id));
     setOptimisticJobs((current) => current.filter((job) => !realJobIds.has(job.id)));
   }, [jobs, optimisticJobs.length]);
 
   useEffect(() => {
-    const original = originalSrtAssets[0];
-    if (original) studioApi.srtAsset(original.id).then(setSourceSrt).catch(() => setSourceSrt(EMPTY_SRT));
+    const sourceId = activeSourceSrtId;
+    if (sourceId) studioApi.srtAsset(sourceId).then(setSourceSrt).catch(() => setSourceSrt(EMPTY_SRT));
     else setSourceSrt(EMPTY_SRT);
-  }, [project.id, originalSrtAssets.map((item) => item.id).join(',')]);
+  }, [project.id, activeSourceSrtId]);
   useEffect(() => {
-    const translated = translatedSrtAssets.at(-1);
-    if (translated) studioApi.srtAsset(translated.id).then(setTranslatedSrt).catch(() => setTranslatedSrt(EMPTY_SRT));
-    else setTranslatedSrt(EMPTY_SRT);
-  }, [project.id, translatedSrtAssets.map((item) => item.id).join(',')]);
-  useEffect(() => {
-    setAutoSrtAssetId((current) =>
-      current && originalSrtAssets.some((asset) => asset.id === current)
-        ? current
-        : originalSrtAssets[0]?.id ?? null,
-    );
-  }, [project.id, originalSrtAssets.map((item) => item.id).join(',')]);
+    const matchingTranslations = translatedSrtAssets.filter((asset) => {
+      const sourceId = asset.sourceAssetId || Number(asset.metadata?.source_asset_id || 0);
+      return !activeSourceSrtId || sourceId === activeSourceSrtId;
+    });
+    const translated = matchingTranslations.find((asset) => String(asset.metadata?.target_language || '').toLowerCase() === targetLanguage.toLowerCase())
+      || matchingTranslations[0]
+      || translatedSrtAssets[0];
+    if (translated) {
+      studioApi.srtAsset(translated.id).then((data) => {
+        setTranslatedSrt(data);
+        setTranslatedEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
+        setTranslatedBaselineSrt(serializeSrt(data.segments || [], {}));
+      }).catch(() => {
+        setTranslatedSrt(EMPTY_SRT);
+        setTranslatedEdits({});
+        setTranslatedBaselineSrt('');
+      });
+    } else {
+      setTranslatedSrt(EMPTY_SRT);
+      setTranslatedEdits({});
+      setTranslatedBaselineSrt('');
+    }
+  }, [project.id, activeSourceSrtId, targetLanguage, translatedSrtAssets.map((item) => `${item.id}:${item.sourceAssetId || item.metadata?.source_asset_id || ''}:${item.metadata?.target_language || ''}`).join(',')]);
   useEffect(() => {
     function warnBeforeLeave(event: BeforeUnloadEvent) {
       if (!dirty) return;
@@ -447,6 +556,21 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     return () => window.removeEventListener('beforeunload', warnBeforeLeave);
   }, [dirty]);
   useEffect(() => { loadSegments(); }, [loadSegments]);
+  useEffect(() => {
+    if (!activeVoiceJobKey) return;
+    let cancelled = false;
+    const refreshVoiceReview = () => {
+      if (cancelled) return;
+      void loadSegments();
+      void loadTimelineIssues();
+    };
+    refreshVoiceReview();
+    const timer = window.setInterval(refreshVoiceReview, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeVoiceJobKey, loadSegments, loadTimelineIssues]);
   useEffect(() => {
     const hasTimingIssues = Boolean(project.ttsTimeline?.needs_review || project.ttsTimeline?.final_validation_status === 'NEEDS_REVIEW');
     if (project.hasTts || hasTimingIssues) loadTimelineIssues();
@@ -459,13 +583,42 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   useEffect(() => { if (!voices.some((voice) => voice.id === ttsVoice)) setTtsVoice(voices[0]?.id || 'default'); }, [voices, ttsVoice]);
   useEffect(() => {
     if (!latestJob || latestJob.status !== 'completed') return;
-    if (['srt', 'translate'].includes(latestJob.kind) && handledSrtJobRef.current !== latestJob.id) {
+    if (latestJob.kind === 'srt' && handledSrtJobRef.current !== latestJob.id) {
       handledSrtJobRef.current = latestJob.id;
       const resultAssetId = Number(latestJob.result?.assetId || latestJob.result?.sourceAssetId || 0);
       attachSrtToTimeline(resultAssetId).catch(() => undefined);
     }
+    if (latestJob.kind === 'translate' && handledSrtJobRef.current !== latestJob.id) {
+      handledSrtJobRef.current = latestJob.id;
+      const translatedAssetId = Number(latestJob.result?.assetId || 0);
+      refresh().then(() => {
+        if (translatedAssetId) {
+          if (project.workspaceId) {
+            void attachSrtToTimeline(translatedAssetId);
+          }
+          studioApi.srtAsset(translatedAssetId).then((data) => {
+            setSrt(data);
+            setEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
+            setBaselineSrt(serializeSrt(data.segments || [], {}));
+            setDraftHistory({ past: [], future: [] });
+            setAutoSrtAssetId(translatedAssetId);
+            storeSelectedSrt(project.id, translatedAssetId);
+            setTranslatedSrt(data);
+            setTranslatedEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
+            setTranslatedBaselineSrt(serializeSrt(data.segments || [], {}));
+            setSelection({ type: 'subtitle-track', assetId: translatedAssetId });
+          }).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+      setMessage('Translated SRT is ready and selected.');
+    }
     if (['tts', 'tts-segment'].includes(latestJob.kind)) { loadSegments(); loadTimelineIssues(); }
     if (latestJob.kind === 'remove') setBlurEffectHidden(false);
+    if (latestJob.kind === 'tts' && latestJob.result?.needsReview) {
+      setMessage('Voice lines were generated. Review the red timing lines, edit them, then regenerate those lines.');
+      refresh().catch(() => undefined);
+      return;
+    }
     if (latestJob.kind === 'tts' && autoMuxTtsJobRef.current !== latestJob.id) {
       autoMuxTtsJobRef.current = latestJob.id;
       queue(`/videos/${project.id}/tts/mux-video`, undefined, 'Voice preview').catch(() => undefined);
@@ -797,10 +950,15 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const previous = cloneTimeline(timelineItems);
     const removedItems = timelineItems.filter((item) => remove.has(item.id));
     const removedSrtAssetIds = new Set(removedItems.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
-    const next = timelineItems.filter((item) => !remove.has(item.id) && !(item.kind === 'audio' && item.linkedVideoItemId && remove.has(item.linkedVideoItemId)))
-      .map((item) => item.kind === 'video' && keys.some((key) => timelineItems.some((clip) => clip.id === key && clip.kind === 'audio' && clip.linkedVideoItemId === item.id))
-        ? { ...item, sourceAudioMuted: false }
-        : item);
+    const linkedVideoIdsToRestore = new Set(removedItems
+      .filter((item) => item.kind === 'audio' && item.linkedVideoItemId)
+      .map((item) => item.linkedVideoItemId!));
+    const filtered = timelineItems.filter((item) => !remove.has(item.id) && !(item.kind === 'audio' && item.linkedVideoItemId && remove.has(item.linkedVideoItemId)));
+    const next = filtered.map((item) => {
+      if (item.kind !== 'video' || !linkedVideoIdsToRestore.has(item.id)) return item;
+      const stillHasLinkedAudio = filtered.some((clip) => clip.kind === 'audio' && clip.linkedVideoItemId === item.id);
+      return stillHasLinkedAudio ? item : { ...item, sourceAudioMuted: false };
+    });
     const remainingSrtAssetIds = new Set(next.map(srtAssetIdForTimelineItem).filter((id): id is number => typeof id === 'number'));
     const shouldClearLoadedSrt = Boolean(srt.asset?.id && removedSrtAssetIds.has(srt.asset.id) && !remainingSrtAssetIds.has(srt.asset.id));
     setSelection({ type: 'project' });
@@ -835,7 +993,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
     const ok = await commitTimelineState(state, created.length ? `Split ${keys.length} clip${keys.length === 1 ? '' : 's'}.` : 'Timeline split updated.', previous);
     if (ok && created.length) {
-      setSelection({ type: 'timeline-items', keys: [...keys, ...created.map((item) => item.id)], track: created[0].track });
+      setSelection({ type: 'timeline-items', keys: created.map((item) => item.id), track: created[0].track });
     }
     return ok;
   }
@@ -1071,6 +1229,16 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     await loadTimelineIssues();
     setMessage('Subtitle changes saved.');
   }
+  async function saveTranslatedSrt() {
+    if (!translatedSrt.asset?.id) return;
+    await studioApi.saveSrtAsset(translatedSrt.asset.id, serializeSrt(translatedSrt.segments, translatedEdits));
+    const data = await studioApi.srtAsset(translatedSrt.asset.id);
+    setTranslatedSrt(data);
+    setTranslatedEdits(Object.fromEntries((data.segments || []).map((segment) => [segment.index, segment.text])));
+    setTranslatedBaselineSrt(serializeSrt(data.segments || [], {}));
+    await loadTimelineIssues();
+    setMessage('Translated subtitle changes saved.');
+  }
   async function copySrt() {
     if (!srt.segments.length) {
       setMessage('No subtitle content to copy.');
@@ -1125,7 +1293,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     commitDraft(nextSrt, edits);
   }
   function deleteSegment(index: number) {
-    deleteSegments([index]);
+    void deleteSegments([index]);
   }
   function selectedSubtitleIndexes() {
     if (selection.type === 'subtitle') return [selection.index];
@@ -1135,7 +1303,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       .map((key) => Number(key.split(':')[1]))
       .filter(Number.isFinite))];
   }
-  function deleteSegments(indexes: number[]) {
+  async function deleteSegments(indexes: number[]) {
     const selected = new Set(indexes);
     if (!selected.size) return;
     const removed = srt.segments.filter((segment) => selected.has(segment.index)).length;
@@ -1156,11 +1324,22 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
 
     const nextEdits = { ...edits };
     selected.forEach((index) => delete nextEdits[index]);
-    commitDraft({ ...srt, segments: remaining }, nextEdits, `Removed ${removed} subtitle ${removed === 1 ? 'line' : 'lines'} from the draft. Press Undo to restore.`);
+    const nextSrt = { ...srt, segments: remaining };
+    commitDraft(nextSrt, nextEdits, `Removed ${removed} subtitle ${removed === 1 ? 'line' : 'lines'}.`);
     setSelection({ type: 'subtitle-track', assetId: srt.asset?.id });
+    if (srt.asset?.id) {
+      try {
+        const savedContent = serializeSrt(remaining, nextEdits);
+        await studioApi.saveSrtAsset(srt.asset.id, savedContent);
+        setBaselineSrt(savedContent);
+        await loadTimelineIssues();
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Unable to save subtitle deletion');
+      }
+    }
   }
   function deleteSelectedSubtitles() {
-    deleteSegments(selectedSubtitleIndexes());
+    void deleteSegments(selectedSubtitleIndexes());
   }
   function moveSubtitleSegments(indexes: number[], verticalDelta: number) {
     if (!indexes.length || !Number.isFinite(verticalDelta) || Math.abs(verticalDelta) < .001) return;
@@ -1385,10 +1564,16 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       hardsubMode,
       ocrArea: subtitleSource === 'hardsub' && ocrAreaMode === 'custom' ? ocrArea : null,
       timelineSpeed: videoSpeed,
+      maxWordsPerLine: maxWordsPerLine ? Number(maxWordsPerLine) : null,
     };
     if (!project.workspaceId) {
       await queue(`/videos/${project.id}/srt/generate`, body, 'Subtitle job');
       return;
+    }
+    try {
+      await studioApi.saveWorkspaceTimeline(project.workspaceId, timelineItems, timelineState, timelineScene);
+    } catch {
+      // Continue to dispatch subtitle generation even if timeline save was non-fatal
     }
     try {
       const result = await request<{ jobId: number; alreadyRunning?: boolean }>(
@@ -1415,8 +1600,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     }
   }
   async function translate() {
-    await saveSrt();
-    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: srt.asset?.id, sourceLanguage: translationSourceLanguage, targetLanguage }, 'Translation job');
+    if (srt.asset?.id && !isTranslatedAsset(srt.asset) && dirty) await saveSrt();
+    if (translatedDirty) await saveTranslatedSrt();
+    await queue(`/videos/${project.id}/srt/translate`, { srtAssetId: activeSourceSrtId, sourceLanguage: translationSourceLanguage, targetLanguage }, 'Translation job');
   }
   async function remove() {
     setBlurEffectHidden(false);
@@ -1476,11 +1662,38 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     const next = clampClipValue(value, .1, 80);
     setVoiceSpeed(next); saveClipSetting('voiceSpeed', next);
   }
-  const ttsPayload = () => ({ voice: ttsVoice, srtAssetId: srt.asset?.id, engine: ttsEngine, language: ttsLanguage, rate: ttsEngine === 'vieneu' ? ttsRate : '1.0', timingMode: 'srt_slot', ...TTS_FIT });
+  const ttsPayload = () => {
+    const timelineSrtItem = timelineItems.find((item) => item.track === 'S1' && item.kind === 'srt');
+    const activeSrtId = srt.asset?.id || timelineSrtItem?.sourceAssetId;
+    return {
+      voice: ttsVoice,
+      srtAssetId: activeSrtId,
+      engine: ttsEngine,
+      language: ttsLanguage,
+      rate: ttsEngine === 'vieneu' ? ttsRate : '1.0',
+      timingMode: 'srt_slot',
+      ...TTS_FIT,
+    };
+  };
   async function generateVoice(index?: number) {
     await saveSrt();
     const path = index ? `/videos/${project.id}/tts/segments/${index}` : `/videos/${project.id}/tts`;
     await queue(path, ttsPayload(), index ? `Voice line ${index}` : 'Voiceover job');
+  }
+  async function speedUpVoice(index: number, speed: number, targetSpeed?: number) {
+    if (!srt.asset?.id) { setMessage('Select an SRT before speeding up a voice line.'); return; }
+    const voice = voiceByIndex[index];
+    if (!voice?.audioUrl) { setMessage(`Generate voice line #${index} before speeding it up.`); return; }
+    try {
+      const result = await studioApi.speedUpTtsSegment(project.id, index, { ...ttsPayload(), engine: voice.engine || ttsEngine, speed, targetSpeed });
+      await loadSegments();
+      await loadTimelineIssues();
+      await refresh();
+      const appliedSpeed = result.appliedLocalSpeed || targetSpeed || result.speedMultiplier;
+      setMessage(result.ready ? `Voice line #${index} is Ready at ${appliedSpeed.toFixed(2)}x.` : `Voice line #${index} sped up to ${appliedSpeed.toFixed(2)}x; still too long.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : `Unable to speed up voice line #${index}`);
+    }
   }
   async function mergeVoice() {
     await saveSrt(); await queue(`/videos/${project.id}/tts/segments/merge`, ttsPayload(), 'Voice merge');
@@ -1606,7 +1819,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
         const indexes = selectedSubtitleIndexes();
         if (!indexes.length) return;
         event.preventDefault();
-        deleteSegments(indexes);
+        void deleteSegments(indexes);
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
@@ -1614,22 +1827,22 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }, [deleteBlurEffect, deleteSegments, deleteTimelineItems, deleteVoiceover, redoEditorAction, selectedSubtitleIndexes, selection, timelineItems, undoEditorAction]);
 
   return {
-    project, projects, isEmptyWorkspace, jobs: videoJobs, activeJobs, srt, sourceSrt, translatedSrt, edits, setEdits: updateEdits, dirty, voiceSegments, voiceByIndex, timelineIssues, latestVoiceAsset, activeBlurEffect,
+    project, projects, isEmptyWorkspace, jobs: videoJobs, activeJobs, srt, sourceSrt, translatedSrt, translatedEdits, setTranslatedEdits, translatedDirty, edits, setEdits: updateEdits, dirty, voiceSegments, voiceByIndex, timelineIssues, latestVoiceAsset, activeBlurEffect,
     selectedTextItems, selectedTimelineAudioItem, selectedTimelineImageItem,
     selection, setSelection, currentSegment, currentVoice, activeTool, openTool, assetTab, setAssetTab,
-    bottomView, setBottomView, playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
+    playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
-    previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
+    previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth, bottomView, setBottomView,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob, audioJobForVideo,
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
-    subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,
+    subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage, maxWordsPerLine, setMaxWordsPerLine,
     targetLanguage, setTargetLanguage, translationSourceLanguage, setTranslationSourceLanguage,
     removeMethod, setRemoveMethod, removeMode, setRemoveMode,
     autoSrtAssetId, setAutoSrtAssetId,
     insertMode, setInsertMode, ttsEngine, setTtsEngine, ttsLanguage, setTtsLanguage,
     ttsVoice, setTtsVoice, ttsRate, setTtsRate, voices,
-    loadSrt, loadSegments, loadTimelineIssues, saveSrt, copySrt, pasteSrt, updateSegmentTime, deleteSegment, deleteSelectedSubtitles, moveSubtitleSegments, moveSelectedSubtitles, replaceWithTranslated, undoDraft: undoEditorAction, redoDraft: redoEditorAction, importSrt, generateSrt, translate, remove, deleteBlurEffect, insert, undo,
-    generateVoice, mergeVoice, muxVoice, deleteVoiceover, remapTimeline, copyTimelineIssues, playVoice, cancelJob, refresh, openProjectVideo: onOpenVersion, addVideoToTimeline, addProjectAssetToTimeline, deleteTimelineItems, previewTimelineItems, commitTimelineItems, commitTimelineState,
+    loadSrt, loadSegments, loadTimelineIssues, saveSrt, saveTranslatedSrt, copySrt, pasteSrt, updateSegmentTime, deleteSegment, deleteSelectedSubtitles, moveSubtitleSegments, moveSelectedSubtitles, replaceWithTranslated, undoDraft: undoEditorAction, redoDraft: redoEditorAction, importSrt, generateSrt, translate, remove, deleteBlurEffect, insert, undo,
+    generateVoice, speedUpVoice, mergeVoice, muxVoice, deleteVoiceover, remapTimeline, copyTimelineIssues, playVoice, cancelJob, refresh, openProjectVideo: onOpenVersion, addVideoToTimeline, addProjectAssetToTimeline, deleteTimelineItems, previewTimelineItems, commitTimelineItems, commitTimelineState,
     splitSelectedTimelineItems, duplicateSelectedTimelineItems, copyTimelineItems, pasteTimelineItemsAt, addTimelineTrack, removeTimelineTrack, toggleTimelineTrackMute, toggleTimelineTrackVisibility, setTimelineOption, toggleTimelineBookmark, captureCurrentFrame,
   };
 }

@@ -177,7 +177,10 @@ def render_project_timeline(
     if not active_items:
         raise RuntimeError("Timeline does not contain any active items.")
     
-    media_items = [item for item in active_items if _kind(item) in {"video", "audio", "image"}]
+    media_items = [
+        item for item in active_items
+        if _kind(item) in {"video", "audio", "image"}
+    ]
     duration_items = media_items if media_items else active_items
     duration = max(_start(item) + _duration(item) for item in duration_items)
     output_path = unique_output_path(output_dir, settings.file_name)
@@ -405,8 +408,10 @@ def _add_image_layer(ctx: RenderContext, registry: InputRegistry, filters: list[
 def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], current: str) -> str:
     label = _add_canvas_effects(ctx, filters, current)
     
-    srt_events = []
-    text_events = []
+    events: list[dict[str, Any]] = []
+    
+    global_style = _primary_subtitle_style(ctx)
+    global_area = _primary_subtitle_area(ctx)
     
     for item in _items_in_track_order(ctx):
         if _kind(item) == "srt" and _visual_enabled(ctx, item):
@@ -416,38 +421,46 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
             source_start = _source_start(item)
             item_start = _start(item)
             item_end = _end(item)
+            params = item.get("params") if isinstance(item.get("params"), dict) else {}
+            item_style = params.get("subtitleStyle") or params.get("textStyle") or params.get("style") or global_style
+            item_area = params.get("subtitleArea") or params.get("area") or global_area
+            item_pos = params.get("subtitlePosition") or params.get("textPosition") or params.get("position")
             for segment in read_srt(source):
                 start = item_start + max(0.0, segment.start - source_start)
                 end = item_start + max(0.0, segment.end - source_start)
                 start = max(item_start, start)
                 end = min(item_end, end)
                 if end > start:
-                    srt_events.append((start, end, segment.text))
+                    events.append({
+                        "start": start,
+                        "end": end,
+                        "text": segment.text,
+                        "style": dict(item_style) if isinstance(item_style, dict) else dict(global_style),
+                        "area": dict(item_area) if isinstance(item_area, dict) else dict(global_area),
+                        "position": dict(item_pos) if isinstance(item_pos, dict) else None,
+                    })
                     
         if _kind(item) == "text" and _visual_enabled(ctx, item):
             params = item.get("params") if isinstance(item.get("params"), dict) else {}
             style = params.get("textStyle") if isinstance(params.get("textStyle"), dict) else {}
             position = params.get("textPosition") if isinstance(params.get("textPosition"), dict) else {}
             text = str(params.get("text") or item.get("name") or "Text")
-            x = _clamp_float(position.get("x"), 0.5, 0.0, 1.0)
-            y = _clamp_float(position.get("y"), 0.45, 0.0, 1.0)
-            text_events.append({
+            events.append({
                 "start": _start(item),
                 "end": _end(item),
                 "text": text,
                 "style": style,
-                "x": x,
-                "y": y
+                "position": position,
             })
             
-    if not srt_events and not text_events:
+    if not events:
         if label == current:
             out = "[vout]"
             filters.append(f"{current}format=yuv420p{out}")
             return out
         return label
         
-    from stitch_studio.rendering.subtitle_ass_generator import generate_ass_file
+    from stitch_studio.rendering.subtitle_ass_generator import generate_ass_file, get_bundled_fonts_dir
     
     ass_path = ctx.temp_dir / "subtitles.ass"
     generate_ass_file(
@@ -455,15 +468,19 @@ def _add_text_and_subtitle_layers(ctx: RenderContext, filters: list[str], curren
         timeline_width=ctx.width,
         timeline_height=ctx.height,
         project_canvas_height=_project_canvas_height(ctx),
-        srt_events=srt_events,
-        text_events=text_events,
-        global_style=_primary_subtitle_style(ctx),
-        subtitle_area=_primary_subtitle_area(ctx)
+        events=events,
+        global_style=global_style,
+        subtitle_area=global_area,
     )
     
     out = "[vsubs]"
     escaped_ass = _escape_filter_path(ass_path)
-    filters.append(f"{label}subtitles='{escaped_ass}'{out}")
+    fonts_dir = get_bundled_fonts_dir()
+    if fonts_dir and fonts_dir.exists():
+        escaped_fonts = _escape_filter_path(fonts_dir)
+        filters.append(f"{label}subtitles='{escaped_ass}':fontsdir='{escaped_fonts}'{out}")
+    else:
+        filters.append(f"{label}subtitles='{escaped_ass}'{out}")
     return out
 
 
@@ -663,7 +680,7 @@ def _image_alpha_fades(item: dict[str, Any], start: float, duration: float) -> l
 def _drawtext_filter(ctx: RenderContext, style: dict[str, Any], text_path: Path, x: float, y: float, start: float, end: float, *, centered: bool, vertical: str = "middle") -> str:
     canvas_h = _project_canvas_height(ctx)
     font_size = max(8, int(round(_style_float(style, "fontSize", 42) * ctx.height / canvas_h)))
-    font = str(style.get("fontFamily") or "Segoe UI")
+    font = str(style.get("fontFamily") or "Inter")
     align_y = "y"
     if vertical == "top":
         y_expr = f"{ctx.height * y:.2f}"
@@ -697,19 +714,83 @@ def _write_text_file(ctx: RenderContext, index: int, text: str) -> Path:
 
 def _project_canvas_height(ctx: RenderContext) -> float:
     canvas = ctx.timeline_state.get("canvas") if isinstance(ctx.timeline_state.get("canvas"), dict) else {}
-    return max(16.0, float(canvas.get("height") or ctx.height))
+    mode = str(canvas.get("mode") or "").lower()
+    if (mode == "source" or not canvas.get("height")) and ctx.primary_video:
+        meta = ctx.primary_video.metadata if isinstance(ctx.primary_video.metadata, dict) else {}
+        pv_h = meta.get("height") or getattr(ctx.primary_video, "height", None)
+        if pv_h and float(pv_h) > 120:
+            return float(pv_h)
+    height_val = canvas.get("height")
+    if height_val and float(height_val) > 120:
+        return float(height_val)
+    return max(16.0, float(ctx.height))
 
 
 def _primary_subtitle_style(ctx: RenderContext) -> dict[str, Any]:
-    metadata = ctx.primary_video.metadata if ctx.primary_video and ctx.primary_video.metadata else {}
-    return metadata.get("subtitle_style") if isinstance(metadata.get("subtitle_style"), dict) else {}
+    if ctx.project and isinstance(getattr(ctx.project, "metadata", None), dict):
+        meta = ctx.project.metadata
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = meta.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+        ts = meta.get("timeline_state")
+        if isinstance(ts, dict):
+            for key in ("subtitle_style", "subtitleStyle", "style"):
+                val = ts.get(key)
+                if isinstance(val, dict) and val:
+                    return dict(val)
+
+    if isinstance(ctx.timeline_state, dict):
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = ctx.timeline_state.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+
+    if ctx.primary_video and isinstance(getattr(ctx.primary_video, "metadata", None), dict):
+        meta = ctx.primary_video.metadata
+        for key in ("subtitle_style", "subtitleStyle", "style"):
+            val = meta.get(key)
+            if isinstance(val, dict) and val:
+                return dict(val)
+
+    return {}
 
 
 def _primary_subtitle_area(ctx: RenderContext) -> dict[str, float]:
-    metadata = ctx.primary_video.metadata if ctx.primary_video and ctx.primary_video.metadata else {}
-    area = metadata.get("area_ratio") if isinstance(metadata.get("area_ratio"), dict) else None
+    area = None
+    if ctx.project and isinstance(getattr(ctx.project, "metadata", None), dict):
+        meta = ctx.project.metadata
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = meta.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+        if not area and isinstance(meta.get("timeline_state"), dict):
+            ts = meta["timeline_state"]
+            for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+                val = ts.get(key)
+                if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                    area = val
+                    break
+
+    if not area and isinstance(ctx.timeline_state, dict):
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = ctx.timeline_state.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+
+    if not area and ctx.primary_video and isinstance(getattr(ctx.primary_video, "metadata", None), dict):
+        meta = ctx.primary_video.metadata
+        for key in ("subtitle_area", "subtitleArea", "area_ratio", "area"):
+            val = meta.get(key)
+            if isinstance(val, dict) and "xmin" in val and "ymin" in val:
+                area = val
+                break
+
     if not area:
         return {"xmin": 0.04, "xmax": 0.96, "ymin": 0.60, "ymax": 0.98}
+
     return {
         "xmin": _clamp_float(area.get("xmin"), 0.04, 0.0, 1.0),
         "xmax": _clamp_float(area.get("xmax"), 0.96, 0.0, 1.0),

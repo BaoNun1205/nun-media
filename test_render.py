@@ -1,0 +1,22 @@
+import subprocess
+import os
+
+ass_content = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,100,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(960,540)\\1c&H0000FF&\\p1}m 0 0 l 500 0 l 500 500 l 0 500
+Dialogue: 1,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\pos(960,540)\\1c&H00FF00&}TEXT LAYER 1
+"""
+with open("test.ass", "w") as f:
+    f.write(ass_content)
+
+# We can't view the video, but we can generate a frame and check the colors
+subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=1920x1080:d=1", "-vf", "subtitles=test.ass", "-vframes", "1", "test_frame.png"])

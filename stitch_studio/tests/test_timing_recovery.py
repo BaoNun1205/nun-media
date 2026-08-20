@@ -1,0 +1,307 @@
+import json
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from stitch_studio.models import SubtitleSegment
+from stitch_studio.services import TranslationService, _apply_inline_timing_retry
+
+class TestTimingRecovery(unittest.TestCase):
+    def setUp(self):
+        self.service = TranslationService.__new__(TranslationService)
+        self.calls = []
+        self.responses = []
+        
+        class FakeModels:
+            def generate_content(inner_self, *, model, contents, config=None):
+                self.calls.append(contents)
+                if not self.responses:
+                    return SimpleNamespace(text="[]")
+                response = self.responses.pop(0)
+                return SimpleNamespace(text=response if isinstance(response, str) else json.dumps(response))
+                
+        self.service._gemini_client = lambda: SimpleNamespace(models=FakeModels())  # type: ignore[attr-defined]
+
+    def _make_items(self, ids):
+        return [
+            {
+                "id": item_id,
+                "output_language": "en",
+                "source_text": f"src {item_id}",
+                "current_translation": f"current {item_id}",
+                "correction_round": 2,
+            }
+            for item_id in ids
+        ]
+
+    def test_complete_response(self):
+        # PART 21 — REQUIRED TEST: COMPLETE RESPONSE
+        self.responses = [
+            [{"id": 12, "text": "R12"}, {"id": 13, "text": "R13"}, {"id": 14, "text": "R14"}]
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13, 14]))
+        
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(replacements, {12: "R12", 13: "R13", 14: "R14"})
+
+    def test_one_missing_id(self):
+        # PART 22 — REQUIRED TEST: ONE MISSING ID
+        self.responses = [
+            [{"id": 12, "text": "R12"}, {"id": 14, "text": "R14"}, {"id": 15, "text": "R15"}], # Misses 13
+            [{"id": 13, "text": "R13_recovered"}] # Recovers 13
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13, 14, 15]))
+        
+        self.assertEqual(len(self.calls), 2)
+        # Check that the second call only asks for ID 13
+        self.assertIn('"id": 13,', self.calls[1])
+        self.assertNotIn('"id": 12,', self.calls[1])
+        self.assertEqual(replacements, {12: "R12", 13: "R13_recovered", 14: "R14", 15: "R15"})
+
+    def test_multiple_missing_ids(self):
+        # PART 23 — REQUIRED TEST: MULTIPLE MISSING IDS
+        self.responses = [
+            [{"id": 12, "text": "R12"}, {"id": 15, "text": "R15"}, {"id": 17, "text": "R17"}], # Misses 13,14,16
+            [{"id": 13, "text": "R13"}, {"id": 14, "text": "R14"}, {"id": 16, "text": "R16"}]  # Recovers them
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13, 14, 15, 16, 17]))
+        
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('"id": 13', self.calls[1])
+        self.assertIn('"id": 14', self.calls[1])
+        self.assertIn('"id": 16', self.calls[1])
+        self.assertEqual(replacements, {12: "R12", 13: "R13", 14: "R14", 15: "R15", 16: "R16", 17: "R17"})
+
+    def test_missing_id_never_recovers(self):
+        # PART 24 — REQUIRED TEST: MISSING ID NEVER RECOVERS
+        self.responses = [
+            [{"id": 12, "text": "R12"}, {"id": 14, "text": "R14"}], # Misses 13
+            [{"id": 12, "text": "ignore"}], # Missing 13 again (attempt 1)
+            [{"id": 14, "text": "ignore"}]  # Missing 13 again (attempt 2)
+        ]
+        # Should gracefully finish and return what it has.
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13, 14]))
+        self.assertEqual(len(self.calls), 3) # 1 initial + 2 recoveries
+        self.assertEqual(replacements, {12: "R12", 14: "R14"})
+
+    def test_unexpected_id(self):
+        # PART 25 — REQUIRED TEST: UNEXPECTED ID
+        self.responses = [
+            [{"id": 12, "text": "R12"}, {"id": 13, "text": "R13"}, {"id": 999, "text": "R999"}]
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13]))
+        
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(replacements, {12: "R12", 13: "R13"})
+        self.assertNotIn(999, replacements)
+
+    def test_duplicate_id(self):
+        # PART 26 — REQUIRED TEST: DUPLICATE ID
+        self.responses = [
+            [{"id": 12, "text": "A"}, {"id": 12, "text": "B"}, {"id": 13, "text": "C"}],
+            [{"id": 12, "text": "recovered"}]
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13]))
+        
+        self.assertEqual(len(self.calls), 2)
+        # ID 13 should be accepted in first call
+        # ID 12 should be discarded in first call, so retried
+        self.assertIn('"id": 12,', self.calls[1])
+        self.assertNotIn('"id": 13,', self.calls[1])
+        self.assertEqual(replacements, {12: "recovered", 13: "C"})
+
+    def test_empty_text(self):
+        # PART 27 — REQUIRED TEST: EMPTY TEXT
+        self.responses = [
+            [{"id": 12, "text": ""}, {"id": 13, "text": "valid"}],
+            [{"id": 12, "text": "recovered"}]
+        ]
+        replacements = self.service.optimize_timing_translations(self._make_items([12, 13]))
+        
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(replacements, {12: "recovered", 13: "valid"})
+
+    def test_small_batching(self):
+        # PART 28 — REQUIRED TEST: SMALL BATCHING
+        # 25 items -> chunks of 10, 10, 5
+        self.responses = [
+            [{"id": i, "text": f"R{i}"} for i in range(1, 11)],
+            [{"id": i, "text": f"R{i}"} for i in range(11, 21)],
+            [{"id": i, "text": f"R{i}"} for i in range(21, 26)]
+        ]
+        items = self._make_items(list(range(1, 26)))
+        replacements = self.service.optimize_timing_translations(items)
+        
+        self.assertEqual(len(self.calls), 3) # 3 chunks, no missing
+        for i in range(1, 26):
+            self.assertEqual(replacements[i], f"R{i}")
+
+    def test_recovery_preserves_correction_round(self):
+        # PART 29 — REQUIRED TEST: CORRECTION ROUND IS NOT INCREMENTED
+        self.responses = [
+            [{"id": 12, "text": "R12"}], # Misses 13
+            [{"id": 13, "text": "R13"}]
+        ]
+        items = self._make_items([12, 13])
+        # Set correction round specifically
+        for item in items:
+            item["correction_round"] = 2
+            item["output_language"] = "en"
+            
+        self.service.optimize_timing_translations(items)
+        
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('"correction_round": 2', self.calls[1])
+        self.assertNotIn('"correction_round": 3', self.calls[1])
+
+    def test_rejects_replacement_over_target_max_words(self):
+        self.responses = [
+            [{"id": 12, "text": "one two three four five six seven eight"}],
+            [{"id": 12, "text": "one two three four five six seven"}],
+        ]
+        items = [
+            {
+                "id": 12,
+                "output_language": "en",
+                "source_text": "src 12",
+                "current_translation": "one two three four five six seven eight nine ten",
+                "available_seconds": 2.0,
+                "voice_seconds": 3.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn('"TARGET_MAX_WORDS": 7', self.calls[0])
+        self.assertEqual(replacements, {12: "one two three four five six seven"})
+
+    def test_vietnamese_prompt_renders_real_target_and_translation(self):
+        current = "Làm khán giả được một phen hú vía phải không nào?"
+        self.responses = [
+            "Khán giả hú vía.",
+        ]
+        items = [
+            {
+                "id": 7,
+                "output_language": "vi",
+                "current_translation": current,
+                "available_seconds": 1.0,
+                "voice_seconds": 2.6,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+        prompt = self.calls[0]
+
+        self.assertEqual(replacements, {7: "Khán giả hú vía."})
+        self.assertIn("Rút gọn câu này còn 5 từ.", prompt)
+        self.assertIn("Bắt buộc không vượt quá 5 từ.", prompt)
+        self.assertIn(f"Câu hiện tại:\n{current}", prompt)
+        self.assertIn("ID: 7", prompt)
+        self.assertIn("TARGET_MAX_WORDS: 5", prompt)
+        self.assertIn("CURRENT_TRANSLATION:", prompt)
+        self.assertNotIn("{TARGET_MAX_WORDS}", prompt)
+        self.assertNotIn("{CURRENT_TRANSLATION}", prompt)
+        self.assertNotIn('"available_seconds":', prompt)
+        self.assertNotIn('"voice_seconds":', prompt)
+        self.assertNotIn('"source_text":', prompt)
+
+    def test_vietnamese_timing_retry_sends_one_request_per_subtitle(self):
+        self.responses = ["Một", "Hai"]
+        items = [
+            {
+                "id": 1,
+                "output_language": "vi",
+                "current_translation": "một hai ba bốn năm sáu",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            },
+            {
+                "id": 2,
+                "output_language": "vi",
+                "current_translation": "bảy tám chín mười mười một",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            },
+            {
+                "id": 3,
+                "output_language": "vi",
+                "current_translation": "dòng này đã fit",
+                "available_seconds": 1.0,
+                "voice_seconds": 1.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": False,
+            },
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(replacements, {1: "Một", 2: "Hai"})
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("ID: 1", self.calls[0])
+        self.assertNotIn("ID: 2", self.calls[0])
+        self.assertIn("ID: 2", self.calls[1])
+        self.assertNotIn("ID: 1", self.calls[1])
+        self.assertNotIn("ID: 3", "\n".join(self.calls))
+
+    def test_vietnamese_rejects_rewrite_over_target_max_words(self):
+        self.responses = [
+            "một hai ba bốn",
+            "một hai ba",
+        ]
+        items = [
+            {
+                "id": 9,
+                "output_language": "vi",
+                "current_translation": "một hai ba bốn năm sáu",
+                "available_seconds": 1.0,
+                "voice_seconds": 2.0,
+                "max_local_speed": 1.30,
+                "needs_timing_rewrite": True,
+            }
+        ]
+
+        replacements = self.service.optimize_timing_translations(items)
+
+        self.assertEqual(replacements, {9: "một hai ba"})
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("TARGET_MAX_WORDS: 3", self.calls[0])
+        self.assertIn("ID: 9", self.calls[1])
+
+    def test_inline_timing_retry_renders_each_rewrite_until_callback_passes(self):
+        callback_responses = ["one two three four five six seven", "one two three four five", None]
+        rendered_texts = []
+
+        def callback(segment, wav_path, sample_rate):
+            self.assertEqual(wav_path, Path("segment.wav") if not rendered_texts else Path(f"segment_{len(rendered_texts)}.wav"))
+            self.assertEqual(sample_rate, 48000)
+            return callback_responses.pop(0)
+
+        def render_segment(segment):
+            rendered_texts.append(segment.text)
+            return segment, Path(f"segment_{len(rendered_texts)}.wav"), {"text": segment.text}
+
+        segment, path, row = _apply_inline_timing_retry(
+            SubtitleSegment(1, 0.0, 1.0, "one two three four five six seven eight nine ten"),
+            Path("segment.wav"),
+            48000,
+            callback=callback,
+            render_segment=render_segment,
+        )
+
+        self.assertEqual(segment.text, "one two three four five")
+        self.assertEqual(path, Path("segment_2.wav"))
+        self.assertEqual(row, {"text": "one two three four five"})
+        self.assertEqual(
+            rendered_texts,
+            ["one two three four five six seven", "one two three four five"],
+        )

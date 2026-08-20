@@ -11,8 +11,9 @@ import type { SubtitleStyle, TimelineItem } from '../../types/studio';
 
 export function ContextInspector({ editor }: { editor: EditorController }) {
   return <aside className="context-inspector">
-    <header><span>Inspector</span><small>{selectionName(editor)}</small></header>
-    <div className="inspector-body">{editor.selection.type === 'subtitle' && editor.currentSegment ? <SubtitleInspector editor={editor} />
+    <header><span>{inspectorTitle(editor)}</span><small>{selectionName(editor)}</small></header>
+    <div className="inspector-body">{editor.activeTool === 'voiceover' ? <VoiceLinesInspector editor={editor} />
+      : editor.selection.type === 'subtitle' && editor.currentSegment ? <SubtitleInspector editor={editor} />
       : editor.selection.type === 'voice' && editor.currentVoice ? <VoiceInspector editor={editor} />
       : editor.selection.type === 'timeline-items' && isMergedVoiceSelection(editor) ? <VoiceoverInspector editor={editor} />
       : editor.selection.type === 'timeline-items' && editor.selectedTimelineAudioItem ? <AudioClipInspector editor={editor} item={editor.selectedTimelineAudioItem} />
@@ -26,8 +27,14 @@ export function ContextInspector({ editor }: { editor: EditorController }) {
   </aside>;
 }
 
+function inspectorTitle(editor: EditorController) {
+  if (editor.activeTool === 'voiceover') return 'Voice review';
+  return 'Properties';
+}
+
 function selectionName(editor: EditorController) {
   const value = editor.selection;
+  if (editor.activeTool === 'voiceover') return 'Voice lines';
   if (isMergedVoiceSelection(editor)) return 'Voiceover';
   if (value.type === 'subtitle') return `Subtitle #${value.index}`;
   if (value.type === 'voice') return `Voice #${value.index}`;
@@ -49,7 +56,7 @@ function MultiSelectionInspector({ editor }: { editor: EditorController }) {
   const hasTextClip = editor.selectedTextItems.length > 0;
   const voices = selection.keys.filter((key) => key.startsWith('voice:')).length;
   const heading = selection.track ? selection.track + ' selected' : selection.keys.length + ' items selected';
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{hasTextClip && <Field label="Text clips" value={editor.selectedTextItems.length} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{(subtitles > 0 || hasSrtClip || selection.track === 'S1') && <SubtitleStyleControls editor={editor} />}{hasTextClip && <TimelineTextStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{heading}</h2><p>{selection.track ? 'Entire timeline track' : 'Marquee selection'}</p></div></div><Section title="Selection"><Field label="Total items" value={selection.keys.length} />{subtitles > 0 && <Field label="Subtitles" value={subtitles} />}{hasTextClip && <Field label="Text clips" value={editor.selectedTextItems.length} />}{voices > 0 && <Field label="Voice clips" value={voices} />}</Section>{(subtitles > 0 || hasSrtClip || selection.track === 'S1') && <SubtitleStyleControls editor={editor} />}{hasTextClip && <TimelineTextStyleControls editor={editor} />}{subtitles > 0 && <><Section title="Position on preview"><p className="inspector-help">Drag the subtitle text up or down directly in the video preview. When it reaches the center, a cyan guide appears and snaps it into place.</p></Section><button className="danger full" onClick={() => editor.deleteSelectedSubtitles()}><Trash2 size={14} /> Delete selected subtitles</button></>}<p className="inspector-help">Drag on an empty timeline area to replace this selection. Hold Ctrl, Cmd, or Shift while clicking clips to add or remove individual items. Use Delete or Backspace to remove selected subtitles.</p>{selection.track === 'S1' && <div className="inspector-buttons column"><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.replaceWithTranslated} disabled={!editor.hasLoadedTranslation} title={editor.hasLoadedTranslation ? 'Replace the active draft text with the translated SRT' : 'Waiting for translated SRT to load'}><Languages size={14} /> Replace with translated SRT</button></div>}</>;
 }
 
 export function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -74,6 +81,121 @@ function VideoInspectorControls({ editor }: { editor: EditorController }) {
 
 function VoiceoverInspector({ editor }: { editor: EditorController }) {
   return <><div className="inspector-hero"><span><Volume2 size={18} /></span><div><h2>Voiceover</h2><p>Merged clip on A2</p></div></div><Section title="Âm thanh"><DbControl value={editor.voiceVolumeDb} onChange={editor.updateVoiceVolumeDb} /></Section><Section title="Tốc độ"><ClipRangeControl value={editor.voiceSpeed} min={.1} max={80} step={.1} suffix="×" onChange={editor.updateVoiceSpeed} /></Section><p className="inspector-help">The voice settings are saved with this video version and apply in the preview.</p></>;
+}
+
+function VoiceLinesInspector({ editor }: { editor: EditorController }) {
+  const manualSpeedLimit = 3;
+  const issueByIndex = new Map(editor.timelineIssues.map((issue) => [issue.index, issue]));
+  const busy = editor.activeJobs.some((job) => ['tts', 'tts-segment', 'tts-mux'].includes(job.kind));
+  const [speedByIndex, setSpeedByIndex] = useState<Record<number, number>>({});
+  const [pendingSpeedIndex, setPendingSpeedIndex] = useState<number | null>(null);
+  const speedValueForLine = (index: number, appliedSpeed?: number, physicalSpeed?: number, issueSpeed?: number) => {
+    const stored = speedByIndex[index];
+    if (Number.isFinite(stored) && stored > 0) return stored;
+    const source = appliedSpeed && appliedSpeed > 0 ? appliedSpeed : physicalSpeed && physicalSpeed > 1 ? physicalSpeed : issueSpeed && issueSpeed > 1 ? issueSpeed : 1.0;
+    return Number(source.toFixed(2));
+  };
+  const applyVoiceSpeed = async (index: number, targetSpeed: number, currentAppliedSpeed: number) => {
+    const target = Number(targetSpeed.toFixed(2));
+    const current = Math.max(1, currentAppliedSpeed);
+    if (pendingSpeedIndex !== null || !Number.isFinite(target)) return;
+    if (target <= current + 0.0005) {
+      setSpeedByIndex((values) => {
+        const next = { ...values };
+        delete next[index];
+        return next;
+      });
+      return;
+    }
+    setPendingSpeedIndex(index);
+    try {
+      await editor.speedUpVoice(index, target / current, target);
+    } finally {
+      setPendingSpeedIndex((value) => value === index ? null : value);
+      setSpeedByIndex((values) => {
+        const next = { ...values };
+        delete next[index];
+        return next;
+      });
+    }
+  };
+  const readyCount = editor.voiceSegments.filter((voice) => voice.audioUrl).length;
+  const activeIssueCount = editor.srt.segments.filter((segment) => {
+    const issue = issueByIndex.get(segment.index);
+    const currentText = editor.edits[segment.index] ?? segment.text;
+    return Boolean(issue && currentText.trim() === issue.text.trim());
+  }).length;
+  return <>
+    <div className="inspector-hero"><span><Volume2 size={18} /></span><div><h2>Voice lines</h2><p>{readyCount}/{editor.srt.segments.length} ready{activeIssueCount ? ` - ${activeIssueCount} needs review` : ''}</p></div></div>
+    {editor.dirty && <button className="full" disabled={busy} onClick={editor.saveSrt}><Save size={14} /> Save subtitle edits</button>}
+    <Section title="Subtitle Lines">
+      <div className="voice-line-list">
+        {editor.srt.segments.map((segment) => {
+          const currentText = editor.edits[segment.index] ?? segment.text;
+          const voice = editor.voiceByIndex[segment.index];
+          const issue = issueByIndex.get(segment.index);
+          const activeIssue = issue && currentText.trim() === issue.text.trim()
+            ? issue
+            : voice?.timingStatus === 'TEXT_TOO_LONG'
+              ? {
+                  index: segment.index,
+                  status: 'TEXT_TOO_LONG',
+                  text: currentText,
+                  startLabel: segment.startLabel,
+                  endLabel: segment.endLabel,
+                  ttsDuration: voice.duration,
+                  availableDuration: voice.availableDuration || voice.subtitleDuration,
+                  requiredLocalSpeed: voice.requiredLocalSpeed,
+                  needsReview: true,
+                }
+              : undefined;
+          const currentAppliedSpeed = voice?.appliedLocalSpeed || voice?.speedMultiplier || 1;
+          const minSpeed = Number(Math.max(1, currentAppliedSpeed).toFixed(2));
+          const maxSpeed = Math.max(manualSpeedLimit, minSpeed);
+          const speed = Math.min(maxSpeed, Math.max(minSpeed, speedValueForLine(segment.index, voice?.appliedLocalSpeed, voice?.speedMultiplier, activeIssue?.requiredLocalSpeed || voice?.requiredLocalSpeed)));
+          const ready = Boolean(voice?.audioUrl && !activeIssue);
+          const timing = activeIssue
+            ? [
+                activeIssue.ttsDuration ? `${activeIssue.ttsDuration.toFixed(2)}s voice` : '',
+                activeIssue.availableDuration ? `${activeIssue.availableDuration.toFixed(2)}s slot` : '',
+                activeIssue.requiredLocalSpeed ? `${activeIssue.requiredLocalSpeed.toFixed(2)}x` : '',
+              ].filter(Boolean).join(' - ')
+            : voice?.duration && voice.subtitleDuration ? `${voice.duration.toFixed(2)}s voice - ${voice.subtitleDuration.toFixed(2)}s slot` : '';
+          return <div className={`voice-line-row ${activeIssue ? 'needs-review' : ready ? 'ready' : ''}`} key={segment.index}>
+            <div className="voice-line-meta">
+              <strong>#{segment.index} {segment.startLabel} - {segment.endLabel}</strong>
+              <span>{voice?.appliedLocalSpeed && voice.appliedLocalSpeed > 1 ? `${voice.appliedLocalSpeed.toFixed(2)}x applied` : voice?.speedMultiplier && voice.speedMultiplier > 1 ? `${voice.speedMultiplier.toFixed(2)}x applied` : timing}</span>
+            </div>
+            <textarea value={currentText} onChange={(event) => editor.setEdits({ ...editor.edits, [segment.index]: event.target.value })} />
+            <div className="voice-line-status">
+              <span className={activeIssue ? 'error' : ready ? 'ready' : ''}>{activeIssue ? 'Too long' : ready ? 'Ready' : 'Not rendered'}</span>
+              {timing && <small>{timing}</small>}
+            </div>
+            <div className="voice-line-actions">
+              <NumericControl
+                ariaLabel={`Voice speed for line ${segment.index}`}
+                className="voice-speed-stepper"
+                compact
+                disabled={busy || pendingSpeedIndex !== null || !voice?.audioUrl}
+                max={maxSpeed}
+                min={minSpeed}
+                onChange={(value) => setSpeedByIndex((current) => ({ ...current, [segment.index]: value }))}
+                onCommit={(value) => void applyVoiceSpeed(segment.index, value, currentAppliedSpeed)}
+                precision={2}
+                step={0.01}
+                unit="x"
+                value={speed}
+              />
+              <button title="Play voice line" disabled={!voice?.audioUrl} onClick={() => editor.playVoice(voice)}><Play size={13} /></button>
+              <button title="Tạo voice" disabled={busy} onClick={() => editor.generateVoice(segment.index)}><WandSparkles size={13} /> Tạo voice</button>
+              <button title="Dịch lại" disabled={busy || !editor.originalSrtAssets.length} onClick={() => { editor.openTool('translate'); void editor.translate(); }}><Languages size={13} /> Dịch lại</button>
+            </div>
+          </div>;
+        })}
+        {!editor.srt.segments.length && <p className="inspector-help">Select or generate an SRT before creating voice lines.</p>}
+      </div>
+    </Section>
+  </>;
 }
 
 function AudioClipInspector({ editor, item }: { editor: EditorController; item: TimelineItem }) {
@@ -102,6 +224,9 @@ function AudioClipInspector({ editor, item }: { editor: EditorController; item: 
       <InspectorRangeField label="Fade Out" value={fadeOut} min={0} max={Math.max(0, duration - fadeIn)} step={0.1} suffix="s" onChange={(value, finish) => update({ audioFadeOut: value }, finish)} />
       <button className="inspector-reset-button" type="button" onClick={() => update({ volumeDb: 0, audioFadeIn: 0, audioFadeOut: 0 }, true)}><RotateCcw size={14} /> Reset</button>
     </Section>
+    <button className="danger full" type="button" onClick={() => void editor.deleteTimelineItems([item.id])}>
+      <Trash2 size={14} /> Xóa đoạn audio (Delete)
+    </button>
   </>;
 }
 
@@ -207,7 +332,7 @@ function VoiceInspector({ editor }: { editor: EditorController }) {
 }
 
 function TrackInspector({ editor }: { editor: EditorController }) {
-  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><SubtitleStyleControls editor={editor} /><div className="inspector-buttons column"><button onClick={() => editor.setBottomView('script')}>Open Script Editor</button><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
+  return <><div className="inspector-hero"><span><Info size={18} /></span><div><h2>{editor.srt.asset?.name || 'Subtitle track'}</h2><p>{editor.srt.asset && (editor.srt.asset.engine || 'Imported')}</p></div></div><Section title="Track"><Field label="Language" value="Auto / asset metadata" /><Field label="Source type" value={editor.srt.asset && (editor.srt.asset.engine || 'Imported')} /><Field label="Segments" value={editor.srt.segments.length} /></Section><SubtitleStyleControls editor={editor} /><div className="inspector-buttons column"><button onClick={editor.copySrt}><Copy size={14} /> Copy full SRT</button><button onClick={editor.pasteSrt}>Paste full SRT</button><button onClick={() => editor.openTool('translate')}>Translate this SRT</button><button onClick={() => editor.openTool('voiceover')}>Generate voiceover</button>{editor.srt.asset && <a className="button" href={`${API_BASE}/assets/${editor.srt.asset.id}/download`}><Download size={14} /> Export SRT</a>}</div></>;
 }
 
 function EffectInspector({ editor }: { editor: EditorController }) {

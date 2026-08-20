@@ -48,6 +48,7 @@ export interface Asset {
   engine: string;
   status: string;
   createdAt: string;
+  sourceAssetId?: number;
   metadata: Record<string, unknown>;
 }
 
@@ -243,11 +244,17 @@ export interface SrtDocument {
 
 export interface VoiceSegment {
   index: number;
+  engine?: string;
   status?: string;
+  hasAudio?: boolean;
   audioUrl?: string;
   duration?: number;
   subtitleDuration?: number;
   requiredLocalSpeed?: number;
+  speedMultiplier?: number;
+  appliedLocalSpeed?: number;
+  timingStatus?: string;
+  availableDuration?: number;
   detail?: string;
 }
 

@@ -134,6 +134,7 @@ def process_adaptive_timeline(
     min_working_speed: float = MIN_WORKING_SPEED,
     preferred_max_local_speed: float = PREFERRED_MAX_LOCAL_SPEED,
     hard_max_local_speed: float = HARD_MAX_LOCAL_SPEED,
+    text_retry_preferred_speed_threshold: float | dict[int, float] = PREFERRED_MAX_LOCAL_SPEED,
     safety_gap: float = SAFETY_GAP_SECONDS,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
@@ -187,9 +188,10 @@ def process_adaptive_timeline(
         required_speed = original_tts_duration / working_available if working_available > 0 else float("inf")
         applied_speed = 1.0
         processed_path = original_path
+        current_threshold = text_retry_preferred_speed_threshold.get(segment.index, PREFERRED_MAX_LOCAL_SPEED) if isinstance(text_retry_preferred_speed_threshold, dict) else text_retry_preferred_speed_threshold
         if required_speed <= 1.0:
             status = "FIT"
-        elif required_speed <= hard_max_local_speed:
+        elif required_speed <= current_threshold:
             status = "SPEED_ADJUSTED"
             applied_speed = required_speed
         else:
@@ -409,6 +411,8 @@ def process_srt_slot_timeline(
     *,
     sample_rate: int,
     max_speed: float = DEFAULT_SLOT_MAX_SPEED,
+    text_retry_preferred_speed_threshold: float | dict[int, float] = DEFAULT_SLOT_MAX_SPEED,
+    force_fit_overlong: bool = False,
     safety_gap: float = SAFETY_GAP_SECONDS,
     progress: Callable[[str], None] | None = None,
 ) -> dict:
@@ -433,7 +437,7 @@ def process_srt_slot_timeline(
     rows: list[dict] = []
     audio_segments: list[np.ndarray] = []
     current_total_samples = 0
-    max_speed = HARD_MAX_LOCAL_SPEED
+    max_speed = None if force_fit_overlong else HARD_MAX_LOCAL_SPEED
     safety_gap = max(0.0, float(safety_gap or 0.0))
     counts = {
         "FIT": 0,
@@ -472,7 +476,10 @@ def process_srt_slot_timeline(
         status = "FIT"
         if slot_samples > 0 and len(original_audio) > 0:
             required_speed = required_speed or 1.0
-            if required_speed > max_speed:
+            current_threshold = text_retry_preferred_speed_threshold.get(segment.index, DEFAULT_SLOT_MAX_SPEED) if isinstance(text_retry_preferred_speed_threshold, dict) else text_retry_preferred_speed_threshold
+            if force_fit_overlong:
+                current_threshold = float("inf")
+            if required_speed > current_threshold:
                 applied_speed = 1.0
                 status = "TEXT_TOO_LONG"
             elif required_speed > 1.000001:
@@ -484,9 +491,20 @@ def process_srt_slot_timeline(
                 processed_audio, _source_rate = _read_audio_mono(stretched_path, sample_rate)
                 processed_duration = len(processed_audio) / sample_rate
                 if processed_duration > slot_duration + TIMELINE_TOLERANCE_SECONDS:
-                    status = "TEXT_TOO_LONG"
-                    applied_speed = 1.0
-                    processed_audio = original_audio
+                    if force_fit_overlong:
+                        for attempt in range(8):
+                            fitted_target = max(slot_duration - TIMELINE_TOLERANCE_SECONDS, MIN_SEGMENT_DURATION_SECONDS)
+                            applied_speed *= (processed_duration / fitted_target) * 1.005
+                            stretched_path = path.with_name(f"{path.stem}_slot_{applied_speed:.3f}_{attempt + 1}.wav")
+                            _atempo_file(ffmpeg, path, stretched_path, applied_speed)
+                            processed_audio, _source_rate = _read_audio_mono(stretched_path, sample_rate)
+                            processed_duration = len(processed_audio) / sample_rate
+                            if processed_duration <= slot_duration + TIMELINE_TOLERANCE_SECONDS:
+                                break
+                    if processed_duration > slot_duration + TIMELINE_TOLERANCE_SECONDS:
+                        status = "TEXT_TOO_LONG"
+                        applied_speed = 1.0
+                        processed_audio = original_audio
         if status == "TEXT_TOO_LONG":
             processed_path = path
             processed_audio = np.zeros(slot_samples, dtype=np.float32)
@@ -522,6 +540,7 @@ def process_srt_slot_timeline(
                 "late_start": late_start,
                 "max_speed": max_speed,
                 "safety_gap": safety_gap,
+                "force_fit_overlong": force_fit_overlong,
             }
         )
 
@@ -537,6 +556,7 @@ def process_srt_slot_timeline(
             "actual_samples": current_total_samples,
             "max_speed": max_speed,
             "safety_gap": safety_gap,
+            "force_fit_overlong": force_fit_overlong,
             "final_validation_status": "TEXT_TOO_LONG",
             "counts": counts,
         }
@@ -595,6 +615,7 @@ def process_srt_slot_timeline(
         "actual_samples": actual_samples,
         "max_speed": max_speed,
         "safety_gap": safety_gap,
+        "force_fit_overlong": force_fit_overlong,
         "final_validation_status": "VALID",
         "counts": counts,
     }
