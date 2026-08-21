@@ -19,7 +19,6 @@ const TOOLS: Array<[ToolKey, React.ComponentType<{ size?: number }>, string, str
   ['remove', Eraser, 'Remove / Hide', 'Clean source captions'],
   ['voiceover', Volume2, 'Voiceover', 'Generate and merge TTS'],
   ['audio', Music2, 'Audio', 'Source audio controls'],
-  ['effects', Sparkles, 'Effects', 'Browse visual effects'],
   ['export', Share2, 'Export', 'Deliver versions and assets'],
 ];
 
@@ -208,11 +207,23 @@ function AssetBin({ editor }: { editor: EditorController }) {
 export function AssetToolPanel({ editor, onOpenExport }: { editor: EditorController; onOpenExport: () => void }) {
   return (
     <aside className="editor-left-panel">
-      <div className="left-panel-tabs"><button className={editor.assetTab === 'assets' ? 'active' : ''} onClick={() => editor.setAssetTab('assets')}>Assets</button><button className={editor.assetTab === 'tools' ? 'active' : ''} onClick={() => editor.setAssetTab('tools')}>Tools</button></div>
-      {editor.assetTab === 'assets' ? <AssetBin editor={editor} /> : <div className="tool-browser">
-        <div className="tool-index">{TOOLS.map(([key, Icon, label, help]) => <button key={key} className={editor.activeTool === key ? 'active' : ''} onClick={() => editor.openTool(key)}><span><Icon size={17} /></span><span><strong>{label}</strong><small>{help}</small></span></button>)}</div>
-        <div className="tool-config"><ToolForm editor={editor} onOpenExport={onOpenExport} /></div>
-      </div>}
+      <div className="left-panel-tabs">
+        <button className={editor.assetTab === 'assets' ? 'active' : ''} onClick={() => editor.setAssetTab('assets')}>Assets</button>
+        <button className={editor.assetTab === 'tools' ? 'active' : ''} onClick={() => editor.setAssetTab('tools')}>Tools</button>
+        <button className={editor.assetTab === 'effects' ? 'active' : ''} onClick={() => editor.setAssetTab('effects')}>Effects</button>
+      </div>
+      {editor.assetTab === 'assets' && <AssetBin editor={editor} />}
+      {editor.assetTab === 'tools' && (
+        <div className="tool-browser">
+          <div className="tool-index">{TOOLS.map(([key, Icon, label, help]) => <button key={key} className={editor.activeTool === key ? 'active' : ''} onClick={() => editor.openTool(key)}><span><Icon size={17} /></span><span><strong>{label}</strong><small>{help}</small></span></button>)}</div>
+          <div className="tool-config"><ToolForm editor={editor} onOpenExport={onOpenExport} /></div>
+        </div>
+      )}
+      {editor.assetTab === 'effects' && (
+        <div className="effects-panel">
+          <EffectsBrowser editor={editor} busy={editor.activeJobs.length > 0} />
+        </div>
+      )}
     </aside>
   );
 }
@@ -292,7 +303,6 @@ function ToolForm({ editor, onOpenExport }: { editor: EditorController; onOpenEx
        : <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}><button onClick={() => editor.setEditArea(!editor.editArea)}><Settings2 size={15} /> {editor.editArea ? 'Finish area' : 'Adjust blur area on preview'}</button><button onClick={() => void editor.saveSubtitleArea({ xmin: .04, xmax: .96, ymin: .60, ymax: .98 })}>Reset bottom area</button></div>}
       <button className="primary full" disabled={busy || (editor.removeMethod === 'auto' && !editor.srt.asset)} onClick={editor.remove}><Eraser size={16} /> {editor.activeBlurEffect ? 'Update blur effect' : 'Add blur effect'}</button>
     </>}
-    {editor.activeTool === 'effects' && <EffectsBrowser editor={editor} busy={busy} />}
     {editor.activeTool === 'voiceover' && <>
       <label>Source SRT<select value={editor.srt.asset?.id || ''} onChange={(e) => editor.loadSrt(Number(e.target.value))}>{editor.srtAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
       <label>Engine<select value={editor.ttsEngine} onChange={(e) => { const next = e.target.value; editor.setTtsEngine(next); editor.setTtsLanguage(defaultTtsLanguage(next)); }}><option value="vieneu">VieNeu Vietnamese</option><option value="capcut">CapCut Multi-language</option><option value="pocket">Pocket TTS</option></select></label>

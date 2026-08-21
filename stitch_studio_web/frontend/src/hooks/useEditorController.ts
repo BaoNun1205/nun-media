@@ -145,7 +145,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [blurEffectHidden, setBlurEffectHidden] = useState(false);
   const [subtitleBlurEffect, setSubtitleBlurEffect] = useState<Project['subtitleBlurEffect']>(project.subtitleBlurEffect);
   const [activeTool, setActiveTool] = useState<ToolKey>('subtitles');
-  const [assetTab, setAssetTab] = useState<'assets' | 'tools'>('assets');
+  const [assetTab, setAssetTab] = useState<'assets' | 'tools' | 'effects'>('assets');
   const [bottomView, setBottomView] = useState<'timeline' | 'script'>('timeline');
   const [playhead, setPlayhead] = useState(0);
   const [previewSource, setPreviewSource] = useState(initialVoiceAsset ? `tts:${initialVoiceAsset.id}` : 'preview');
@@ -516,9 +516,13 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   }, [latestJob?.id, latestJob?.status, latestVoiceAsset?.id]);
 
   function openTool(tool: ToolKey) {
-    setActiveTool(tool); setAssetTab('tools');
-    if (tool !== 'effects') setEffectPreviewId(null);
-    if (tool === 'remove' || tool === 'insert') setSelection({ type: 'effect', operation: tool === 'remove' ? 'blur' : 'insert' });
+    if (tool === 'effects') {
+      setAssetTab('effects');
+    } else {
+      setActiveTool(tool); setAssetTab('tools');
+      setEffectPreviewId(null);
+      if (tool === 'remove' || tool === 'insert') setSelection({ type: 'effect', operation: tool === 'remove' ? 'blur' : 'insert' });
+    }
   }
 
   const previewedEffect = useMemo<TimelineItem | undefined>(() => {

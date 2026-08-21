@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 class PexelsProvider:
     """Small wrapper around the official Pexels video endpoints."""
 
-    API_ROOT = "https://api.pexels.com/v1/videos"
+    VIDEO_API_ROOT = "https://api.pexels.com/v1/videos"
+    PHOTO_API_ROOT = "https://api.pexels.com/v1"
     # Pexels currently sits behind Cloudflare. urllib's default Python user
     # agent is rejected there with Cloudflare 1010, even for a valid key.
     BROWSER_USER_AGENT = (
@@ -51,10 +52,10 @@ class PexelsProvider:
             "key_suffix": key[-4:] if key else "",
         }
 
-    def _request_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_json(self, path: str, params: dict[str, Any] | None = None, *, api_root: str | None = None) -> dict[str, Any]:
         if not self.api_key:
             raise StockError("Pexels is not configured. Set PEXELS_API_KEY on the backend.", 503)
-        url = f"{self.API_ROOT}{path}"
+        url = f"{api_root or self.VIDEO_API_ROOT}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
         request = Request(
@@ -137,3 +138,42 @@ class PexelsProvider:
         if video_id <= 0:
             raise StockError("Invalid Pexels video id.", 400)
         return self._request_json(f"/videos/{video_id}")
+
+    @staticmethod
+    def normalize_photo(raw: dict[str, Any]) -> dict[str, Any]:
+        user = raw.get("photographer") or "Pexels creator"
+        sources = raw.get("src") if isinstance(raw.get("src"), dict) else {}
+        photo_id = int(raw.get("id") or 0)
+        return {
+            "provider": "pexels",
+            "id": photo_id,
+            "title": str(raw.get("alt") or f"Pexels photo {photo_id}")[:160],
+            "width": max(0, int(raw.get("width") or 0)),
+            "height": max(0, int(raw.get("height") or 0)),
+            "thumbnailUrl": str(sources.get("medium") or sources.get("small") or sources.get("tiny") or ""),
+            "pageUrl": str(raw.get("url") or ""),
+            "creator": {"name": str(user), "url": str(raw.get("photographer_url") or "")},
+        }
+
+    def search_photos(self, query: str, page: int, per_page: int) -> dict[str, Any]:
+        payload = self._request_json("/search", {
+            "query": query,
+            "orientation": "landscape",
+            "size": "medium",
+            "locale": "vi-VN",
+            "page": page,
+            "per_page": per_page,
+        }, api_root=self.PHOTO_API_ROOT)
+        photos = [self.normalize_photo(item) for item in payload.get("photos", []) if isinstance(item, dict)]
+        return {
+            "photos": photos,
+            "page": int(payload.get("page") or page),
+            "perPage": int(payload.get("per_page") or per_page),
+            "totalResults": int(payload.get("total_results") or 0),
+            "hasMore": bool(payload.get("next_page")),
+        }
+
+    def get_photo(self, photo_id: int) -> dict[str, Any]:
+        if photo_id <= 0:
+            raise StockError("Invalid Pexels photo id.", 400)
+        return self._request_json(f"/photos/{photo_id}", api_root=self.PHOTO_API_ROOT)

@@ -36,8 +36,10 @@ from stitch_studio.srt import read_srt, seconds_to_srt_time, write_srt  # noqa: 
 from stitch_studio.storage import Storage  # noqa: E402
 from stitch_studio.template_analyzer import analyze_template_from_project  # noqa: E402
 from stitch_studio.template_timing import resolve_template_timing  # noqa: E402
+from .stock.providers.openverse import OpenverseProvider  # noqa: E402
 from .stock.providers.pexels import PexelsProvider  # noqa: E402
-from .stock.service import download_pexels_video, search_pexels  # noqa: E402
+from .stock.openverse_token import OpenverseTokenManager  # noqa: E402
+from .stock.service import download_openverse_audio, download_pexels_photo, download_pexels_video, search_openverse_audio, search_pexels, search_pexels_photos  # noqa: E402
 from .stock.types import StockError  # noqa: E402
 
 
@@ -63,6 +65,17 @@ def _pexels_key_source() -> str:
     return "settings" if config.pexels_api_key_path.exists() and config.pexels_api_key_path.read_text(encoding="utf-8").strip() else ("environment" if config.pexels_api_key else "")
 
 
+def _configured_openverse_credentials() -> tuple[str, str]:
+    client_id = config.openverse_client_id_path.read_text(encoding="utf-8").strip() if config.openverse_client_id_path.exists() else config.openverse_client_id
+    client_secret = config.openverse_client_secret_path.read_text(encoding="utf-8").strip() if config.openverse_client_secret_path.exists() else config.openverse_client_secret
+    return client_id, client_secret
+
+
+def _openverse_credentials_source() -> str:
+    stored = config.openverse_client_id_path.exists() and config.openverse_client_secret_path.exists()
+    return "settings" if stored else ("environment" if config.openverse_client_id and config.openverse_client_secret else "")
+
+
 storage = Storage(config.db_path)
 downloader = DownloaderService(config, storage)
 transcriber = TranscriptionService(config, storage)
@@ -73,6 +86,8 @@ pocket_tts = PocketTtsService(config, storage)
 subtitle_remover = SubtitleRemovalService(config, storage)
 audio_separator = AudioSeparationService(config, storage)
 pexels = PexelsProvider(_configured_pexels_api_key())
+openverse_token_manager = OpenverseTokenManager(*_configured_openverse_credentials())
+openverse = OpenverseProvider(openverse_token_manager)
 
 jobs: dict[int, dict[str, Any]] = {}
 next_job_id = 1
@@ -156,6 +171,8 @@ class SettingsRequest(BaseModel):
     douyinCookie: str | None = None
     geminiApiKey: str | None = None
     pexelsApiKey: str | None = None
+    openverseClientId: str | None = None
+    openverseClientSecret: str | None = None
 
 
 class YoutubeChannelUpdateRequest(BaseModel):
@@ -187,6 +204,14 @@ class ProjectAttachAssetsRequest(BaseModel):
 
 class PexelsImportRequest(BaseModel):
     videoId: int
+
+
+class PexelsPhotoImportRequest(BaseModel):
+    photoId: int
+
+
+class OpenverseAudioImportRequest(BaseModel):
+    audioId: str
 
 
 class ProjectTimelineRequest(BaseModel):
@@ -1896,6 +1921,7 @@ def get_settings() -> dict[str, Any]:
     cookie = config.douyin_cookie_path.read_text(encoding="utf-8").strip() if config.douyin_cookie_path.exists() else ""
     gemini_key = config.gemini_api_key_path.read_text(encoding="utf-8").strip() if config.gemini_api_key_path.exists() else ""
     pexels_key = _configured_pexels_api_key()
+    openverse_client_id, openverse_client_secret = _configured_openverse_credentials()
     return {
         "hasDouyinCookie": bool(cookie),
         "douyinCookieLength": len(cookie),
@@ -1904,6 +1930,8 @@ def get_settings() -> dict[str, Any]:
         "hasPexelsApiKey": bool(pexels_key),
         "pexelsApiKeyLength": len(pexels_key),
         "pexelsApiKeySource": _pexels_key_source() or None,
+        "hasOpenverseCredentials": bool(openverse_client_id and openverse_client_secret),
+        "openverseCredentialsSource": _openverse_credentials_source() or None,
     }
 
 
@@ -1937,7 +1965,21 @@ def save_settings(payload: SettingsRequest) -> dict[str, Any]:
         # The provider is long-lived, so update it immediately; no backend
         # restart and no frontend-visible secret are needed.
         pexels.api_key = PexelsProvider.normalize_api_key(_configured_pexels_api_key())
-            
+
+    if payload.openverseClientId is not None or payload.openverseClientSecret is not None:
+        client_id = (payload.openverseClientId or "").strip()
+        client_secret = (payload.openverseClientSecret or "").strip()
+        if client_id and client_secret:
+            config.openverse_client_id_path.parent.mkdir(parents=True, exist_ok=True)
+            config.openverse_client_id_path.write_text(client_id, encoding="utf-8")
+            config.openverse_client_secret_path.write_text(client_secret, encoding="utf-8")
+        elif not client_id and not client_secret:
+            config.openverse_client_id_path.unlink(missing_ok=True)
+            config.openverse_client_secret_path.unlink(missing_ok=True)
+        else:
+            raise HTTPException(400, "Enter both the Openverse Client ID and Client Secret.")
+        openverse_token_manager.configure(*_configured_openverse_credentials())
+
     return get_settings()
 
 
@@ -2355,6 +2397,22 @@ def search_pexels_videos(q: str, page: int = 1, perPage: int = 24) -> dict[str, 
         raise HTTPException(exc.status_code, str(exc)) from exc
 
 
+@app.get("/api/stock/pexels/photos")
+def search_pexels_photos_endpoint(q: str, page: int = 1, perPage: int = 24) -> dict[str, Any]:
+    try:
+        return search_pexels_photos(pexels, q, page, perPage)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@app.get("/api/stock/openverse/audio")
+def search_openverse_audio_endpoint(q: str, page: int = 1, perPage: int = 50, licenseFilter: str = "commercial") -> dict[str, Any]:
+    try:
+        return search_openverse_audio(openverse, q, page, perPage, licenseFilter)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
 @app.post("/api/projects/{project_id}/stock/pexels/import")
 def import_pexels_video(project_id: int, payload: PexelsImportRequest) -> dict[str, Any]:
     project = _project_or_404(project_id)
@@ -2405,6 +2463,84 @@ def import_pexels_video(project_id: int, payload: PexelsImportRequest) -> dict[s
     )
     asset = storage.get_project_asset(project_asset_id)
     return {"asset": _project_asset_payload(asset), "alreadyImported": False}
+
+
+@app.post("/api/projects/{project_id}/stock/pexels/photos/import")
+def import_pexels_photo(project_id: int, payload: PexelsPhotoImportRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    photo_id = int(payload.photoId)
+    for asset in storage.list_project_assets(project.id):
+        metadata = asset.metadata or {}
+        if asset.kind == "image" and metadata.get("stock_provider") == "pexels" and int(metadata.get("stock_photo_id") or 0) == photo_id:
+            return {"asset": _project_asset_payload(asset), "alreadyImported": True}
+    asset_dir = config.outputs_dir / f"project_{project.id}" / "assets" / "image"
+    destination = asset_dir / f"pexels_photo_{photo_id}.jpg"
+    if destination.exists():
+        destination = asset_dir / f"pexels_photo_{photo_id}_{time.time_ns() % 1_000_000}.jpg"
+    try:
+        stock_photo = download_pexels_photo(pexels, photo_id, destination)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    project_asset_id = storage.add_project_asset(
+        project_id=project.id,
+        kind="image",
+        path=destination,
+        name=f"Pexels - {stock_photo['title']}",
+        metadata={
+            "source": "stock:pexels",
+            "stock_provider": "pexels",
+            "stock_photo_id": photo_id,
+            "stock_page_url": stock_photo["pageUrl"],
+            "stock_thumbnail_url": stock_photo["thumbnailUrl"],
+            "stock_creator": stock_photo["creator"],
+            "width": stock_photo["width"],
+            "height": stock_photo["height"],
+            "size_bytes": destination.stat().st_size if destination.exists() else 0,
+        },
+    )
+    return {"asset": _project_asset_payload(storage.get_project_asset(project_asset_id)), "alreadyImported": False}
+
+
+@app.post("/api/projects/{project_id}/stock/openverse/audio/import")
+def import_openverse_audio(project_id: int, payload: OpenverseAudioImportRequest) -> dict[str, Any]:
+    project = _project_or_404(project_id)
+    audio_id = payload.audioId.strip()
+    for asset in storage.list_project_assets(project.id):
+        metadata = asset.metadata or {}
+        if asset.kind == "audio" and metadata.get("stock_provider") == "openverse" and str(metadata.get("openverse_id") or "") == audio_id:
+            return {"asset": _project_asset_payload(asset), "alreadyImported": True}
+    asset_dir = config.outputs_dir / f"project_{project.id}" / "assets" / "audio"
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", audio_id)[:80] or "audio"
+    destination = asset_dir / f"openverse_{safe_id}.mp3"
+    if destination.exists():
+        destination = asset_dir / f"openverse_{safe_id}_{time.time_ns() % 1_000_000}.mp3"
+    try:
+        stock_audio = download_openverse_audio(openverse, audio_id, destination)
+    except StockError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    duration_ms = _probe_video_duration_ms(destination) or int(float(stock_audio.get("duration") or 0) * 1000)
+    project_asset_id = storage.add_project_asset(
+        project_id=project.id,
+        kind="audio",
+        path=destination,
+        name=f"Openverse - {stock_audio['title']}",
+        metadata={
+            "source": "stock:openverse",
+            "stock_provider": "openverse",
+            "openverse_id": audio_id,
+            "stock_page_url": stock_audio["pageUrl"],
+            "stock_creator": stock_audio["creator"],
+            "provider": stock_audio["source"],
+            "source_url": stock_audio["pageUrl"],
+            "license": stock_audio["license"],
+            "license_url": stock_audio["licenseUrl"],
+            "attribution": stock_audio["attribution"],
+            "duration_ms": duration_ms,
+            "duration_seconds": duration_ms / 1000.0 if duration_ms else stock_audio.get("duration", 0),
+            "size_bytes": destination.stat().st_size if destination.exists() else 0,
+        },
+    )
+    return {"asset": _project_asset_payload(storage.get_project_asset(project_asset_id)), "alreadyImported": False}
 
 
 @app.put("/api/projects/{project_id}/timeline")

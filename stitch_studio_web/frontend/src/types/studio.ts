@@ -78,6 +78,34 @@ export interface PexelsVideo {
   creator: { name: string; url: string };
 }
 
+export interface PexelsPhoto {
+  provider: 'pexels';
+  id: number;
+  title: string;
+  width: number;
+  height: number;
+  thumbnailUrl: string;
+  pageUrl: string;
+  creator: { name: string; url: string };
+}
+
+export interface OpenverseAudio {
+  provider: 'openverse';
+  id: string;
+  title: string;
+  duration: number;
+  creator: string;
+  license: string;
+  licenseUrl: string;
+  pageUrl: string;
+  previewUrl: string;
+  attribution: string;
+  category?: string;
+  source?: string;
+}
+
+export type OpenverseLicenseFilter = 'commercial' | 'public_domain' | 'all';
+
 export type TimelineItemKind = 'video' | 'image' | 'audio' | 'srt' | 'text' | 'effect';
 export type TimelineTrackKind = 'video' | 'subtitle' | 'audio' | 'text' | 'effect';
 
@@ -303,6 +331,8 @@ export interface StudioSettings {
   hasPexelsApiKey?: boolean;
   pexelsApiKeyLength?: number;
   pexelsApiKeySource?: 'settings' | 'environment' | null;
+  hasOpenverseCredentials?: boolean;
+  openverseCredentialsSource?: 'settings' | 'environment' | null;
   backendPath?: string;
   frontendPath?: string;
 }

@@ -1,5 +1,5 @@
 import type { CoreTimelineScene } from '../editor-core/types';
-import type { Asset, AudioMode, Job, PexelsVideo, Project, ProjectAsset, SrtDocument, StudioSettings, SubtitleArea, Template, TemplateSummary, TemplateManifest, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
+import type { Asset, AudioMode, Job, OpenverseAudio, OpenverseLicenseFilter, PexelsPhoto, PexelsVideo, Project, ProjectAsset, SrtDocument, StudioSettings, SubtitleArea, Template, TemplateSummary, TemplateManifest, TimelineItem, TimelineState, VoiceOption, WorkspaceProject, YoutubeChannel, YoutubePrompt } from '../types/studio';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -67,10 +67,22 @@ export const studioApi = {
     ),
   importPexelsVideo: (projectId: number, videoId: number) =>
     request<{ asset: ProjectAsset; alreadyImported: boolean }>(`/projects/${projectId}/stock/pexels/import`, { method: 'POST', body: JSON.stringify({ videoId }) }),
+  searchPexelsPhotos: (query: string, page = 1) =>
+    request<{ photos: PexelsPhoto[]; page: number; perPage: number; totalResults: number; hasMore: boolean }>(
+      `/stock/pexels/photos?${new URLSearchParams({ q: query, page: String(page), perPage: '24' })}`,
+    ),
+  importPexelsPhoto: (projectId: number, photoId: number) =>
+    request<{ asset: ProjectAsset; alreadyImported: boolean }>(`/projects/${projectId}/stock/pexels/photos/import`, { method: 'POST', body: JSON.stringify({ photoId }) }),
+  searchOpenverseAudio: (query: string, page = 1, licenseFilter: OpenverseLicenseFilter = 'commercial') =>
+    request<{ audio: OpenverseAudio[]; page: number; perPage: number; totalResults: number; hasMore: boolean; licenseFilter: OpenverseLicenseFilter }>(
+      `/stock/openverse/audio?${new URLSearchParams({ q: query, page: String(page), perPage: '50', licenseFilter })}`,
+    ),
+  importOpenverseAudio: (projectId: number, audioId: string) =>
+    request<{ asset: ProjectAsset; alreadyImported: boolean }>(`/projects/${projectId}/stock/openverse/audio/import`, { method: 'POST', body: JSON.stringify({ audioId }) }),
   projects: () => request<Project[]>('/videos'),
   jobs: () => request<Job[]>('/jobs'),
   settings: () => request<StudioSettings>('/settings'),
-  saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string; pexelsApiKey?: string }) =>
+  saveSettings: (payload: { douyinCookie?: string; geminiApiKey?: string; pexelsApiKey?: string; openverseClientId?: string; openverseClientSecret?: string }) =>
     request<StudioSettings>('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   renameProject: (id: number, title: string) =>
     request<Project>(`/videos/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),

@@ -32,6 +32,28 @@ AUDIO_SEPARATOR_ROOT = REPO_ROOT / "tools" / "audio-separator-env"
 AUDIO_SEPARATOR_EXE = AUDIO_SEPARATOR_ROOT / "Scripts" / "audio-separator.exe"
 
 
+def _environment_value(name: str) -> str:
+    """Read a process variable first, then the repository's ignored .env file."""
+    value = os.getenv(name)
+    if value is not None:
+        return value.strip()
+    env_path = REPO_ROOT / ".env"
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, candidate = line.split("=", 1)
+            if key.strip() == name:
+                candidate = candidate.strip()
+                if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"'}:
+                    candidate = candidate[1:-1]
+                return candidate.strip()
+    except OSError:
+        pass
+    return ""
+
+
 @dataclass(frozen=True)
 class AppConfig:
     db_path: Path = DB_PATH
@@ -41,6 +63,8 @@ class AppConfig:
     douyin_cookie_path: Path = DOUYIN_COOKIE_PATH
     gemini_api_key_path: Path = WORKSPACE_ROOT / "gemini_api_key.txt"
     pexels_api_key_path: Path = WORKSPACE_ROOT / "pexels_api_key.txt"
+    openverse_client_id_path: Path = WORKSPACE_ROOT / "openverse_client_id.txt"
+    openverse_client_secret_path: Path = WORKSPACE_ROOT / "openverse_client_secret.txt"
     douyin_downloader_config_path: Path = DOUYIN_DOWNLOADER_CONFIG_PATH
     douyin_downloader_root: Path = DOUYIN_DOWNLOADER_ROOT
     douyin_downloader_python: Path = DOUYIN_DOWNLOADER_PYTHON
@@ -59,6 +83,8 @@ class AppConfig:
     # A deployment environment variable is the fallback; Settings can save an
     # application-local key without ever returning it to the frontend.
     pexels_api_key: str = os.getenv("PEXELS_API_KEY", "").strip()
+    openverse_client_id: str = _environment_value("OPENVERSE_CLIENT_ID")
+    openverse_client_secret: str = _environment_value("OPENVERSE_CLIENT_SECRET")
 
 
 def ensure_dirs(config: AppConfig) -> None:
