@@ -254,10 +254,23 @@ def build_ffmpeg_command(ffmpeg: str, ctx: RenderContext, encoder: dict[str, Any
     filters: list[str] = [f"color=c=black:s={ctx.width}x{ctx.height}:r={ctx.fps}:d={ctx.duration:.6f}[vbase0]"]
     current = "[vbase0]"
 
-    visual_items = [
-        item for item in _items_in_track_order(ctx)
-        if _kind(item) in {"video", "image"} and _visual_enabled(ctx, item)
-    ]
+    # Tracks are displayed from foreground (top row) to background (lower
+    # rows). FFmpeg layers added later are on top, so compose them in reverse
+    # UI order: V3 -> V2 -> V1 means V1 is visible in front.
+    visual_track_order = {
+        str(track.get("id") or ""): index for index, track in enumerate(ctx.tracks)
+    }
+    visual_items = sorted(
+        (
+            item for item in ctx.items
+            if _kind(item) in {"video", "image"} and _visual_enabled(ctx, item)
+        ),
+        key=lambda item: (
+            -visual_track_order.get(str(item.get("track") or ""), 9999),
+            _start(item),
+            str(item.get("id") or ""),
+        ),
+    )
     for layer_index, item in enumerate(visual_items):
         source = resolve_timeline_item_source(ctx.project, ctx.storage, item)
         if not source:

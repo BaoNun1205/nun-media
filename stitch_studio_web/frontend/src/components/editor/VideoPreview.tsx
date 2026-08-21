@@ -27,8 +27,10 @@ const FRAME_RATIOS: Record<Exclude<FrameFormat, 'original'>, number> = {
 export function VideoPreview({ editor }: { editor: EditorController }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  const visualVideoRefs = useRef(new Map<string, HTMLVideoElement>());
   const voiceRef = useRef<HTMLAudioElement>(null);
   const sourceAudioRef = useRef<HTMLAudioElement>(null);
+  const extraAudioRefs = useRef(new Map<string, HTMLAudioElement>());
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioChainsRef = useRef(new WeakMap<HTMLMediaElement, { gain: GainNode; limiter: DynamicsCompressorNode }>());
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -43,6 +45,10 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   const horizontalGuideRef = useRef<HTMLDivElement>(null);
   const verticalGuideRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef(editor.playhead);
+  // A browser video element pauses when its own source reaches its end. In a
+  // timeline that can simply mean "move to the next clip", not "stop edit".
+  const continuingTimelineRef = useRef(false);
+  const resumeNextVisualRef = useRef(false);
   const [imageDrag, setImageDrag] = useState<ImageDragState | null>(null);
   const imageDragRef = useRef<ImageDragState | null>(null);
   useEffect(() => { imageDragRef.current = imageDrag; }, [imageDrag]);
@@ -73,13 +79,23 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   };
   const activeVisualItems = editor.timelineItems
     .filter((item) => (item.kind === 'video' || item.kind === 'image') && itemEnabled(item) && editor.playhead >= item.start && editor.playhead < item.start + Math.max(0.05, item.duration))
-    .sort((a, b) => (editor.timelineState.tracks.findIndex((track) => track.id === a.track) - editor.timelineState.tracks.findIndex((track) => track.id === b.track)));
+    // The first visual row is the foreground row in the timeline UI. Paint
+    // lower rows first so V1, then V2, etc. appear over rows beneath them.
+    .sort((a, b) => (editor.timelineState.tracks.findIndex((track) => track.id === b.track) - editor.timelineState.tracks.findIndex((track) => track.id === a.track)));
   const activeVideoIndex = activeVisualItems.map((item) => item.kind).lastIndexOf('video');
   const activeVideoItem = activeVideoIndex >= 0 ? activeVisualItems[activeVideoIndex] : undefined;
-  // An opaque V3 video hides every image/video below it. Only image layers
-  // above the visible video are composited in the browser monitor, matching
-  // the FFmpeg renderer's V1 -> V2 -> V3 paint order.
-  const activeImageItems = activeVisualItems.filter((item, index) => item.kind === 'image' && index > activeVideoIndex);
+  const activeVideoItems = activeVisualItems.filter((item) => item.kind === 'video');
+  const preloadVideoItems = editor.timelineItems.filter((item) =>
+    item.kind === 'video'
+    && itemEnabled(item)
+    && item.id !== activeVideoItem?.id
+    && item.start > editor.playhead
+    && item.start - editor.playhead <= 1.5
+  );
+  // Paint every active visual item in UI layer order. This deliberately
+  // includes images and video together, so an image on V1 can overlay video
+  // on V2/V3 exactly as it does in the timeline.
+  const activeImageItems = activeVisualItems.filter((item) => item.kind === 'image');
   const activeVideoId = activeVideoItem?.sourceVideoId ?? (!hasWorkspaceTimeline ? editor.activeTimelineVideoId : undefined);
   const activeVoiceAudioClip = editor.timelineItems.find((item) =>
     item.kind === 'audio'
@@ -111,10 +127,26 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     : activeSourceAudioClip?.sourceAssetId
       ? `${API_BASE}/assets/${activeSourceAudioClip.sourceAssetId}/download?preview=1`
       : '';
+  const activeExtraAudioClips = editor.timelineItems.filter((item) =>
+    item.kind === 'audio'
+    && item.id !== activeVoiceAudioClip?.id
+    && item.id !== activeSourceAudioClip?.id
+    && itemAudible(item)
+    && editor.playhead >= item.start
+    && editor.playhead < item.start + Math.max(0.05, item.duration)
+  );
+  const activeExtraAudioClipKey = activeExtraAudioClips.map((item) => item.id).join('|');
+  const audioClipUrl = (item: TimelineItem) => item.projectAssetId
+    ? `${API_BASE}/project-assets/${item.projectAssetId}/download?preview=1`
+    : item.sourceAssetId ? `${API_BASE}/assets/${item.sourceAssetId}/download?preview=1` : '';
   const posterUrl = activeVideoId ? `${API_BASE}/videos/${activeVideoId}/thumbnail` : '';
   const activePlaybackItem = activeVideoItem || activeImageItem || editor.activeTimelineItem;
   const previewTime = activePlaybackItem ? Math.max(0, editor.playhead - activePlaybackItem.start + (activePlaybackItem.sourceStart || 0)) : editor.playhead;
-  const activeSubtitle = editor.srt.segments.find((segment) => previewTime >= segment.start && previewTime <= segment.end);
+  // SRT on a workspace timeline is authored against the timeline, not against
+  // the source time of whichever video clip happens to be active. Using
+  // previewTime here restarted captions at 0 whenever the next clip began.
+  const subtitleTime = hasWorkspaceTimeline ? editor.playhead : previewTime;
+  const activeSubtitle = editor.srt.segments.find((segment) => subtitleTime >= segment.start && subtitleTime <= segment.end);
   const activeTextItems = editor.timelineItems.filter((item) =>
     item.kind === 'text'
     && itemEnabled(item)
@@ -149,6 +181,12 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     : editor.previewSource.startsWith('tts:')
       ? activeVideoId ? `${API_BASE}/videos/${activeVideoId}/preview?audioMode=${editor.effectivePreviewAudioMode}` : ''
       : activeProjectVideoUrl || (activeVideoId ? `${API_BASE}/videos/${activeVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}` : '');
+  const videoUrlForItem = (item: TimelineItem) => {
+    if (item.id === activeVideoItem?.id) return sourceUrl;
+    if (item.projectAssetId && !item.sourceVideoId) return `${API_BASE}/project-assets/${item.projectAssetId}/download?preview=1`;
+    if (item.sourceVideoId) return `${API_BASE}/videos/${item.sourceVideoId}/${editor.previewSource}?audioMode=${editor.effectivePreviewAudioMode}`;
+    return item.sourceAssetId ? `${API_BASE}/assets/${item.sourceAssetId}/download?preview=1` : '';
+  };
   const timelineClockPlayback = Boolean(forceTimelineClock || !sourceUrl);
 
   function applyGainValue(media: HTMLMediaElement | null, gainValue: number, muted = false) {
@@ -221,15 +259,73 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     applyGainValue(audio, timelineAudioGain(activeSourceAudioClip, timelineTime, editor.videoVolumeDb), editor.previewMuted || !itemAudible(activeSourceAudioClip));
     if (shouldPlay) audio.play().catch(() => undefined);
   }
+  function syncExtraAudioAt(timelineTime: number, shouldPlay = false) {
+    activeExtraAudioClips.forEach((item) => {
+      const audio = extraAudioRefs.current.get(item.id);
+      if (!audio) return;
+      const audioTime = Math.max(0, timelineTime - item.start + (item.sourceStart || 0));
+      if (Math.abs(audio.currentTime - audioTime) > .18) audio.currentTime = audioTime;
+      setRate(audio, item.speed || 1);
+      const fallbackDb = item.track === 'A1' ? editor.videoVolumeDb : editor.voiceVolumeDb;
+      applyGainValue(audio, timelineAudioGain(item, timelineTime, fallbackDb), editor.previewMuted || !itemAudible(item));
+      if (shouldPlay) audio.play().catch(() => undefined);
+    });
+  }
+  function pauseExtraAudio() {
+    extraAudioRefs.current.forEach((audio) => audio.pause());
+  }
+  function syncAdditionalVisualVideos(timelineTime: number, shouldPlay = false) {
+    activeVideoItems.forEach((item) => {
+      if (item.id === activeVideoItem?.id) return;
+      const video = visualVideoRefs.current.get(item.id);
+      if (!video) return;
+      const rate = item.speed || editor.videoSpeed;
+      const localTime = Math.max(0, (timelineTime - item.start) * rate + (item.sourceStart || 0));
+      // Once an overlay is already playing, let its media clock run smoothly.
+      // Constantly snapping it to the top video's sparse timeupdate events was
+      // visible as stutter on added stock clips.
+      const seekThreshold = shouldPlay && !video.paused ? .5 : .04;
+      if (Math.abs(video.currentTime - localTime) > seekThreshold) video.currentTime = localTime;
+      setRate(video, rate);
+      // The normal audio tracks are mixed separately. Keep lower visual media
+      // muted so a video layer does not unexpectedly duplicate its sound.
+      applyDbGain(video, 0, true);
+      if (shouldPlay) video.play().catch(() => undefined);
+    });
+  }
+  function pauseAdditionalVisualVideos() {
+    visualVideoRefs.current.forEach((video) => video.pause());
+  }
   function videoTimelineTime(video: HTMLVideoElement) {
     const localTime = video.currentTime / editor.videoSpeed;
     return activePlaybackItem ? activePlaybackItem.start + localTime - (activePlaybackItem.sourceStart || 0) : localTime;
   }
   function syncVoice(video: HTMLVideoElement, shouldPlay = false) {
     syncVoiceAt(videoTimelineTime(video), shouldPlay);
+    syncExtraAudioAt(videoTimelineTime(video), shouldPlay);
+    syncAdditionalVisualVideos(videoTimelineTime(video), shouldPlay);
   }
   function syncSourceAudio(video: HTMLVideoElement, shouldPlay = false) {
     syncSourceAudioAt(videoTimelineTime(video), shouldPlay);
+  }
+  function continueAfterVisualClip(item: TimelineItem) {
+    const nextTime = Math.min(editor.duration, item.start + item.duration);
+    if (nextTime >= editor.duration - 0.001) return false;
+    // Switch to the timeline clock before the outgoing <video> emits pause.
+    // It keeps the playhead moving through the next clip (or any intentional
+    // gap) and lets the newly active layer seek to the same timeline time.
+    continuingTimelineRef.current = true;
+    resumeNextVisualRef.current = true;
+    setForceTimelineClock(true);
+    setPlaying(true);
+    playheadRef.current = nextTime;
+    editor.setPlayhead(nextTime);
+    audioContextRef.current?.resume().catch(() => undefined);
+    syncVoiceAt(nextTime, true);
+    syncSourceAudioAt(nextTime, true);
+    syncExtraAudioAt(nextTime, true);
+    syncAdditionalVisualVideos(nextTime, true);
+    return true;
   }
   function togglePlayback() {
     if (editor.playhead >= editor.duration - 0.05) {
@@ -243,9 +339,13 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
           audioContextRef.current?.resume().catch(() => undefined);
           syncVoiceAt(editor.playhead, true);
           syncSourceAudioAt(editor.playhead, true);
+          syncExtraAudioAt(editor.playhead, true);
+          syncAdditionalVisualVideos(editor.playhead, true);
         } else {
           voiceRef.current?.pause();
           sourceAudioRef.current?.pause();
+          pauseExtraAudio();
+          pauseAdditionalVisualVideos();
         }
         return next;
       });
@@ -262,6 +362,8 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
           audioContextRef.current?.resume().catch(() => undefined);
           syncVoiceAt(editor.playhead, true);
           syncSourceAudioAt(editor.playhead, true);
+          syncExtraAudioAt(editor.playhead, true);
+          syncAdditionalVisualVideos(editor.playhead, true);
         } else {
           setPlaying(false);
         }
@@ -274,10 +376,16 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   useEffect(() => {
     const video = videoRef.current;
     const mediaTime = previewTime * editor.videoSpeed;
-    if (video && Math.abs(video.currentTime - mediaTime) > .4) video.currentTime = mediaTime;
+    // While a browser source is being swapped at a cut, keep the paused
+    // element close to the timeline clock. Once it resumes normally, allow a
+    // small drift instead of repeatedly seeking it (which caused visible
+    // frame jumps at every edit point).
+    const seekThreshold = video?.paused ? .04 : .5;
+    if (video && Math.abs(video.currentTime - mediaTime) > seekThreshold) video.currentTime = mediaTime;
     if (video) { syncVoice(video); syncSourceAudio(video); }
-    else { syncVoiceAt(editor.playhead); syncSourceAudioAt(editor.playhead); }
-  }, [previewTime, editor.playhead, editor.videoSpeed, sourceAudioUrl, voiceUrl, activeVoiceAudioClip, activeSourceAudioClip]);
+    else { syncVoiceAt(editor.playhead); syncSourceAudioAt(editor.playhead); syncExtraAudioAt(editor.playhead); }
+    syncAdditionalVisualVideos(editor.playhead, playing && !timelineClockPlayback);
+  }, [previewTime, editor.playhead, editor.videoSpeed, sourceAudioUrl, voiceUrl, activeVoiceAudioClip, activeSourceAudioClip, activeExtraAudioClipKey, activeVideoItems, activeVideoItem, playing, timelineClockPlayback]);
   useEffect(() => {
     playheadRef.current = editor.playhead;
   }, [editor.playhead]);
@@ -309,6 +417,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
   }, [editor.videoVolumeDb, editor.videoSpeed, editor.voiceVolumeDb, editor.voiceSpeed, editor.previewMuted, voiceUrl, sourceAudioUrl, sourceAudioMuted, activeVoiceAudioClip, activeSourceAudioClip]);
   useEffect(() => () => { voiceRef.current?.pause(); }, [voiceUrl]);
   useEffect(() => () => { sourceAudioRef.current?.pause(); }, [sourceAudioUrl]);
+  useEffect(() => () => { pauseExtraAudio(); }, [activeExtraAudioClipKey]);
   useEffect(() => {
     if (!activeImageUrl || sourceUrl) return;
     const image = imageRef.current;
@@ -341,19 +450,23 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
         lastUiUpdate = now;
         editor.setPlayhead(next);
       }
-      syncVoiceAt(next);
-      syncSourceAudioAt(next);
-      if (next >= editor.duration) {
+        syncVoiceAt(next);
+        syncSourceAudioAt(next);
+        syncExtraAudioAt(next);
+        syncAdditionalVisualVideos(next, true);
+        if (next >= editor.duration) {
         setPlaying(false);
         voiceRef.current?.pause();
         sourceAudioRef.current?.pause();
+          pauseExtraAudio();
+          pauseAdditionalVisualVideos();
         return;
       }
       frame = window.requestAnimationFrame(tick);
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [playing, timelineClockPlayback, editor.duration, voiceUrl, sourceAudioUrl, activeVoiceAudioClip, activeSourceAudioClip]);
+  }, [playing, timelineClockPlayback, editor.duration, voiceUrl, sourceAudioUrl, activeVoiceAudioClip, activeSourceAudioClip, activeExtraAudioClipKey, activeVideoItems, activeVideoItem]);
   useEffect(() => {
     if (subtitleMoveRef.current) return;
     if (liveSubtitleRef.current) liveSubtitleRef.current.style.transform = subtitleAnchorTransform;
@@ -607,44 +720,104 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
     <div className="preview-viewport" ref={viewportRef}>
       <div className="video-canvas" style={{ width: frameWidth, height: frameHeight, aspectRatio: frameAspect }} ref={canvasRef} onPointerDown={begin} onPointerMove={move} onPointerUp={() => { const wasEditingArea = Boolean(startRef.current && editor.editArea && !editingOcrArea); startRef.current = null; if (wasEditingArea) void editor.saveSubtitleArea(editableAreaRef.current); }} onPointerCancel={() => { startRef.current = null; }}>
         <div className="preview-media-layer video-mode" style={{ transform: `scale(${editor.videoScale})` }}>
-          {sourceUrl ? <video
-            key={`${activeVideoId || editor.project.id}-${editor.previewSource}-${editor.effectivePreviewAudioMode}-${sourceAudioMuted ? 'muted-source' : 'source'}`}
-            ref={videoRef}
-            style={{ objectFit: editor.fitMode }}
-            src={sourceUrl}
-            poster={posterUrl}
-            preload="auto"
-            onLoadedMetadata={(event) => {
-              const video = event.currentTarget;
-              video.currentTime = Math.min(previewTime * editor.videoSpeed, Number.isFinite(video.duration) ? video.duration : editor.duration * editor.videoSpeed);
-              if (video.videoWidth && video.videoHeight) setVideoSize({ width: video.videoWidth, height: video.videoHeight });
-              applyDbGain(video, editor.videoVolumeDb, editor.previewMuted || sourceAudioMuted); setRate(video, editor.videoSpeed); syncVoice(video); syncSourceAudio(video);
-            }}
-            onLoadedData={() => { setLoading(false); setError(''); }}
-            onTimeUpdate={(event) => {
-              const localTime = event.currentTarget.currentTime / editor.videoSpeed;
-              const timelineTime = activePlaybackItem ? activePlaybackItem.start + localTime - (activePlaybackItem.sourceStart || 0) : localTime;
-              syncSourceAudio(event.currentTarget);
-              if (activePlaybackItem && localTime >= activePlaybackItem.duration) {
-                editor.setPlayhead(Math.min(editor.duration, activePlaybackItem.start + activePlaybackItem.duration + 0.001));
-                return;
-              }
-              editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
-            }}
-            onPlay={(event) => { setPlaying(true); audioContextRef.current?.resume().catch(() => undefined); syncVoice(event.currentTarget, true); syncSourceAudio(event.currentTarget, true); }}
-            onPause={() => { setPlaying(false); voiceRef.current?.pause(); sourceAudioRef.current?.pause(); }}
-            onSeeking={(event) => { syncVoice(event.currentTarget); syncSourceAudio(event.currentTarget); }}
-            onWaiting={() => setLoading(true)}
-            onCanPlay={() => { setLoading(false); setError(''); }}
-            onError={() => {
-              if (editor.previewSource === 'preview') editor.setPreviewSource('media');
-              else {
-                setForceTimelineClock(hasWorkspaceTimeline);
-                setLoading(false);
-                setError(hasWorkspaceTimeline ? '' : 'This media cannot be played in the browser. Try the proxy or reveal the source file.');
-              }
-            }}
-          /> : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
+          {activeVideoItems.length ? activeVideoItems.map((item) => {
+            const isTopVideo = item.id === activeVideoItem?.id;
+            const itemUrl = videoUrlForItem(item);
+            if (!itemUrl) return null;
+            const layerIndex = activeVisualItems.findIndex((candidate) => candidate.id === item.id);
+            const itemRate = item.speed || editor.videoSpeed;
+            const itemPreviewTime = Math.max(0, (editor.playhead - item.start) * itemRate + (item.sourceStart || 0));
+            return <video
+              key={`${item.id}-${itemUrl}-${isTopVideo ? 'top' : 'layer'}`}
+              ref={(node) => {
+                if (isTopVideo) (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node;
+                if (node) visualVideoRefs.current.set(item.id, node);
+                else visualVideoRefs.current.delete(item.id);
+              }}
+              className="preview-video-layer"
+              style={{ objectFit: editor.fitMode, zIndex: layerIndex + 1 }}
+              src={itemUrl}
+              poster={isTopVideo ? posterUrl : undefined}
+              preload="auto"
+              muted={!isTopVideo}
+              onLoadedMetadata={(event) => {
+                const video = event.currentTarget;
+                video.currentTime = Math.min(itemPreviewTime, Number.isFinite(video.duration) ? video.duration : itemPreviewTime);
+                setRate(video, itemRate);
+                if (isTopVideo) {
+                  if (video.videoWidth && video.videoHeight) setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+                  applyDbGain(video, editor.videoVolumeDb, editor.previewMuted || sourceAudioMuted);
+                  syncVoice(video); syncSourceAudio(video);
+                  if (resumeNextVisualRef.current) {
+                    resumeNextVisualRef.current = false;
+                    video.play().catch(() => undefined);
+                  }
+                } else {
+                  applyDbGain(video, 0, true);
+                  if (playing && !timelineClockPlayback) video.play().catch(() => undefined);
+                }
+              }}
+              onLoadedData={() => { if (isTopVideo) { setLoading(false); setError(''); } }}
+              onTimeUpdate={(event) => {
+                if (!isTopVideo) return;
+                const localTime = event.currentTarget.currentTime / itemRate;
+                const timelineTime = item.start + localTime - (item.sourceStart || 0);
+                syncSourceAudio(event.currentTarget);
+                syncAdditionalVisualVideos(timelineTime, true);
+                if (localTime >= item.duration) {
+                  if (!continueAfterVisualClip(item)) editor.setPlayhead(Math.min(editor.duration, item.start + item.duration));
+                  return;
+                }
+                editor.setPlayhead(Math.max(0, Math.min(editor.duration, timelineTime)));
+              }}
+              onEnded={() => {
+                if (!isTopVideo) return;
+                if (!continueAfterVisualClip(item)) {
+                  setPlaying(false);
+                  voiceRef.current?.pause(); sourceAudioRef.current?.pause(); pauseExtraAudio(); pauseAdditionalVisualVideos();
+                }
+              }}
+              onPlay={(event) => {
+                if (!isTopVideo) return;
+                // The currently playing HTML video is the smoothest clock. The
+                // RAF timeline clock is only a bridge while changing sources
+                // or when the browser cannot decode a source.
+                setForceTimelineClock(false);
+                setPlaying(true); audioContextRef.current?.resume().catch(() => undefined); syncVoice(event.currentTarget, true); syncSourceAudio(event.currentTarget, true);
+              }}
+              onPause={() => {
+                if (!isTopVideo) return;
+                if (continuingTimelineRef.current) {
+                  continuingTimelineRef.current = false;
+                  return;
+                }
+                setPlaying(false); voiceRef.current?.pause(); sourceAudioRef.current?.pause(); pauseExtraAudio(); pauseAdditionalVisualVideos();
+              }}
+              onSeeking={(event) => { if (isTopVideo) { syncVoice(event.currentTarget); syncSourceAudio(event.currentTarget); } }}
+              onWaiting={() => { if (isTopVideo) setLoading(true); }}
+              onCanPlay={(event) => {
+                if (!isTopVideo) return;
+                setLoading(false); setError('');
+                if (resumeNextVisualRef.current) {
+                  resumeNextVisualRef.current = false;
+                  event.currentTarget.play().catch(() => undefined);
+                }
+              }}
+              onError={() => {
+                if (!isTopVideo) return;
+                if (editor.previewSource === 'preview') editor.setPreviewSource('media');
+                else {
+                  setForceTimelineClock(hasWorkspaceTimeline);
+                  setLoading(false);
+                  setError(hasWorkspaceTimeline ? '' : 'This media cannot be played in the browser. Try the proxy or reveal the source file.');
+                }
+              }}
+            />;
+          }) : <div className="preview-black-canvas" aria-label="No visual media at the playhead" />}
+          {preloadVideoItems.map((item) => {
+            const itemUrl = videoUrlForItem(item);
+            return itemUrl ? <video key={`preload-${item.id}`} className="preview-video-preload" src={itemUrl} preload="auto" muted aria-hidden="true" /> : null;
+          })}
           {activeImageItems.map((item, index) => {
             const isTopImage = index === activeImageItems.length - 1;
             const baseTransform = imageTransformValue(item);
@@ -659,7 +832,7 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
               ref={isTopImage ? imageRef : undefined}
               className={`preview-image ${isTopImage && canDragActiveImage ? 'draggable' : ''} ${isTopImage && imageDragRef.current ? 'dragging' : ''}`}
               style={{
-                zIndex: index + 1,
+                zIndex: activeVisualItems.findIndex((candidate) => candidate.id === item.id) + 1,
                 objectFit: editor.fitMode,
                 left: `${transform.x * 100}%`,
                 top: `${transform.y * 100}%`,
@@ -714,6 +887,20 @@ export function VideoPreview({ editor }: { editor: EditorController }) {
         </div>
         {voiceUrl && <audio ref={voiceRef} src={voiceUrl} preload="auto" onCanPlay={() => { const video = videoRef.current; if (video) syncVoice(video, !video.paused); else syncVoiceAt(editor.playhead, playing); }} />}
         {sourceAudioUrl && <audio ref={sourceAudioRef} src={sourceAudioUrl} preload="auto" onCanPlay={() => { const video = videoRef.current; if (video) syncSourceAudio(video, !video.paused); else syncSourceAudioAt(editor.playhead, playing); }} />}
+        {activeExtraAudioClips.map((item) => {
+          const url = audioClipUrl(item);
+          if (!url) return null;
+          return <audio
+            key={item.id}
+            ref={(node) => {
+              if (node) extraAudioRefs.current.set(item.id, node);
+              else extraAudioRefs.current.delete(item.id);
+            }}
+            src={url}
+            preload="auto"
+            onCanPlay={() => syncExtraAudioAt(editor.playhead, playing)}
+          />;
+        })}
         {loading && (activeImageUrl || sourceUrl) && !posterUrl && !error && <div className="preview-loading"><i /> Preparing browser preview...</div>}
         {error && <div className="preview-error">{error}<button onClick={() => editor.setPreviewSource('preview')}>Retry proxy</button></div>}
         {editor.editArea && <button className="reset-area" onClick={(event) => {

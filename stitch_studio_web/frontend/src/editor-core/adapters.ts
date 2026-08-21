@@ -217,7 +217,13 @@ function coreElementToTimelineItem(element: CoreTimelineElement, track: CoreTime
 
 function coreTrackKindToTimeline(track: CoreTimelineTrack): TimelineTrackKind {
   if (track.kind === 'audio') return 'audio';
-  if (track.kind === 'text') return track.elements.some((element) => element.kind === 'subtitle' || element.legacy?.timelineItemKind === 'srt') ? 'subtitle' : 'text';
+  if (track.kind === 'text') {
+    // The core scene uses `text` for both text and subtitle lanes. Preserve
+    // the canonical empty S1 subtitle lane as well, otherwise an import made
+    // after reopening a project creates a new S2/S3 lane.
+    const canonicalSubtitleLane = (track.legacyTrackId || track.id) === 'S1' && /subtitle/i.test(track.name || '');
+    return canonicalSubtitleLane || track.elements.some((element) => element.kind === 'subtitle' || element.legacy?.timelineItemKind === 'srt') ? 'subtitle' : 'text';
+  }
   if (track.kind === 'effect') return 'effect';
   return 'video';
 }

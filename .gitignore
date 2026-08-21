@@ -23,9 +23,9 @@ develop-eggs/
 dist/
 downloads/
 eggs/
-.eggs/
-lib/
-lib64/
+/lib/
+/lib64/
+!stitch_studio_web/frontend/src/lib/
 parts/
 sdist/
 var/

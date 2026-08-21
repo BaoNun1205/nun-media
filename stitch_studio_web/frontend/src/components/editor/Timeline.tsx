@@ -1,15 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Captions, Check, ChevronRight, Clipboard, Copy, Eye, EyeOff, FileAudio2, Film, Flag, Layers, Magnet, Minus, Music2, Plus, Redo2, Scissors, Trash2, Undo2, Volume2, VolumeX } from 'lucide-react';
-import { formatClock, percent } from '../../lib/studio';
-import { normalizeTimelineState, projectAssetDurationSeconds, resolvePlacement } from '../../lib/timelineCore';
+import { formatClock } from '../../lib/studio';
+import { enforceVisualTrackLayout, isVisualKind, projectAssetDurationSeconds, resolvePlacement } from '../../lib/timelineCore';
+import {
+  DEFAULT_PIXELS_PER_SECOND,
+  MAX_PIXELS_PER_SECOND,
+  MIN_PIXELS_PER_SECOND,
+  clampZoom,
+  durationToPx,
+  generateRulerTicks,
+  pxToTime,
+  timeToPx,
+} from '../../lib/timelineCoordinates';
 import { SliderNumericField } from './NumericField';
 import type { EditorController } from '../../hooks/useEditorController';
 import type { InspectorSelection, TimelineItem, TimelineTrack, TimelineTrackKind } from '../../types/studio';
 
 type Marquee = { left: number; top: number; width: number; height: number };
 type ContextMenuPoint = { x: number; y: number; videoId: number; timelineItemId?: string };
-type DragPlacementPreview = { trackId: string; start: number; createdTrack: boolean };
+type DragPlacementPreview = { trackId: string; start: number; duration: number; createdTrack: boolean; top: number; height: number };
 type ClipDragMode = 'move' | 'trim-start' | 'trim-end';
 type ClipDragState = {
   pointerId: number;
@@ -19,13 +29,12 @@ type ClipDragState = {
   clientY: number;
   sourceTrackId: string;
   targetTrackId?: string;
-  durationAtStart: number;
+  pixelsPerSecond: number;
   baseItems: TimelineItem[];
   nextItems: TimelineItem[];
   nextTracks: TimelineTrack[];
   visualElements: HTMLElement[];
   snapCandidates: number[];
-  canvasWidth: number;
   moved: boolean;
   mode: ClipDragMode;
 };
@@ -41,11 +50,10 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(1200);
   const [marquee, setMarquee] = useState<Marquee | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuPoint | null>(null);
-  const [dragDisplayDuration, setDragDisplayDuration] = useState<number | null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
   const [dragPlacementPreview, setDragPlacementPreview] = useState<DragPlacementPreview | null>(null);
-  const minimumWidth = Math.max(260, Math.round(Math.max(0, timelineViewportWidth - 145) / 3));
-  const maximumWidth = Math.max(5000, minimumWidth);
+
+  const pixelsPerSecond = clampZoom(editor.pixelsPerSecond ?? editor.zoom ?? DEFAULT_PIXELS_PER_SECOND);
   const selectedKeys = new Set(editor.selection.type === 'timeline-items' ? editor.selection.keys : []);
   const originalSegments = editor.srt.segments;
   const mergedVoiceAsset = editor.latestVoiceAsset;
@@ -54,8 +62,17 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const hasBlurEffect = Boolean(editor.activeBlurEffect);
   const legacyEffectOperation = editor.project.processingState?.subtitleInserted ? 'insert' : editor.project.processingState?.subtitleHidden ? 'hide' : null;
   const visibleEffectOperation = hasBlurEffect ? 'blur' : legacyEffectOperation;
-  const naturalDisplayDuration = Math.max(editor.duration, 30);
-  const displayDuration = dragDisplayDuration ?? naturalDisplayDuration;
+
+  const totalItemsDuration = editor.timelineItems.reduce((end, item) => Math.max(end, item.start + item.duration), 0);
+  const naturalDisplayDuration = Math.max(editor.duration, totalItemsDuration, 30);
+  const displayDuration = naturalDisplayDuration;
+
+  // Viewport & canvas pixel width: fill viewport or expand horizontally for long content / zoom
+  const calculatedCanvasWidth = Math.max(
+    Math.max(0, timelineViewportWidth - 145),
+    Math.ceil(displayDuration * pixelsPerSecond) + 80,
+  );
+
   const trackKeys: Record<string, string[]> = Object.fromEntries(stateTracks.map((track) => {
     const keys = editor.timelineItems.filter((item) => item.track === track.id).map((item) => item.id);
     if (track.id === 'V1' && legacySingleVideo) keys.unshift(`video:${editor.project.id}`);
@@ -74,9 +91,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     observer.observe(viewport);
     return () => observer.disconnect();
   }, [editor.bottomView]);
-  useEffect(() => {
-    if (editor.timelineWidth < minimumWidth) editor.setTimelineWidth(minimumWidth);
-  }, [editor.timelineWidth, minimumWidth]);
+
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -91,9 +106,39 @@ export function Timeline({ editor }: { editor: EditorController }) {
     };
   }, [contextMenu]);
 
+  // Wheel zoom (Ctrl+Wheel / Meta+Wheel) with playhead/pointer anchor stability
+  useEffect(() => {
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const canvasEl = canvasRef.current;
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left;
+      const pointerTime = pxToTime(pointerX, pixelsPerSecond);
+
+      const zoomFactor = event.deltaY < 0 ? 1.2 : 0.833;
+      const nextZoom = clampZoom(pixelsPerSecond * zoomFactor);
+      if (Math.abs(nextZoom - pixelsPerSecond) < 0.1) return;
+
+      editor.setZoom(nextZoom);
+
+      // Preserve anchor position after render
+      window.requestAnimationFrame(() => {
+        if (!scrollEl) return;
+        const newPointerPx = timeToPx(pointerTime, nextZoom);
+        scrollEl.scrollLeft = Math.max(0, newPointerPx - (event.clientX - scrollEl.getBoundingClientRect().left));
+      });
+    };
+    scrollEl.addEventListener('wheel', handleWheel, { passive: false });
+    return () => scrollEl.removeEventListener('wheel', handleWheel);
+  }, [editor, pixelsPerSecond]);
+
   if (editor.bottomView === 'script') return <ScriptEditor editor={editor} />;
 
-  const marks = Array.from({ length: 9 }, (_, index) => (displayDuration / 8) * index);
+  const rulerTicks = generateRulerTicks(displayDuration + 15, pixelsPerSecond);
   const isTrackSelected = (track: string) => editor.selection.type === 'timeline-items' && editor.selection.track === track;
   const isItemSelected = (key: string) => {
     if (selectedKeys.has(key)) return true;
@@ -106,13 +151,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     if (key.startsWith('voice:')) return editor.selection.type === 'voice' && editor.selection.index === Number(key.split(':')[1]);
     return false;
   };
-  const currentSelectionKey = () => {
-    if (editor.selection.type === 'video') return `video:${editor.selection.id}`;
-    if (editor.selection.type === 'subtitle') return `subtitle:${editor.selection.index}`;
-    if (editor.selection.type === 'voice') return `voice:${editor.selection.index}`;
-    if (editor.selection.type === 'effect') return `effect:${editor.selection.operation}`;
-    return '';
-  };
+
   const selectTrack = (track: string) => editor.setSelection({ type: 'timeline-items', keys: trackKeys[track] || [], track });
   const trackAtClientY = (clientY: number) => {
     const rows = Array.from(canvasRef.current?.querySelectorAll<HTMLElement>('[data-track-row]') || []);
@@ -121,16 +160,31 @@ export function Timeline({ editor }: { editor: EditorController }) {
       return clientY >= bounds.top && clientY <= bounds.bottom;
     })?.dataset.trackRow;
   };
+  const dropPreviewGeometry = (trackId: string, createdTrack: boolean) => {
+    const canvasBounds = canvasRef.current?.getBoundingClientRect();
+    const rows = Array.from(canvasRef.current?.querySelectorAll<HTMLElement>('[data-track-row]') || []);
+    const targetRow = rows.find((row) => row.dataset.trackRow === trackId)
+      || (createdTrack ? rows.find((row) => stateTracks.find((track) => track.id === row.dataset.trackRow)?.kind !== 'video') : undefined);
+    if (!canvasBounds || !targetRow) return { top: 28, height: 32 };
+    const rowBounds = targetRow.getBoundingClientRect();
+    return {
+      top: Math.max(28, rowBounds.top - canvasBounds.top - (createdTrack ? rowBounds.height : 0)),
+      height: Math.max(24, rowBounds.height - 4),
+    };
+  };
+
   const timelineTimeFromClientX = (clientX: number) => {
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!bounds) return 0;
-    return Math.max(0, ((clientX - bounds.left) / Math.max(1, bounds.width)) * displayDuration);
+    const px = Math.max(0, clientX - bounds.left);
+    return pxToTime(px, pixelsPerSecond);
   };
+
   const seekFromClientX = (clientX: number) => {
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    editor.setPlayhead(Math.max(0, Math.min(editor.duration, ((clientX - bounds.left) / bounds.width) * displayDuration)));
+    const time = timelineTimeFromClientX(clientX);
+    editor.setPlayhead(Math.max(0, Math.min(displayDuration, time)));
   };
+
   const beginScrub = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -138,10 +192,13 @@ export function Timeline({ editor }: { editor: EditorController }) {
     event.currentTarget.setPointerCapture(event.pointerId);
     seekFromClientX(event.clientX);
   };
+
   const moveScrub = (event: React.PointerEvent<HTMLDivElement>) => {
     if (scrubRef.current) seekFromClientX(event.clientX);
   };
+
   const finishScrub = () => { scrubRef.current = false; };
+
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragOverTrackId(null);
@@ -159,6 +216,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       editor.setMessage('Unable to add this asset to the timeline.');
     }
   };
+
   const previewExternalDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const raw = event.dataTransfer.getData('application/x-stitch-asset');
@@ -170,7 +228,9 @@ export function Timeline({ editor }: { editor: EditorController }) {
         : undefined;
       const kind = asset?.kind || data.kind;
       if (kind !== 'video' && kind !== 'image') return;
-      const duration = kind === 'image' ? 10 : Math.max(.05, asset ? projectAssetDurationSeconds(asset) || 5 : 5);
+      // A library/stock item is not necessarily in projectAssets yet. Give
+      // the ghost a useful minimum video duration instead of a 0.05s sliver.
+      const duration = kind === 'image' ? 10 : Math.max(0.05, asset ? projectAssetDurationSeconds(asset) || 5 : 5);
       const placement = resolvePlacement({
         state: editor.timelineState,
         kind,
@@ -178,12 +238,20 @@ export function Timeline({ editor }: { editor: EditorController }) {
         requestedStart: timelineTimeFromClientX(event.clientX),
         duration,
       });
-      setDragPlacementPreview({ trackId: placement.trackId, start: placement.start, createdTrack: Boolean(placement.createdTrack) });
+      const createdTrack = Boolean(placement.createdTrack);
+      setDragPlacementPreview({
+        trackId: placement.trackId,
+        start: placement.start,
+        duration,
+        createdTrack,
+        ...dropPreviewGeometry(placement.trackId, createdTrack),
+      });
       setDragOverTrackId(placement.createdTrack ? null : placement.trackId);
     } catch {
-      // Ignore malformed drag data; the drop handler will report a useful error.
+      // Ignore malformed drag data
     }
   };
+
   const deleteSelectedTimelineItem = (event: React.KeyboardEvent) => {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     if (editor.selection.type === 'timeline-items' && editor.selection.keys.includes('effect:blur')) {
@@ -198,51 +266,55 @@ export function Timeline({ editor }: { editor: EditorController }) {
       event.preventDefault();
       event.stopPropagation();
       void editor.deleteTimelineItems(clipKeys);
-      return;
     }
-    if (!editor.selection.keys.includes('voice:merged')) return;
-    event.preventDefault();
-    event.stopPropagation();
-    void editor.deleteVoiceover();
   };
-  const deleteVoiceoverFromClip = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
-    event.preventDefault();
-    event.stopPropagation();
-    void editor.deleteVoiceover();
-  };
-  const deleteBlurEffectFromClip = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+
+  const deleteBlurEffectFromClip = (event: React.KeyboardEvent) => {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     event.preventDefault();
     event.stopPropagation();
     void editor.deleteBlurEffect();
   };
-  const selectItem = (event: React.MouseEvent | React.PointerEvent, key: string, singleSelection: InspectorSelection) => {
+
+  const deleteVoiceoverFromClip = (event: React.KeyboardEvent) => {
+    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    event.preventDefault();
+    event.stopPropagation();
+    void editor.deleteVoiceover();
+  };
+
+  const selectItem = (event: React.MouseEvent, key: string, selection: InspectorSelection) => {
     event.stopPropagation();
     if (event.ctrlKey || event.metaKey || event.shiftKey) {
-      const next = new Set(editor.selection.type === 'timeline-items' ? editor.selection.keys : []);
-      const current = currentSelectionKey();
-      if (current) next.add(current);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      editor.setSelection(next.size ? { type: 'timeline-items', keys: [...next] } : { type: 'project' });
+      if (editor.selection.type === 'timeline-items') {
+        const existing = new Set(editor.selection.keys);
+        if (existing.has(key)) existing.delete(key);
+        else existing.add(key);
+        editor.setSelection(existing.size ? { type: 'timeline-items', keys: [...existing], track: editor.selection.track } : { type: 'project' });
+        return;
+      }
+      editor.setSelection({ type: 'timeline-items', keys: [key], track: selection.type === 'timeline-items' ? selection.track : undefined });
       return;
     }
-    editor.setSelection(singleSelection);
+    editor.setSelection(selection);
   };
+
   const openVideoContextMenu = (event: React.MouseEvent, videoId: number, timelineItemId?: string) => {
     event.preventDefault();
     event.stopPropagation();
-    editor.setSelection(timelineItemId ? { type: 'timeline-items', keys: [timelineItemId], track: 'V1' } : { type: 'video', id: videoId });
     setContextMenu({ x: event.clientX, y: event.clientY, videoId, timelineItemId });
   };
+
   const audioModeForVideo = (videoId: number) => {
-    const source = editor.projects.find((item) => item.id === videoId) || (editor.project.id === videoId ? editor.project : undefined);
-    return source?.audioMode || 'original';
+    const target = editor.projects.find((project) => project.id === videoId);
+    return target?.audioMode || editor.audioMode;
   };
-  const timelineClipById = (key?: string) => editor.timelineItems.find((item) => item.id === key);
+
+  const timelineClipById = (id?: string) => editor.timelineItems.find((item) => item.id === id);
+
   const clipHasExtractedAudio = (item?: TimelineItem) => Boolean(item && (
-    item.sourceAudioMuted
-    || editor.timelineItems.some((clip) =>
+    item.kind === 'video'
+    && editor.timelineItems.some((clip) =>
       clip.kind === 'audio'
       && clip.track === 'A1'
       && (
@@ -256,11 +328,13 @@ export function Timeline({ editor }: { editor: EditorController }) {
       )
     )
   ));
+
   const timelineElementsForKeys = (keys: string[]) => {
     const keySet = new Set(keys);
     return Array.from(canvasRef.current?.querySelectorAll<HTMLElement>('[data-timeline-item]') || [])
       .filter((element) => keySet.has(element.dataset.timelineItem || ''));
   };
+
   const setClipDragVisual = (elements: HTMLElement[], dx = 0, active = true) => {
     elements.forEach((element) => {
       element.style.transform = active ? `translate3d(${dx}px, 0, 0)` : '';
@@ -268,8 +342,10 @@ export function Timeline({ editor }: { editor: EditorController }) {
       element.classList.toggle('timeline-clip-dragging', active);
     });
   };
+
   const clearClipDragVisual = (elements: HTMLElement[]) => setClipDragVisual(elements, 0, false);
-  const setClipShapeVisual = (elements: HTMLElement[], items: TimelineItem[], duration: number, active = true) => {
+
+  const setClipShapeVisual = (elements: HTMLElement[], items: TimelineItem[], pps: number, active = true) => {
     const itemById = new Map(items.map((item) => [item.id, item]));
     elements.forEach((element) => {
       const item = itemById.get(element.dataset.timelineItem || '');
@@ -280,10 +356,11 @@ export function Timeline({ editor }: { editor: EditorController }) {
         element.style.width = '';
         return;
       }
-      element.style.left = percent(item.start, duration);
-      element.style.width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
+      element.style.left = `${timeToPx(item.start, pps)}px`;
+      element.style.width = `${Math.max(2, durationToPx(item.duration, pps))}px`;
     });
   };
+
   const clearClipShapeVisual = (elements: HTMLElement[]) => {
     elements.forEach((element) => {
       element.style.left = '';
@@ -292,12 +369,14 @@ export function Timeline({ editor }: { editor: EditorController }) {
       element.classList.remove('timeline-clip-dragging');
     });
   };
+
   const keepClipShapeVisualUntilNextPaint = (drag: ClipDragState, items: TimelineItem[]) => {
     window.requestAnimationFrame(() => {
       if (clipMoveRef.current !== drag || drag.mode === 'move') return;
-      setClipShapeVisual(drag.visualElements, items, drag.durationAtStart, true);
+      setClipShapeVisual(drag.visualElements, items, drag.pixelsPerSecond, true);
     });
   };
+
   const linkedClipKeysFor = (item: TimelineItem, items: TimelineItem[]) => {
     const keys = new Set([item.id]);
     if (item.kind === 'video') {
@@ -307,6 +386,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     }
     return keys;
   };
+
   const timelineKeysForDrag = (event: React.PointerEvent, itemId: string, items: TimelineItem[]) => {
     if (!(event.ctrlKey || event.metaKey || event.shiftKey)) return [itemId];
     if (editor.selection.type !== 'timeline-items') return [itemId];
@@ -314,6 +394,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     keys.add(itemId);
     return [...keys];
   };
+
   const sourceDurationForClip = (item: TimelineItem) => {
     if (item.sourceDuration) return item.sourceDuration;
     if (item.kind === 'image') return 0;
@@ -323,6 +404,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     }
     return 0;
   };
+
   const snapCandidates = (items: TimelineItem[], movingKeys: Set<string>) => {
     const values = [0];
     items.forEach((item) => {
@@ -332,6 +414,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     });
     return [...new Set(values.map((value) => Number(value.toFixed(3))))].filter((value) => value >= 0);
   };
+
   const nearestSnap = (
     anchors: Array<{ time: number; apply: (time: number) => number }>,
     candidates: number[],
@@ -350,6 +433,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     });
     return best;
   };
+
   const showSnapGuide = (time?: number) => {
     const guide = snapGuideRef.current;
     if (!guide) return;
@@ -358,10 +442,11 @@ export function Timeline({ editor }: { editor: EditorController }) {
       return;
     }
     guide.hidden = false;
-    guide.style.left = percent(time, displayDuration);
+    guide.style.left = `${timeToPx(time, pixelsPerSecond)}px`;
     const label = guide.querySelector('span');
     if (label) label.textContent = formatClock(time);
   };
+
   const beginClipMove = (event: React.PointerEvent<HTMLButtonElement>, item: TimelineItem, selection: InspectorSelection) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -376,8 +461,6 @@ export function Timeline({ editor }: { editor: EditorController }) {
     });
     const visualKeyList = [...visualKeys];
     const movingKeys = new Set(visualKeyList);
-    const canvasWidth = canvasRef.current?.getBoundingClientRect().width || 1;
-    setDragDisplayDuration(displayDuration);
     clipMoveRef.current = {
       pointerId: event.pointerId,
       key: item.id,
@@ -385,18 +468,18 @@ export function Timeline({ editor }: { editor: EditorController }) {
       clientX: event.clientX,
       clientY: event.clientY,
       sourceTrackId: item.track,
-      durationAtStart: displayDuration,
+      pixelsPerSecond,
       baseItems,
       nextItems: baseItems.map((clip) => ({ ...clip })),
       nextTracks: stateTracks.map((track) => ({ ...track })),
       visualElements: timelineElementsForKeys(visualKeyList),
       snapCandidates: snapCandidates(baseItems, movingKeys),
-      canvasWidth,
       moved: false,
       mode: 'move',
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
+
   const beginClipTrim = (event: React.PointerEvent<HTMLElement>, item: TimelineItem, side: 'start' | 'end') => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -405,8 +488,6 @@ export function Timeline({ editor }: { editor: EditorController }) {
     const baseItems = editor.timelineItems.map((clip) => ({ ...clip }));
     const visualKeys = linkedClipKeysFor(item, baseItems);
     const visualKeyList = [...visualKeys];
-    const canvasWidth = canvasRef.current?.getBoundingClientRect().width || 1;
-    setDragDisplayDuration(displayDuration);
     clipMoveRef.current = {
       pointerId: event.pointerId,
       key: item.id,
@@ -414,34 +495,35 @@ export function Timeline({ editor }: { editor: EditorController }) {
       clientX: event.clientX,
       clientY: event.clientY,
       sourceTrackId: item.track,
-      durationAtStart: displayDuration,
+      pixelsPerSecond,
       baseItems,
       nextItems: baseItems.map((clip) => ({ ...clip })),
       nextTracks: stateTracks.map((track) => ({ ...track })),
       visualElements: timelineElementsForKeys(visualKeyList),
       snapCandidates: snapCandidates(baseItems, visualKeys),
-      canvasWidth,
       moved: false,
       mode: side === 'start' ? 'trim-start' : 'trim-end',
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
+
   const moveClip = (event: React.PointerEvent<HTMLElement>) => {
     const drag = clipMoveRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const canvasWidth = Math.max(1, drag.canvasWidth);
-    const deltaSeconds = ((event.clientX - drag.clientX) / canvasWidth) * drag.durationAtStart;
+    const pps = drag.pixelsPerSecond;
+    const deltaSeconds = (event.clientX - drag.clientX) / pps;
     drag.moved = drag.moved || Math.abs(event.clientX - drag.clientX) > 2 || Math.abs(event.clientY - drag.clientY) > 2;
     const target = drag.baseItems.find((item) => item.id === drag.key);
     if (!target) return;
     const movingKeys = new Set(drag.visualKeys);
     const candidates = drag.snapCandidates;
-    const snapThresholdPixels = target.kind === 'image' && drag.mode !== 'move' ? 3 : 8;
-    const thresholdSeconds = (snapThresholdPixels / canvasWidth) * drag.durationAtStart;
-    const minDuration = 0.25;
+    const snapThresholdPixels = target.kind === 'image' && drag.mode !== 'move' ? 4 : 8;
+    const thresholdSeconds = snapThresholdPixels / pps;
+    const minDuration = 0.1;
     let linkedDelta = deltaSeconds;
     let snappedTime: number | undefined;
     let next = drag.baseItems.map((item) => ({ ...item }));
+
     if (drag.mode === 'move') {
       const movingItems = drag.baseItems.filter((item) => movingKeys.has(item.id));
       const earliestStart = Math.min(...movingItems.map((item) => item.start));
@@ -479,8 +561,6 @@ export function Timeline({ editor }: { editor: EditorController }) {
       drag.targetTrackId = canChangeTrack ? targetTrack!.id : undefined;
       setDragOverTrackId(drag.targetTrackId || null);
       if (canChangeTrack) {
-        // Move clips from the dragged row only. A video clip's linked A1 audio
-        // keeps its own audio row while the visual layer changes from V1 to V2.
         const transferableKeys = new Set(drag.visualKeys.filter((key) => drag.baseItems.some((clip) => clip.id === key && clip.track === drag.sourceTrackId)));
         next = next.map((item) => transferableKeys.has(item.id) ? { ...item, track: targetTrack!.id } : item);
       }
@@ -532,33 +612,43 @@ export function Timeline({ editor }: { editor: EditorController }) {
     next = next.map((item) => movingKeys.has(item.id)
       ? { ...item, start: Math.round(item.start * fps) / fps, duration: Math.max(0.05, Math.round(item.duration * fps) / fps), sourceStart: Math.round((item.sourceStart || 0) * fps) / fps }
       : item);
-    const collisionFree = normalizeTimelineState({ ...editor.timelineState, items: next });
+    const pinnedVisualItemIds = new Set(drag.baseItems
+      .filter((item) => isVisualKind(item.kind) && !movingKeys.has(item.id))
+      .map((item) => item.id));
+    const movingVisualItemIds = new Set(drag.baseItems
+      .filter((item) => isVisualKind(item.kind) && movingKeys.has(item.id))
+      .map((item) => item.id));
+    const collisionFree = enforceVisualTrackLayout(editor.timelineState.tracks, next, {
+      pinnedItemIds: pinnedVisualItemIds,
+      preferHigherTracksForIds: movingVisualItemIds,
+    });
     next = collisionFree.items;
     drag.nextTracks = collisionFree.tracks;
     if (drag.mode === 'move') {
       const placedTarget = next.find((item) => item.id === drag.key);
       if (placedTarget?.track) {
-        setDragPlacementPreview({ trackId: placedTarget.track, start: placedTarget.start, createdTrack: !stateTracks.some((track) => track.id === placedTarget.track) });
+        const createdTrack = !stateTracks.some((track) => track.id === placedTarget.track);
+        setDragPlacementPreview({
+          trackId: placedTarget.track,
+          start: placedTarget.start,
+          duration: placedTarget.duration,
+          createdTrack,
+          ...dropPreviewGeometry(placedTarget.track, createdTrack),
+        });
         if (stateTracks.some((track) => track.id === placedTarget.track)) setDragOverTrackId(placedTarget.track);
       }
     }
     showSnapGuide(snappedTime);
     drag.nextItems = next;
     if (drag.moved && drag.mode === 'move') {
-      const visualDx = (linkedDelta / Math.max(drag.durationAtStart, 0.01)) * canvasWidth;
+      const visualDx = linkedDelta * pps;
       setClipDragVisual(drag.visualElements, visualDx, true);
     } else if (drag.moved) {
-      setClipShapeVisual(drag.visualElements, next, drag.durationAtStart, true);
+      setClipShapeVisual(drag.visualElements, next, pps, true);
       keepClipShapeVisualUntilNextPaint(drag, next);
-      const currentEnd = Math.max(...next.map((item) => item.start + item.duration));
-      if (currentEnd > drag.durationAtStart && canvasRef.current) {
-        const nextWidth = Math.ceil(drag.canvasWidth * (currentEnd / drag.durationAtStart));
-        if (nextWidth > canvasRef.current.clientWidth) {
-          canvasRef.current.style.width = `${nextWidth}px`;
-        }
-      }
     }
   };
+
   const finishClipMove = (event: React.PointerEvent<HTMLElement>) => {
     const drag = clipMoveRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -569,23 +659,18 @@ export function Timeline({ editor }: { editor: EditorController }) {
     const clearVisuals = () => {
       if (drag.mode === 'move') clearClipDragVisual(drag.visualElements);
       else clearClipShapeVisual(drag.visualElements);
-      setDragDisplayDuration(null);
     };
     if (drag.moved) {
       suppressClickRef.current = true;
       const movedTarget = drag.nextItems.find((item) => item.id === drag.key);
       if (movedTarget) editor.setPlayhead(movedTarget.start);
-      const nextTimelineDuration = drag.nextItems.reduce((end, item) => Math.max(end, item.start + item.duration), 0);
-      if (nextTimelineDuration > drag.durationAtStart + 0.01) {
-        const nextWidth = Math.ceil(editor.timelineWidth * (nextTimelineDuration / Math.max(drag.durationAtStart, 0.01)));
-        editor.setTimelineWidth(Math.min(maximumWidth, Math.max(editor.timelineWidth, nextWidth)));
-      }
       clearVisuals();
       void editor.commitTimelineItems(drag.nextItems, drag.mode === 'move' ? 'Moved timeline clip.' : 'Resized timeline clip.', drag.baseItems);
       return;
     }
     clearVisuals();
   };
+
   const canvasPoint = (clientX: number, clientY: number) => {
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!bounds) return { x: 0, y: 0 };
@@ -594,6 +679,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       y: Math.max(0, Math.min(bounds.height, clientY - bounds.top)),
     };
   };
+
   const beginMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest('[data-timeline-item]')) return;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -603,6 +689,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
     event.currentTarget.setPointerCapture(event.pointerId);
     setMarquee({ left: point.x, top: point.y, width: 0, height: 0 });
   };
+
   const moveMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
     const start = dragRef.current;
     if (!start) return;
@@ -615,6 +702,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       height: Math.abs(point.y - start.y),
     });
   };
+
   const finishMarquee = (event: React.PointerEvent<HTMLDivElement>) => {
     const start = dragRef.current;
     if (!start) return;
@@ -641,6 +729,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
   const audioProgress = Math.round(Math.max(0, Math.min(100, audioProgressRaw <= 1 ? audioProgressRaw * 100 : audioProgressRaw)));
   const audioModeLabel = editor.audioMode === 'remove_vocals' ? 'No vocals' : editor.audioMode === 'remove_music' ? 'No music' : 'Original';
   const trackIcon = (kind: TimelineTrackKind) => kind === 'audio' ? Music2 : kind === 'subtitle' || kind === 'text' ? Captions : kind === 'effect' ? Flag : Film;
+
   const renderTrackRow = (track: TimelineTrack) => {
     const rowItems = editor.timelineItems.filter((item) => item.track === track.id);
     const rowClass = `timeline-track ${track.kind}-track ${track.hidden ? 'track-hidden' : ''} ${track.muted ? 'track-muted' : ''} ${isTrackSelected(track.id) ? 'track-selected' : ''} ${dragOverTrackId === track.id ? 'track-drop-target' : ''}`;
@@ -651,6 +740,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
         {track.id === 'V1' && legacySingleVideo && <button
           data-timeline-item={`video:${editor.project.id}`}
           className={`video-clip ${isItemSelected(`video:${editor.project.id}`) ? 'selected' : ''}`}
+          style={{ left: 0, width: `${Math.max(2, durationToPx(editor.duration, pixelsPerSecond))}px` }}
           onClick={(event) => selectItem(event, `video:${editor.project.id}`, { type: 'video', id: editor.project.id })}
           onContextMenu={(event) => openVideoContextMenu(event, editor.project.id)}
         >
@@ -660,26 +750,41 @@ export function Timeline({ editor }: { editor: EditorController }) {
           <small>{formatClock(editor.duration)}</small>
           {editor.activeAudioJob && <span className="audio-separation-progress"><i style={{ width: `${Math.max(2, audioProgress)}%` }} /><em>{audioProgress}%</em></span>}
         </button>}
-        {mediaItems.map((item) => <TimelineMediaClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} audioMode={item.kind === 'video' && item.sourceVideoId ? audioModeForVideo(item.sourceVideoId) : undefined} audioJob={item.kind === 'video' ? editor.audioJobForVideo(item.sourceVideoId) : undefined} onSelect={(event) => {
-          selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id });
-        }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onTrimStart={(event) => beginClipTrim(event, item, 'start')} onTrimEnd={(event) => beginClipTrim(event, item, 'end')} onContextMenu={item.kind === 'video' && item.sourceVideoId ? (event) => openVideoContextMenu(event, item.sourceVideoId!, item.id) : undefined} />)}
+        {mediaItems.map((item) => <TimelineMediaClip
+          key={item.id}
+          item={item}
+          pixelsPerSecond={pixelsPerSecond}
+          selected={isItemSelected(item.id)}
+          audioMode={item.kind === 'video' && item.sourceVideoId ? audioModeForVideo(item.sourceVideoId) : undefined}
+          audioJob={item.kind === 'video' ? editor.audioJobForVideo(item.sourceVideoId) : undefined}
+          onSelect={(event) => {
+            selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id });
+          }}
+          onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })}
+          onPointerMove={moveClip}
+          onPointerUp={finishClipMove}
+          onPointerCancel={finishClipMove}
+          onTrimStart={(event) => beginClipTrim(event, item, 'start')}
+          onTrimEnd={(event) => beginClipTrim(event, item, 'end')}
+          onContextMenu={item.kind === 'video' && item.sourceVideoId ? (event) => openVideoContextMenu(event, item.sourceVideoId!, item.id) : undefined}
+        />)}
       </div>;
     }
     if (track.kind === 'subtitle') {
       const srtJob = editor.activeJobs.find((job) => job.kind === 'srt');
-      return <SubtitleTrack key={track.id} editor={editor} duration={displayDuration} selectedKeys={selectedKeys} trackSelected={isTrackSelected(track.id)} items={rowItems.filter((item) => item.kind === 'srt')} trackId={track.id} onSelect={selectItem} job={srtJob} />;
+      return <SubtitleTrack key={track.id} editor={editor} pixelsPerSecond={pixelsPerSecond} selectedKeys={selectedKeys} trackSelected={isTrackSelected(track.id)} items={rowItems.filter((item) => item.kind === 'srt')} trackId={track.id} onSelect={selectItem} job={srtJob} />;
     }
     if (track.kind === 'audio') {
       return <div key={track.id} data-track-row={track.id} className={`${rowClass} audio-track voice-track`}>
-        {track.id === 'A2' && mergedVoiceAsset && <button data-timeline-item="voice:merged" className={`voice-clip ready ${isItemSelected('voice:merged') ? 'selected' : ''}`} style={{ left: '0%', width: '100%' }} title="Select then press Delete or Backspace to remove voiceover" onKeyDown={deleteVoiceoverFromClip} onClick={(event) => { selectItem(event, 'voice:merged', { type: 'timeline-items', keys: ['voice:merged'], track: 'A2' }); }}><span>Voiceover</span></button>}
+        {track.id === 'A2' && mergedVoiceAsset && <button data-timeline-item="voice:merged" className={`voice-clip ready ${isItemSelected('voice:merged') ? 'selected' : ''}`} style={{ left: 0, width: `${Math.max(2, durationToPx(displayDuration, pixelsPerSecond))}px` }} title="Select then press Delete or Backspace to remove voiceover" onKeyDown={deleteVoiceoverFromClip} onClick={(event) => { selectItem(event, 'voice:merged', { type: 'timeline-items', keys: ['voice:merged'], track: 'A2' }); }}><span>Voiceover</span></button>}
         {rowItems.filter((item) => item.kind === 'audio').map((item) => item.track === 'A1'
-          ? <button key={item.id} data-timeline-item={item.id} className={`audio-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>{item.sourceVideoId && <img className="waveform-image" src={`/api/videos/${item.sourceVideoId}/waveform?audioMode=original`} alt="Extracted audio waveform" />}</button>
-          : <TimelineAudioClip key={item.id} item={item} duration={displayDuration} selected={isItemSelected(item.id)} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onSelect={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })} />)}
+          ? <button key={item.id} data-timeline-item={item.id} className={`audio-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: `${timeToPx(item.start, pixelsPerSecond)}px`, width: `${Math.max(2, durationToPx(item.duration, pixelsPerSecond))}px` }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>{item.sourceVideoId && <img className="waveform-image" src={`/api/videos/${item.sourceVideoId}/waveform?audioMode=original`} alt="Extracted audio waveform" />}</button>
+          : <TimelineAudioClip key={item.id} item={item} pixelsPerSecond={pixelsPerSecond} selected={isItemSelected(item.id)} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onSelect={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })} />)}
         {track.id === 'A2' && editor.activeJobs.find((job) => ['tts', 'tts-segment', 'tts-mux'].includes(job.kind)) && <TimelineJob job={editor.activeJobs.find((job) => ['tts', 'tts-segment', 'tts-mux'].includes(job.kind))!} />}
       </div>;
     }
     return <div key={track.id} data-track-row={track.id} className={rowClass}>
-      {rowItems.map((item) => <button key={item.id} data-timeline-item={item.id} className={`effect-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, displayDuration), width: percent(item.duration, displayDuration) }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>
+      {rowItems.map((item) => <button key={item.id} data-timeline-item={item.id} className={`effect-clip ${isItemSelected(item.id) ? 'selected' : ''}`} style={{ left: `${timeToPx(item.start, pixelsPerSecond)}px`, width: `${Math.max(2, durationToPx(item.duration, pixelsPerSecond))}px` }} onPointerDown={(event) => beginClipMove(event, item, { type: 'timeline-items', keys: [item.id], track: track.id })} onPointerMove={moveClip} onPointerUp={finishClipMove} onPointerCancel={finishClipMove} onClick={(event) => selectItem(event, item.id, { type: 'timeline-items', keys: [item.id], track: track.id })}>
         <Flag size={12} /> {item.name}
       </button>)}
     </div>;
@@ -697,10 +802,10 @@ export function Timeline({ editor }: { editor: EditorController }) {
         <button className={editor.timelineState.options.ripple ? 'active' : ''} aria-label="Toggle ripple edit" title="Toggle ripple edit" onClick={() => void editor.setTimelineOption('ripple', !editor.timelineState.options.ripple)}><Layers size={14} /></button>
         <button aria-label="Bookmark playhead" title="Bookmark playhead" onClick={() => void editor.toggleTimelineBookmark()}><Flag size={14} /></button>
       </div>
-      <div>
-        <button aria-label="Zoom timeline out" title="Zoom out" disabled={editor.timelineWidth <= minimumWidth} onClick={() => editor.setTimelineWidth(Math.max(minimumWidth, editor.timelineWidth - 200))}><Minus size={14} /></button>
-        <SliderNumericField className="timeline-zoom-control" value={editor.timelineWidth} min={minimumWidth} max={maximumWidth} step={50} unit="px" onChange={editor.setTimelineWidth} ariaLabel="Timeline zoom" />
-        <button aria-label="Zoom timeline in" title="Zoom in" disabled={editor.timelineWidth >= maximumWidth} onClick={() => editor.setTimelineWidth(Math.min(maximumWidth, editor.timelineWidth + 200))}><Plus size={14} /></button>
+      <div className="timeline-zoom-container">
+        <button aria-label="Zoom timeline out" title="Zoom out" disabled={pixelsPerSecond <= MIN_PIXELS_PER_SECOND} onClick={() => editor.setZoom(Math.max(MIN_PIXELS_PER_SECOND, pixelsPerSecond <= 1 ? pixelsPerSecond - .1 : pixelsPerSecond - 5))}><Minus size={14} /></button>
+        <SliderNumericField className="timeline-zoom-control" value={pixelsPerSecond} min={MIN_PIXELS_PER_SECOND} max={MAX_PIXELS_PER_SECOND} step={0.1} unit="px/s" onChange={editor.setZoom} ariaLabel="Timeline zoom" />
+        <button aria-label="Zoom timeline in" title="Zoom in" disabled={pixelsPerSecond >= MAX_PIXELS_PER_SECOND} onClick={() => editor.setZoom(Math.min(MAX_PIXELS_PER_SECOND, pixelsPerSecond < 1 ? pixelsPerSecond + .1 : pixelsPerSecond + 5))}><Plus size={14} /></button>
       </div>
     </header>
     <div className="timeline-scroll" ref={scrollRef}>
@@ -726,7 +831,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
       </div>
       <div
         className="tracks-canvas"
-        style={{ width: editor.timelineWidth }}
+        style={{ width: `${calculatedCanvasWidth}px` }}
         ref={canvasRef}
         onPointerDown={beginMarquee}
         onPointerMove={moveMarquee}
@@ -744,17 +849,23 @@ export function Timeline({ editor }: { editor: EditorController }) {
             suppressClickRef.current = false;
             return;
           }
-          const rect = event.currentTarget.getBoundingClientRect();
-          editor.setPlayhead(Math.max(0, Math.min(editor.duration, ((event.clientX - rect.left) / rect.width) * displayDuration)));
+          const time = timelineTimeFromClientX(event.clientX);
+          editor.setPlayhead(Math.max(0, Math.min(displayDuration, time)));
           if (!(event.target as HTMLElement).closest('[data-timeline-item]')) editor.setSelection({ type: 'project' });
         }}
       >
-        <div className="timeline-ruler">{marks.map((mark) => <span key={mark} style={{ left: percent(mark, displayDuration) }}><i />{formatClock(mark)}</span>)}</div>
+        <div className="timeline-ruler">
+          {rulerTicks.map((tick) => (
+            <span key={tick.time} style={{ left: `${timeToPx(tick.time, pixelsPerSecond)}px` }}>
+              <i />{tick.label}
+            </span>
+          ))}
+        </div>
         <div className="timeline-bookmarks">
           {editor.timelineState.bookmarks.map((bookmark) => <button
             key={bookmark.id}
             data-timeline-bookmark={bookmark.id}
-            style={{ left: percent(bookmark.time, displayDuration), ['--bookmark-color' as string]: bookmark.color || '#f59e0b' }}
+            style={{ left: `${timeToPx(bookmark.time, pixelsPerSecond)}px`, ['--bookmark-color' as string]: bookmark.color || '#f59e0b' }}
             title={bookmark.note || formatClock(bookmark.time)}
             onClick={(event) => { event.stopPropagation(); editor.setPlayhead(bookmark.time); }}
           />)}
@@ -764,7 +875,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
           {hasBlurEffect ? <button
             data-timeline-item="effect:blur"
             className={`effect-clip ${isItemSelected('effect:blur') ? 'selected' : ''}`}
-            style={{ width: '100%' }}
+            style={{ left: 0, width: `${Math.max(2, durationToPx(displayDuration, pixelsPerSecond))}px` }}
             title="Select then press Delete or Backspace to remove this effect"
             onKeyDown={deleteBlurEffectFromClip}
             onClick={(event) => selectItem(event, 'effect:blur', { type: 'effect', operation: 'blur' })}
@@ -772,7 +883,7 @@ export function Timeline({ editor }: { editor: EditorController }) {
             : legacyEffectOperation && <button
               data-timeline-item={`effect:${legacyEffectOperation}`}
               className={`effect-clip ${isItemSelected(`effect:${legacyEffectOperation}`) ? 'selected' : ''}`}
-              style={{ width: '100%' }}
+              style={{ left: 0, width: `${Math.max(2, durationToPx(displayDuration, pixelsPerSecond))}px` }}
               onClick={(event) => selectItem(event, `effect:${legacyEffectOperation}`, { type: 'effect', operation: legacyEffectOperation })}
             ><Flag size={12} /> {legacyEffectOperation === 'insert' ? 'Rendered captions - version' : 'Original subtitle hidden - rendered version'}</button>}
         </div>}
@@ -780,11 +891,21 @@ export function Timeline({ editor }: { editor: EditorController }) {
           <span><Film size={16} /> Drag media here to start editing</span>
           <button onClick={(event) => { event.stopPropagation(); editor.setAssetTab('assets'); editor.setMessage('Open the Download tab, then drag a video into V1.'); }}><Plus size={16} /> Add media to timeline</button>
         </div>}
-        {dragPlacementPreview && <div className="timeline-drop-preview" style={{ left: percent(dragPlacementPreview.start, displayDuration) }}>
-          {dragPlacementPreview.createdTrack ? `${dragPlacementPreview.trackId} will be created` : `${dragPlacementPreview.trackId} · ${formatClock(dragPlacementPreview.start)}`}
+        {dragPlacementPreview && <div
+          className="timeline-drop-preview"
+          style={{
+            left: `${timeToPx(dragPlacementPreview.start, pixelsPerSecond)}px`,
+            width: `${Math.max(2, durationToPx(dragPlacementPreview.duration, pixelsPerSecond))}px`,
+            top: `${dragPlacementPreview.top}px`,
+            height: `${dragPlacementPreview.height}px`,
+          }}
+        >
+          {dragPlacementPreview.createdTrack
+            ? `${dragPlacementPreview.trackId} will be created (${dragPlacementPreview.duration.toFixed(1)}s)`
+            : `${dragPlacementPreview.trackId} · ${formatClock(dragPlacementPreview.start)} (${dragPlacementPreview.duration.toFixed(1)}s)`}
         </div>}
         <div ref={snapGuideRef} className="timeline-snap-guide" hidden><span /></div>
-        <div className="playhead" style={{ left: percent(editor.playhead, displayDuration) }} onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={finishScrub} onPointerCancel={finishScrub}><i /></div>
+        <div className="playhead" style={{ left: `${timeToPx(editor.playhead, pixelsPerSecond)}px` }} onPointerDown={beginScrub} onPointerMove={moveScrub} onPointerUp={finishScrub} onPointerCancel={finishScrub}><i /></div>
         {marquee && <div className="timeline-marquee" style={marquee} />}
       </div>
     </div>
@@ -825,9 +946,9 @@ export function Timeline({ editor }: { editor: EditorController }) {
   </>;
 }
 
-function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd, onContextMenu }: {
+function TimelineMediaClip({ item, pixelsPerSecond, selected, audioMode, audioJob, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onTrimStart, onTrimEnd, onContextMenu }: {
   item: TimelineItem;
-  duration: number;
+  pixelsPerSecond: number;
   selected: boolean;
   audioMode?: string;
   audioJob?: { progress?: number; detail?: string };
@@ -840,7 +961,8 @@ function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSe
   onTrimEnd?: (event: React.PointerEvent<HTMLElement>) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
 }) {
-  const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
+  const left = `${timeToPx(item.start, pixelsPerSecond)}px`;
+  const width = `${Math.max(2, durationToPx(item.duration, pixelsPerSecond))}px`;
   const isVideo = item.kind === 'video' && item.sourceVideoId;
   const imageUrl = item.kind === 'image' && item.projectAssetId ? `/api/project-assets/${item.projectAssetId}/download?preview=1` : '';
   const audioProgressRaw = Number(audioJob?.progress || 0);
@@ -849,7 +971,7 @@ function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSe
   return <button
     data-timeline-item={item.id}
     className={`${item.kind === 'image' ? 'media-asset-clip' : 'video-clip'} ${selected ? 'selected' : ''}`}
-    style={{ left: percent(item.start, duration), width }}
+    style={{ left, width }}
     title="Select then press Delete or Backspace to remove this clip"
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
@@ -869,9 +991,9 @@ function TimelineMediaClip({ item, duration, selected, audioMode, audioJob, onSe
   </button>;
 }
 
-function TimelineAudioClip({ item, duration, selected, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }: {
+function TimelineAudioClip({ item, pixelsPerSecond, selected, onSelect, onPointerDown, onPointerMove, onPointerUp, onPointerCancel }: {
   item: TimelineItem;
-  duration: number;
+  pixelsPerSecond: number;
   selected: boolean;
   onSelect: (event: React.MouseEvent) => void;
   onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -879,11 +1001,12 @@ function TimelineAudioClip({ item, duration, selected, onSelect, onPointerDown, 
   onPointerUp?: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onPointerCancel?: (event: React.PointerEvent<HTMLButtonElement>) => void;
 }) {
-  const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
+  const left = `${timeToPx(item.start, pixelsPerSecond)}px`;
+  const width = `${Math.max(2, durationToPx(item.duration, pixelsPerSecond))}px`;
   return <button
     data-timeline-item={item.id}
     className={`voice-clip ready ${selected ? 'selected' : ''}`}
-    style={{ left: percent(item.start, duration), width }}
+    style={{ left, width }}
     title="Select then press Delete or Backspace to remove this audio clip"
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
@@ -935,9 +1058,9 @@ function TrackLabel({
   </div>;
 }
 
-function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, trackId, onSelect, job }: {
+function SubtitleTrack({ editor, pixelsPerSecond, selectedKeys, trackSelected, items, trackId, onSelect, job }: {
   editor: EditorController;
-  duration: number;
+  pixelsPerSecond: number;
   selectedKeys: Set<string>;
   trackSelected: boolean;
   items: TimelineItem[];
@@ -953,8 +1076,23 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
     return projectAsset?.sourceAssetId || item.projectAssetId;
   };
   const hasCurrentSrtItem = Boolean(currentSrtAssetId && items.some((item) => srtAssetIdForItem(item) === currentSrtAssetId));
+  const activeSrtItem = items.find((item) => srtAssetIdForItem(item) === currentSrtAssetId) || items[0];
+  // An SRT item is the timing window for its source captions. Mirror the
+  // exporter's clipping here so a final cue can never paint beyond the SRT
+  // clip (a one-frame rounding tail used to remain at the end of S1).
   const source = editor.project.workspaceId
-    ? (hasCurrentSrtItem ? editor.srt.segments : [])
+    ? (activeSrtItem && editor.srt.segments.length
+      ? editor.srt.segments.map((segment) => {
+        const itemStart = activeSrtItem.start;
+        const itemEnd = activeSrtItem.start + activeSrtItem.duration;
+        const sourceStart = activeSrtItem.sourceStart || 0;
+        return {
+          ...segment,
+          start: Math.max(itemStart, itemStart + segment.start - sourceStart),
+          end: Math.min(itemEnd, itemStart + segment.end - sourceStart),
+        };
+      }).filter((segment) => segment.end > segment.start)
+      : [])
     : (trackId === 'S1' ? editor.srt.segments : []);
   const deleteSrtItem = (event: React.KeyboardEvent<HTMLButtonElement>, itemId: string) => {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -963,14 +1101,16 @@ function SubtitleTrack({ editor, duration, selectedKeys, trackSelected, items, t
     void editor.deleteTimelineItems([itemId]);
   };
   return <div data-track-row={trackId} className={`timeline-track subtitle-track ${trackSelected ? 'track-selected' : ''}`}>{source.map((segment) => {
-    const width = Math.max(1.4, ((segment.end - segment.start) / duration) * 100);
+    const left = `${timeToPx(segment.start, pixelsPerSecond)}px`;
+    const width = `${Math.max(2, durationToPx(segment.end - segment.start, pixelsPerSecond))}px`;
     const key = `subtitle:${segment.index}`;
     const selected = selectedKeys.has(key) || (editor.selection.type === 'subtitle' && editor.selection.index === segment.index);
     const text = editor.edits[segment.index] ?? segment.text;
-    return <button key={segment.index} data-timeline-item={key} className={selected ? 'selected' : ''} style={{ left: percent(segment.start, duration), width: `${width}%` }} title={text} onClick={(event) => { onSelect(event, key, { type: 'subtitle', index: segment.index }); }}>{text}</button>;
-  })}{items.filter((item) => !(hasCurrentSrtItem && source.length > 0 && srtAssetIdForItem(item) === currentSrtAssetId)).map((item) => {
-    const width = `${Math.max(2, (item.duration / Math.max(duration, .01)) * 100)}%`;
-    return <button key={item.id} data-timeline-item={item.id} className={`subtitle-asset-clip ${selectedKeys.has(item.id) ? 'selected' : ''}`} style={{ left: percent(item.start, duration), width }} title="Select then press Delete or Backspace to remove this SRT clip" onKeyDown={(event) => deleteSrtItem(event, item.id)} onClick={(event) => onSelect(event, item.id, { type: 'timeline-items', keys: [item.id], track: trackId })}>{item.name}</button>;
+    return <button key={segment.index} data-timeline-item={key} className={selected ? 'selected' : ''} style={{ left, width }} title={text} onClick={(event) => { onSelect(event, key, { type: 'subtitle', index: segment.index }); }}>{text}</button>;
+  })}{items.filter((item) => !(source.length > 0 && (hasCurrentSrtItem || editor.project.workspaceId))).map((item) => {
+    const left = `${timeToPx(item.start, pixelsPerSecond)}px`;
+    const width = `${Math.max(2, durationToPx(item.duration, pixelsPerSecond))}px`;
+    return <button key={item.id} data-timeline-item={item.id} className={`subtitle-asset-clip ${selectedKeys.has(item.id) ? 'selected' : ''}`} style={{ left, width }} title="Select then press Delete or Backspace to remove this SRT clip" onKeyDown={(event) => deleteSrtItem(event, item.id)} onClick={(event) => onSelect(event, item.id, { type: 'timeline-items', keys: [item.id], track: trackId })}>{item.name}</button>;
   })}
   {job && <TimelineJob job={job} />}
   </div>;

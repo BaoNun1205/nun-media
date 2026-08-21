@@ -954,6 +954,7 @@ def _workspace_project_payload(project) -> dict[str, Any]:
     metadata = project.metadata or {}
     timeline = metadata.get("timeline") or []
     timeline_state = metadata.get("timeline_state") or None
+    cover_url = _workspace_project_cover_url(project.id, timeline_state, timeline)
     timeline_duration_ms = max(
         [
             int((float(item.get("start") or 0) + float(item.get("duration") or 0)) * 1000)
@@ -977,8 +978,52 @@ def _workspace_project_payload(project) -> dict[str, Any]:
         "timeline": timeline,
         "timelineState": timeline_state,
         "sceneState": metadata.get("scene_state") or None,
+        "coverUrl": cover_url,
         "metadata": metadata,
     }
+
+
+def _workspace_project_cover_url(project_id: int, timeline_state: Any, legacy_timeline: Any) -> str | None:
+    """Return the visual asset at the earliest point of the V1 sequence."""
+    state_items = timeline_state.get("items") if isinstance(timeline_state, dict) else None
+    items = state_items if isinstance(state_items, list) else legacy_timeline if isinstance(legacy_timeline, list) else []
+    candidates = [
+        (index, item) for index, item in enumerate(items)
+        if isinstance(item, dict)
+        and item.get("track") == "V1"
+        and item.get("kind") in {"image", "video"}
+    ]
+    if not candidates:
+        return None
+    _, item = min(candidates, key=lambda pair: (float(pair[1].get("start") or 0), pair[0]))
+    source_start = max(0.0, float(item.get("sourceStart") or 0))
+    project_asset_id = item.get("projectAssetId")
+    if project_asset_id is not None:
+        try:
+            asset = storage.get_project_asset(int(project_asset_id))
+        except (TypeError, ValueError):
+            asset = None
+        if asset and asset.project_id == project_id:
+            if item.get("kind") == "image":
+                return f"/api/project-assets/{asset.id}/download?preview=1"
+            return f"/api/project-assets/{asset.id}/thumbnail?timeSeconds={source_start:.3f}"
+    source_video_id = item.get("sourceVideoId")
+    if source_video_id is not None:
+        try:
+            video = storage.get_video(int(source_video_id))
+        except (TypeError, ValueError):
+            video = None
+        if video:
+            return f"/api/videos/{video.id}/thumbnail?timeSeconds={source_start:.3f}"
+    source_asset_id = item.get("sourceAssetId")
+    if source_asset_id is not None and item.get("kind") == "image":
+        try:
+            asset = storage.get_asset(int(source_asset_id))
+        except (TypeError, ValueError):
+            asset = None
+        if asset:
+            return f"/api/assets/{asset.id}/download?preview=1"
+    return None
 
 
 def _owned_file_roots() -> tuple[Path, Path]:
@@ -1984,6 +2029,10 @@ def _clean_timeline_track(track: Any, existing: set[str]) -> dict[str, Any] | No
         return None
     raw_id = str(track.get("id") or "").strip() or _next_timeline_track_id(existing, kind)
     track_id = raw_id[:40]
+    # Core scenes encode subtitle tracks as text. Keep the canonical empty S1
+    # subtitle lane stable so a later SRT import does not create S2/S3.
+    if track_id == "S1" and kind == "text" and "subtitle" in str(track.get("name") or "").lower():
+        kind = "subtitle"
     if track_id in existing:
         track_id = _next_timeline_track_id(existing, kind)
     existing.add(track_id)
@@ -2021,7 +2070,9 @@ def _clean_timeline_items(project, items: list[dict[str, Any]], track_kinds: dic
         }
         track = str(item.get("track") or "").strip()[:40]
         expected_track_kind = _timeline_track_kind_for_item(kind)
-        clean["track"] = track if track_kinds.get(track) == expected_track_kind else _default_timeline_track_for_kind(kind)
+        # SRT has one canonical source lane. Consolidating legacy S2/S3 clips
+        # here also removes the tiny duplicate tail they could create.
+        clean["track"] = "S1" if kind == "srt" else (track if track_kinds.get(track) == expected_track_kind else _default_timeline_track_for_kind(kind))
         if item.get("sourceEnd") is not None:
             clean["sourceEnd"] = _timeline_number(item.get("sourceEnd"), 0.0)
         if item.get("sourceDuration") is not None:
@@ -2074,6 +2125,48 @@ def _clean_timeline_items(project, items: list[dict[str, Any]], track_kinds: dic
     return clean_items
 
 
+def _enforce_visual_track_layout(tracks: list[dict[str, Any]], items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Persist the same invariant as the editor: no video/image overlap in one V lane."""
+    next_tracks = [dict(track) for track in tracks]
+    next_items = [dict(item) for item in items]
+    occupied: dict[str, list[dict[str, Any]]] = {}
+
+    def visual_tracks() -> list[dict[str, Any]]:
+        return [track for track in next_tracks if track.get("kind") == "video"]
+
+    def fits(track_id: str, item: dict[str, Any]) -> bool:
+        start = float(item.get("start") or 0)
+        end = start + float(item.get("duration") or 0.05)
+        return all(not (start < float(other.get("start") or 0) + float(other.get("duration") or 0.05) and end > float(other.get("start") or 0)) for other in occupied.get(track_id, []))
+
+    track_position = {str(track.get("id")): index for index, track in enumerate(next_tracks)}
+    visual_items = [(index, item) for index, item in enumerate(next_items) if item.get("kind") in {"video", "image"}]
+    visual_items.sort(key=lambda pair: (track_position.get(str(pair[1].get("track")), len(next_tracks)), float(pair[1].get("start") or 0), pair[0]))
+    for _, item in visual_items:
+        available = visual_tracks()
+        source_track = str(item.get("track") or "V1")
+        if not any(track.get("id") == source_track for track in available):
+            source_track = "V1"
+            item["track"] = source_track
+        target_track = source_track
+        if not fits(target_track, item):
+            available = visual_tracks()
+            source_index = next((index for index, track in enumerate(available) if track.get("id") == source_track), 0)
+            candidates = available[source_index + 1:] + available[:source_index]
+            target = next((track for track in candidates if not track.get("locked") and fits(str(track.get("id")), item)), None)
+            if target:
+                target_track = str(target["id"])
+            else:
+                existing = {str(track.get("id")) for track in next_tracks}
+                target_track = _next_timeline_track_id(existing, "video")
+                new_track = {"id": target_track, "kind": "video", "name": target_track, "muted": False, "hidden": False, "locked": False}
+                first_non_visual = next((index for index, track in enumerate(next_tracks) if track.get("kind") != "video"), len(next_tracks))
+                next_tracks.insert(first_non_visual, new_track)
+            item["track"] = target_track
+        occupied.setdefault(target_track, []).append(item)
+    return next_tracks, next_items
+
+
 def _clean_timeline_state(raw: dict[str, Any] | None, clean_items: list[dict[str, Any]]) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     existing: set[str] = set()
@@ -2108,6 +2201,9 @@ def _clean_timeline_state(raw: dict[str, Any] | None, clean_items: list[dict[str
             clean_bookmark["color"] = str(bookmark.get("color") or "")[:32]
         bookmarks.append(clean_bookmark)
     clean_tracks, clean_items = _enforce_visual_track_layout(clean_tracks, clean_items)
+    protected_tracks = {"V1", "S1", "A1", "A2"}
+    occupied_tracks = {str(item.get("track") or "") for item in clean_items}
+    clean_tracks = [track for track in clean_tracks if track.get("id") in protected_tracks or track.get("id") in occupied_tracks]
     return {
         "version": 2,
         "fps": int(_timeline_number(raw.get("fps"), 30, 1, 240)),
@@ -2207,7 +2303,7 @@ def attach_project_videos(project_id: int, payload: ProjectAttachVideosRequest) 
     project = _project_or_404(project_id)
     for video_id in payload.videoIds:
         storage.attach_video_to_project(project.id, int(video_id))
-    return {"project": _workspace_project_payload(storage.get_project(project.id))}
+    return {"project": _workspace_project_payload(storage.get_project(project_id))}
 
 
 @app.post("/api/projects/{project_id}/assets/attach")
@@ -2285,6 +2381,7 @@ def import_pexels_video(project_id: int, payload: PexelsImportRequest) -> dict[s
         raise HTTPException(exc.status_code, str(exc)) from exc
 
     duration_ms = _probe_video_duration_ms(destination)
+    width, height = _probe_video_size(destination)
     metadata = {
         "source": "stock:pexels",
         "stock_provider": "pexels",
@@ -2294,50 +2391,11 @@ def import_pexels_video(project_id: int, payload: PexelsImportRequest) -> dict[s
         "stock_creator": stock_video["creator"],
         "stock_selected_file": stock_video["selectedFile"],
         "duration_ms": duration_ms or int(stock_video["duration"] * 1000),
-        "size_bytes": destination.stat().st_size,
+        "duration_seconds": (duration_ms / 1000.0) if duration_ms else float(stock_video["duration"]),
+        "width": width or stock_video.get("selectedFile", {}).get("width") or 0,
+        "height": height or stock_video.get("selectedFile", {}).get("height") or 0,
+        "size_bytes": destination.stat().st_size if destination.exists() else 0,
     }
-
-
-def _enforce_visual_track_layout(tracks: list[dict[str, Any]], items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Persist the same invariant as the editor: no video/image overlap in one V lane."""
-    next_tracks = [dict(track) for track in tracks]
-    next_items = [dict(item) for item in items]
-    occupied: dict[str, list[dict[str, Any]]] = {}
-
-    def visual_tracks() -> list[dict[str, Any]]:
-        return [track for track in next_tracks if track.get("kind") == "video"]
-
-    def fits(track_id: str, item: dict[str, Any]) -> bool:
-        start = float(item.get("start") or 0)
-        end = start + float(item.get("duration") or 0.05)
-        return all(not (start < float(other.get("start") or 0) + float(other.get("duration") or 0.05) and end > float(other.get("start") or 0)) for other in occupied.get(track_id, []))
-
-    track_position = {str(track.get("id")): index for index, track in enumerate(next_tracks)}
-    visual_items = [(index, item) for index, item in enumerate(next_items) if item.get("kind") in {"video", "image"}]
-    visual_items.sort(key=lambda pair: (track_position.get(str(pair[1].get("track")), len(next_tracks)), float(pair[1].get("start") or 0), pair[0]))
-    for _, item in visual_items:
-        available = visual_tracks()
-        source_track = str(item.get("track") or "V1")
-        if not any(track.get("id") == source_track for track in available):
-            source_track = "V1"
-            item["track"] = source_track
-        target_track = source_track
-        if not fits(target_track, item):
-            available = visual_tracks()
-            source_index = next((index for index, track in enumerate(available) if track.get("id") == source_track), 0)
-            candidates = available[source_index + 1:] + available[:source_index]
-            target = next((track for track in candidates if not track.get("locked") and fits(str(track.get("id")), item)), None)
-            if target:
-                target_track = str(target["id"])
-            else:
-                existing = {str(track.get("id")) for track in next_tracks}
-                target_track = _next_timeline_track_id(existing, "video")
-                new_track = {"id": target_track, "kind": "video", "name": target_track, "muted": False, "hidden": False, "locked": False}
-                first_non_visual = next((index for index, track in enumerate(next_tracks) if track.get("kind") != "video"), len(next_tracks))
-                next_tracks.insert(first_non_visual, new_track)
-            item["track"] = target_track
-        occupied.setdefault(target_track, []).append(item)
-    return next_tracks, next_items
     project_asset_id = storage.add_project_asset(
         project_id=project.id,
         kind="video",
@@ -4025,28 +4083,35 @@ def preview_media(video_id: int, audioMode: str | None = None) -> FileResponse:
     return FileResponse(preview_path, media_type="video/mp4", filename=preview_path.name)
 
 
+def _thumbnail_for_media(media_path: Path, preview_dir: Path, time_seconds: float = 0.5) -> Path:
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    safe_time = max(0.0, float(time_seconds or 0))
+    stamp = f"{int(safe_time * 1000):09d}"
+    thumbnail_path = preview_dir / f"{media_path.stem}.thumbnail-{stamp}.jpg"
+    if thumbnail_path.exists() and thumbnail_path.stat().st_mtime >= media_path.stat().st_mtime:
+        return thumbnail_path
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(500, "FFmpeg is required to create thumbnails")
+    proc = subprocess.run(
+        [ffmpeg, "-y", "-ss", f"{safe_time:.3f}", "-i", str(media_path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(thumbnail_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0 or not thumbnail_path.exists():
+        raise HTTPException(500, f"Could not create thumbnail: {proc.stderr[-500:]}")
+    return thumbnail_path
+
+
 @app.get("/api/videos/{video_id}/thumbnail")
-def video_thumbnail(video_id: int) -> FileResponse:
+def video_thumbnail(video_id: int, timeSeconds: float = 0.5) -> FileResponse:
     video = _video_or_404(video_id)
     if not video.path.exists():
         raise HTTPException(404, "Media file not found")
-    preview_dir = config.outputs_dir / f"video_{video.id}" / "preview"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    thumbnail_path = preview_dir / f"{video.path.stem}.thumbnail.jpg"
-    if not thumbnail_path.exists() or thumbnail_path.stat().st_mtime < video.path.stat().st_mtime:
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            raise HTTPException(500, "FFmpeg is required to create thumbnails")
-        proc = subprocess.run(
-            [ffmpeg, "-y", "-ss", "0.5", "-i", str(video.path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(thumbnail_path)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-        if proc.returncode != 0 or not thumbnail_path.exists():
-            raise HTTPException(500, f"Could not create thumbnail: {proc.stderr[-500:]}")
+    thumbnail_path = _thumbnail_for_media(video.path, config.outputs_dir / f"video_{video.id}" / "preview", timeSeconds)
     return FileResponse(thumbnail_path, media_type="image/jpeg")
 
 
@@ -4333,6 +4398,20 @@ def download_project_asset(project_asset_id: int) -> FileResponse:
         raise HTTPException(404, "Project asset file not found")
     media_type = mimetypes.guess_type(asset.path.name)[0] or "application/octet-stream"
     return FileResponse(asset.path, media_type=media_type, filename=asset.path.name)
+
+
+@app.get("/api/project-assets/{project_asset_id}/thumbnail")
+def project_asset_thumbnail(project_asset_id: int, timeSeconds: float = 0.5) -> FileResponse:
+    asset = storage.get_project_asset(project_asset_id)
+    if not asset or not asset.path.exists():
+        raise HTTPException(404, "Project asset file not found")
+    if asset.kind == "image":
+        media_type = mimetypes.guess_type(asset.path.name)[0] or "image/*"
+        return FileResponse(asset.path, media_type=media_type, filename=asset.path.name)
+    if asset.kind != "video":
+        raise HTTPException(400, "Only image or video assets can be used as a cover")
+    thumbnail_path = _thumbnail_for_media(asset.path, config.outputs_dir / f"project_asset_{asset.id}" / "preview", timeSeconds)
+    return FileResponse(thumbnail_path, media_type="image/jpeg")
 
 
 @app.get("/api/videos/{video_id}/srt/download")

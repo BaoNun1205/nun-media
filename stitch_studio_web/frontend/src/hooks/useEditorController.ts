@@ -15,6 +15,7 @@ import {
   normalizeTimelineState,
   pasteItems,
   parseClipboardItems,
+  projectAssetDurationSeconds,
   removeTrack as removeTrackFromTimelineState,
   resolvePlacement,
   rippleAfterEdit,
@@ -24,6 +25,7 @@ import {
   toggleTrackMute as toggleTimelineTrackMuteInState,
   toggleTrackVisibility as toggleTimelineTrackVisibilityInState,
 } from '../lib/timelineCore';
+import { DEFAULT_PIXELS_PER_SECOND, clampZoom } from '../lib/timelineCoordinates';
 import { API_BASE, request, studioApi } from '../services/api';
 import type { CoreTimelineScene } from '../editor-core/types';
 import type { AudioMode, InspectorSelection, Job, Project, ProjectAsset, SrtDocument, SubtitleArea, SubtitleSegment, SubtitleStyle, TimelineIssue, TimelineItem, TimelineState, TimelineTrackKind, ToolKey, VoiceOption, VoiceSegment } from '../types/studio';
@@ -94,19 +96,6 @@ function editorTimeInsideItem(time: number, item: TimelineItem) {
   return time >= item.start && time < item.start + Math.max(0.05, item.duration);
 }
 
-function metadataDurationSeconds(metadata?: Record<string, unknown>) {
-  const data = metadata || {};
-  const durationMs = Number(data.duration_ms || data.durationMs || data.audio_duration_ms || 0);
-  if (durationMs > 0) return durationMs / 1000;
-  const durationSeconds = Number(data.duration_seconds || data.duration || 0);
-  return durationSeconds > 0 ? durationSeconds : 0;
-}
-
-function projectAssetDurationSeconds(asset: ProjectAsset) {
-  return metadataDurationSeconds(asset.metadata)
-    || metadataDurationSeconds(asset.asset?.metadata)
-    || ((asset.video?.durationMs || 0) / 1000);
-}
 
 const BASE_TEXT_PROPERTIES: (keyof TextStyle)[] = [
   'fontFamily', 'fontSize', 'textAlign', 'textTransform', 
@@ -170,10 +159,20 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const [videoSpeed, setVideoSpeed] = useState(project.clipSettings?.videoSpeed ?? 1);
   const [voiceVolumeDb, setVoiceVolumeDb] = useState(project.clipSettings?.voiceVolumeDb ?? 0);
   const [voiceSpeed, setVoiceSpeed] = useState(project.clipSettings?.voiceSpeed ?? 1);
+  const [pixelsPerSecond, setPixelsPerSecondState] = useState<number>(() => clampZoom(timelineStateFromSceneOrProject(project).view?.zoomLevel ?? DEFAULT_PIXELS_PER_SECOND));
   const [timelineWidth, setTimelineWidth] = useState(1200);
   const [timelineState, setTimelineState] = useState<TimelineState>(() => timelineStateFromSceneOrProject(project));
   const timelineStateRef = useRef(timelineState);
   useEffect(() => { timelineStateRef.current = timelineState; }, [timelineState]);
+
+  const setZoom = useCallback((nextZoom: number) => {
+    const clamped = clampZoom(nextZoom);
+    setPixelsPerSecondState(clamped);
+    setTimelineState((current) => ({
+      ...current,
+      view: { ...current.view, zoomLevel: clamped },
+    }));
+  }, []);
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>(() => timelineStateFromSceneOrProject(project).items);
   const [timelineScene, setTimelineScene] = useState<CoreTimelineScene>(() => sceneFromProject(project));
   const [timelineHistory, setTimelineHistory] = useState<TimelineHistory>({ past: [], future: [] });
@@ -289,7 +288,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
   const timelineTrackById = useMemo(() => new Map(timelineState.tracks.map((track, index) => [track.id, { ...track, index }])), [timelineState.tracks]);
   const activeTimelineItem = timelineItems
     .filter((item) => (item.kind === 'video' || item.kind === 'image') && !item.hidden && !timelineTrackById.get(item.track || '')?.hidden && editorTimeInsideItem(playhead, item))
-    .sort((a, b) => (timelineTrackById.get(b.track || '')?.index ?? 0) - (timelineTrackById.get(a.track || '')?.index ?? 0))[0];
+    .sort((a, b) => (timelineTrackById.get(a.track || '')?.index ?? Number.MAX_SAFE_INTEGER) - (timelineTrackById.get(b.track || '')?.index ?? Number.MAX_SAFE_INTEGER))[0];
   const activeTimelineVideoId = activeTimelineItem?.sourceVideoId ?? (!hasWorkspaceTimeline && !isEmptyWorkspace ? project.id : undefined);
   const activeTimelineLocalTime = activeTimelineItem ? Math.max(0, playhead - activeTimelineItem.start + (activeTimelineItem.sourceStart || 0)) : playhead;
   const activeTimelineProject = activeTimelineVideoId
@@ -630,7 +629,9 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       sourceAssetId: assetId,
       track,
       start: 0,
-      duration: frameRound(durationBase, currentTimeline.fps),
+      // Keep the clip boundary at or after its final cue. Rounding down left
+      // a tiny SRT tail visible at the end of an otherwise complete timeline.
+      duration: Math.ceil(durationBase * currentTimeline.fps) / currentTimeline.fps,
     };
     
     const nextState = normalizeTimelineState({
@@ -734,7 +735,10 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
       const attachedProjectAsset = attached.project.assets.find((item) => item.sourceVideoId === videoId);
       const projectAsset = attachedProjectAsset || existingProjectAsset;
       const durationMs = source?.durationMs || projectAsset?.video?.durationMs || Number(projectAsset?.metadata?.duration_ms || 0);
-      const clipDuration = Math.max(0.5, (durationMs / 1000) || 5);
+      let clipDuration = durationMs > 0 ? durationMs / 1000 : (projectAsset ? projectAssetDurationSeconds(projectAsset) : 0);
+      if (!clipDuration || clipDuration <= 0) {
+        clipDuration = 0.05;
+      }
       const previous = cloneTimelineState(timelineState);
       const placement = resolvePlacement({
         state: timelineState,
@@ -1709,7 +1713,7 @@ export function useEditorController({ project, projects, jobs, voices, refresh, 
     selection, setSelection, currentSegment, currentVoice, activeTool, openTool, assetTab, setAssetTab,
     bottomView, setBottomView, playhead, setPlayhead, duration, message, setMessage, editArea, setEditArea, timelineState, timelineScene, timelineItems, timelineDuration, activeTimelineItem, activeTimelineVideoId, activeTimelineLocalTime,
     previewSource, setPreviewSource, fitMode, setFitMode, previewVolume, setPreviewVolume,
-    previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth,
+    previewMuted, setPreviewMuted, playbackRate, setPlaybackRate, videoScale, videoVolumeDb, videoSpeed, voiceVolumeDb, voiceSpeed, updateVideoScale, updateVideoVolumeDb, updateVideoSpeed, updateVoiceVolumeDb, updateVoiceSpeed, timelineWidth, setTimelineWidth, zoom: pixelsPerSecond, pixelsPerSecond, setZoom,
     audioMode, effectiveAudioMode, effectivePreviewAudioMode, setAudioMode, setTimelineVideoAudioMode, extractAudioFromTimelineClip, audioSeparationReady, activeAudioJob, audioJobForVideo,
     area, setArea, saveSubtitleArea, style, setStyle, updateSubtitleStyle, applySubtitleStylePreset, resetSubtitleStylePreset, selectedTextStyle, updateTimelineTextStyle, applyTimelineTextStylePreset, resetTimelineTextStylePreset, distributeTimelineTextItems, srtAssets, originalSrtAssets, translatedSrtAssets, hasLoadedTranslation: Boolean(translatedSrt.asset?.id), canUndo: draftHistory.past.length > 0 || timelineHistory.past.length > 0, canRedo: draftHistory.future.length > 0 || timelineHistory.future.length > 0,
     subtitleSource, setSubtitleSource, hardsubMode, setHardsubMode, ocrAreaMode, setOcrAreaMode, ocrArea, setOcrArea, model, setModel, device, setDevice, language, setLanguage,

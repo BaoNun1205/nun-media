@@ -103,7 +103,7 @@ export function ProjectsPage({ projects, onOpen, onRefresh }: Props) {
         {visible.map((project) => (
           <article className="project-card" key={project.id}>
             <button className="project-thumb" onClick={() => onOpen(project)}>
-              {project.primaryVideoId && <img src={`/api/videos/${project.primaryVideoId}/thumbnail`} loading="lazy" alt="" />}
+              {(project.coverUrl || project.primaryVideoId) && <img src={project.coverUrl || `/api/videos/${project.primaryVideoId}/thumbnail`} loading="lazy" alt={`Cover for ${project.title}`} />}
               <span className="thumb-shade" />
               <span className="play-orb"><Play size={17} fill="currentColor" /></span>
               <time>{formatDuration(project.durationMs)}</time>

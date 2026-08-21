@@ -235,6 +235,7 @@ export interface WorkspaceProject {
   timeline: TimelineItem[];
   timelineState?: TimelineState;
   sceneState?: CoreTimelineScene;
+  coverUrl?: string;
   metadata: Record<string, unknown>;
 }
 

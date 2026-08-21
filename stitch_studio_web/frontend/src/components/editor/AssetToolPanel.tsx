@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Captions, ChevronLeft, ChevronRight, Download, Eraser, FileAudio, FileVideo2, Image as ImageIcon, Languages, Music2, Play, Plus, Search, Settings2, Share2, Sparkles, Upload, Volume2, Trash2, X } from 'lucide-react';
 import { LANGUAGES, SOURCE_LANGUAGES, defaultTtsLanguage, formatDuration, getAssetGroup, isMediaFileAsset, ttsLanguageOptions } from '../../lib/studio';
+import { projectAssetDurationSeconds } from '../../lib/timelineCore';
 import { API_BASE, studioApi } from '../../services/api';
 import type { Asset, ProjectAsset, ToolKey } from '../../types/studio';
 import type { EditorController } from '../../hooks/useEditorController';
@@ -30,7 +31,9 @@ function projectAssetPreviewUrl(asset: ProjectAsset) {
 }
 
 function assetDurationLabel(asset: ProjectAsset) {
-  const durationMs = Number((asset.metadata || {}).duration_ms || 0);
+  const durationSec = projectAssetDurationSeconds(asset);
+  if (durationSec > 0) return formatDuration(durationSec * 1000);
+  const durationMs = Number((asset.metadata || {}).duration_ms || (asset.metadata || {}).durationMs || 0);
   return durationMs > 0 ? formatDuration(durationMs) : asset.kind.toUpperCase();
 }
 
